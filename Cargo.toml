@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/terrain-core", "crates/terrain-wasm", "crates/terrain-cli"]
+resolver = "2"
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+geo = "0.33"
+spade = "2.15"
