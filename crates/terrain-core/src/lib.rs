@@ -1,13 +1,13 @@
 //! Contour Workbench's platform-independent geometry and source-planning core.
 mod carve;
 use geo::{
-    BooleanOps, Buffer, Contains, Coord, Intersects, LineString, MultiPolygon, Point, Polygon,
-    TriangulateEarcut, Validation,
+    BooleanOps, Buffer, Centroid, Contains, Coord, Intersects, LineString, MultiPolygon, Point,
+    Polygon, TriangulateEarcut, Validation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use spade::FloatTriangulation;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -18,6 +18,9 @@ pub struct Settings {
     pub path_width_mm: f64,
     pub path_clearance_mm: f64,
     pub insert_depth_mm: f64,
+    pub zone_insert_depth_mm: f64,
+    pub zone_floor_mm: f64,
+    pub ski_run_width_m: f64,
     pub carve_depth_mm: f64,
     pub insert_gap_mm: f64,
     pub insert_segment_size_mm: Option<f64>,
@@ -33,6 +36,9 @@ impl Default for Settings {
             path_width_mm: 0.8,
             path_clearance_mm: 0.1,
             insert_depth_mm: 2.,
+            zone_insert_depth_mm: 0.8,
+            zone_floor_mm: 0.8,
+            ski_run_width_m: 30.,
             carve_depth_mm: 0.4,
             insert_gap_mm: 0.5,
             insert_segment_size_mm: None,
@@ -78,6 +84,9 @@ impl Settings {
             self.path_width_mm,
             self.path_clearance_mm,
             self.insert_depth_mm,
+            self.zone_insert_depth_mm,
+            self.zone_floor_mm,
+            self.ski_run_width_m,
             self.carve_depth_mm,
             self.insert_gap_mm,
         ] {
@@ -166,16 +175,38 @@ pub enum Treatment {
     Hide,
     VCarve,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneSurface {
+    #[default]
+    Terrain,
+    Level,
+}
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AreaPolygon {
+    pub outer: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub holes: Vec<Vec<[f64; 2]>>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Feature {
     pub id: String,
     pub name: String,
     pub class: String,
+    #[serde(default)]
     pub lines: Vec<Vec<[f64; 2]>>,
+    #[serde(default)]
+    pub polygons: Vec<AreaPolygon>,
     #[serde(default = "yes")]
     pub enabled: bool,
     #[serde(default)]
     pub treatment: Treatment,
+    #[serde(default)]
+    pub surface: ZoneSurface,
+    #[serde(default)]
+    pub width_m: Option<f64>,
+    #[serde(default)]
+    pub insert_depth_mm: Option<f64>,
     #[serde(default)]
     pub tags: Value,
 }
@@ -187,9 +218,29 @@ impl Feature {
             Treatment::Hide
         }
     }
+    pub fn is_zone(&self) -> bool {
+        !self.polygons.is_empty() || matches!(self.class.as_str(), "water" | "glacier" | "ski_run")
+    }
 }
 fn yes() -> bool {
     true
+}
+fn zone_class(class: &str) -> bool {
+    matches!(class, "water" | "glacier" | "ski_run")
+}
+fn default_treatment(class: &str) -> Treatment {
+    if class == "ski_lift" {
+        Treatment::VCarve
+    } else {
+        Treatment::Insert
+    }
+}
+fn default_surface(class: &str) -> ZoneSurface {
+    if class == "water" {
+        ZoneSurface::Level
+    } else {
+        ZoneSurface::Terrain
+    }
 }
 pub fn classify(p: &Value) -> Option<&'static str> {
     let p = p.get("tags").filter(|x| x.is_object()).unwrap_or(p);
@@ -212,6 +263,24 @@ pub fn classify(p: &Value) -> Option<&'static str> {
             .is_some_and(|v| v == true || ["yes", "true", "1"].contains(&v.as_str().unwrap_or("")))
     }) {
         return None;
+    }
+    if p.get("natural").and_then(Value::as_str) == Some("water")
+        || p.get("landuse").and_then(Value::as_str) == Some("reservoir")
+        || p.get("waterway").and_then(Value::as_str) == Some("riverbank")
+    {
+        return Some("water");
+    }
+    if p.get("natural").and_then(Value::as_str) == Some("glacier") {
+        return Some("glacier");
+    }
+    if p.get("piste:type").and_then(Value::as_str) == Some("downhill") {
+        return Some("ski_run");
+    }
+    if p.get("aerialway")
+        .and_then(Value::as_str)
+        .is_some_and(|v| !v.is_empty() && v != "no")
+    {
+        return Some("ski_lift");
     }
     match p.get("highway").and_then(Value::as_str).unwrap_or("") {
         "path" | "footway" | "bridleway" | "cycleway" | "track" => return Some("trail"),
@@ -236,36 +305,218 @@ fn parse_line(value: &Value) -> Vec<[f64; 2]> {
         .filter(|p| p[0].is_finite() && p[1].is_finite())
         .collect()
 }
+fn parse_osm_line(value: &Value) -> Vec<[f64; 2]> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| Some([v["lon"].as_f64()?, v["lat"].as_f64()?]))
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .collect()
+}
+fn close_ring(mut ring: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+    if ring.first() != ring.last() {
+        if let Some(first) = ring.first().copied() {
+            ring.push(first);
+        }
+    }
+    ring
+}
+fn stitch_rings(mut parts: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
+    let mut rings = vec![];
+    parts.retain(|p| p.len() >= 2);
+    while let Some(mut ring) = parts.pop() {
+        loop {
+            if ring.len() >= 4 && ring.first() == ring.last() {
+                break;
+            }
+            let Some(end) = ring.last().copied() else {
+                break;
+            };
+            let found = parts.iter().enumerate().find_map(|(i, part)| {
+                if part.first().copied() == Some(end) {
+                    Some((i, false))
+                } else if part.last().copied() == Some(end) {
+                    Some((i, true))
+                } else {
+                    None
+                }
+            });
+            let Some((i, reverse)) = found else {
+                break;
+            };
+            let mut next = parts.swap_remove(i);
+            if reverse {
+                next.reverse();
+            }
+            ring.extend(next.into_iter().skip(1));
+        }
+        // Do not manufacture a polygon from an incomplete relation. Overpass
+        // can return tainted geometry, and ski route relations can be open.
+        if ring.len() >= 4 && ring.first() == ring.last() {
+            rings.push(ring);
+        }
+    }
+    rings
+}
+fn lonlat_polygon(area: &AreaPolygon) -> Polygon<f64> {
+    let line =
+        |ring: &[[f64; 2]]| LineString(ring.iter().map(|p| Coord { x: p[0], y: p[1] }).collect());
+    Polygon::new(
+        line(&area.outer),
+        area.holes.iter().map(|r| line(r)).collect(),
+    )
+}
+fn relation_polygons(members: &[Value]) -> Vec<AreaPolygon> {
+    let mut outer_parts = vec![];
+    let mut inner_parts = vec![];
+    for member in members {
+        let line = parse_osm_line(&member["geometry"]);
+        if line.len() < 2 {
+            continue;
+        }
+        if member["role"].as_str() == Some("inner") {
+            inner_parts.push(line);
+        } else {
+            outer_parts.push(line);
+        }
+    }
+    let mut areas: Vec<AreaPolygon> = stitch_rings(outer_parts)
+        .into_iter()
+        .map(|outer| AreaPolygon {
+            outer,
+            holes: vec![],
+        })
+        .collect();
+    for hole in stitch_rings(inner_parts) {
+        if let Some(point) = hole.first() {
+            if let Some(area) = areas
+                .iter_mut()
+                .find(|a| lonlat_polygon(a).contains(&Point::new(point[0], point[1])))
+            {
+                area.holes.push(hole);
+            }
+        }
+    }
+    areas
+}
+fn geojson_polygons(g: &Value) -> Vec<AreaPolygon> {
+    let area = |v: &Value| -> Option<AreaPolygon> {
+        let rings = v.as_array()?;
+        let outer = close_ring(parse_line(rings.first()?));
+        if outer.len() < 4 {
+            return None;
+        }
+        let holes = rings
+            .iter()
+            .skip(1)
+            .map(parse_line)
+            .map(close_ring)
+            .filter(|r| r.len() >= 4)
+            .collect();
+        Some(AreaPolygon { outer, holes })
+    };
+    match g["type"].as_str() {
+        Some("Polygon") => area(&g["coordinates"]).into_iter().collect(),
+        Some("MultiPolygon") => g["coordinates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(area)
+            .collect(),
+        _ => vec![],
+    }
+}
+fn feature_from_parts(
+    id: String,
+    name: String,
+    class: &str,
+    lines: Vec<Vec<[f64; 2]>>,
+    polygons: Vec<AreaPolygon>,
+    tags: Value,
+) -> Feature {
+    Feature {
+        id,
+        name,
+        class: class.into(),
+        lines,
+        polygons,
+        enabled: true,
+        treatment: default_treatment(class),
+        surface: default_surface(class),
+        width_m: None,
+        insert_depth_mm: None,
+        tags,
+    }
+}
 pub fn normalize(input: &Value) -> Vec<Feature> {
     let mut out = vec![];
     if let Some(elements) = input.get("elements").and_then(Value::as_array) {
-        for e in elements {
-            if e["type"] != "way" {
-                continue;
-            }
+        let mut relation_members = HashSet::new();
+        for e in elements.iter().filter(|e| e["type"] == "relation") {
             let Some(class) = classify(&e["tags"]) else {
                 continue;
             };
-            let line: Vec<[f64; 2]> = e["geometry"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|v| Some([v["lon"].as_f64()?, v["lat"].as_f64()?]))
-                .collect();
+            let members = e["members"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+            let polygons = relation_polygons(members);
+            if polygons.is_empty() {
+                continue;
+            }
+            for member in members {
+                if let Some(id) = member["ref"].as_i64() {
+                    relation_members.insert(id);
+                }
+            }
+            let id = format!("osm:relation:{}", e["id"]);
+            let name = e["tags"]["name"].as_str().unwrap_or(class).to_string();
+            out.push(feature_from_parts(
+                id,
+                name,
+                class,
+                vec![],
+                polygons,
+                e["tags"].clone(),
+            ));
+        }
+        for e in elements.iter().filter(|e| e["type"] == "way") {
+            let Some(class) = classify(&e["tags"]) else {
+                continue;
+            };
+            if e["id"]
+                .as_i64()
+                .is_some_and(|id| relation_members.contains(&id))
+            {
+                continue;
+            }
+            let line = parse_osm_line(&e["geometry"]);
             if line.len() < 2 {
                 continue;
             }
+            let closed = line.len() >= 4 && line.first() == line.last();
+            let explicit_area = e["tags"]["area"].as_str() == Some("yes");
+            let polygons = if zone_class(class) && (closed || explicit_area) {
+                vec![AreaPolygon {
+                    outer: close_ring(line.clone()),
+                    holes: vec![],
+                }]
+            } else {
+                vec![]
+            };
+            let lines = if polygons.is_empty() {
+                vec![line]
+            } else {
+                vec![]
+            };
             let id = format!("osm:way:{}", e["id"]);
             let name = e["tags"]["name"].as_str().unwrap_or(class).to_string();
-            out.push(Feature {
+            out.push(feature_from_parts(
                 id,
                 name,
-                class: class.into(),
-                lines: vec![line],
-                enabled: true,
-                treatment: Treatment::Insert,
-                tags: e["tags"].clone(),
-            });
+                class,
+                lines,
+                polygons,
+                e["tags"].clone(),
+            ));
         }
     } else {
         for (i, f) in input["features"]
@@ -278,6 +529,7 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
                 continue;
             };
             let g = &f["geometry"];
+            let polygons = geojson_polygons(g);
             let lines = match g["type"].as_str() {
                 Some("LineString") => vec![parse_line(&g["coordinates"])],
                 Some("MultiLineString") => g["coordinates"]
@@ -286,9 +538,9 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
                     .flatten()
                     .map(parse_line)
                     .collect(),
-                _ => continue,
+                _ => vec![],
             };
-            if lines.iter().all(|l| l.len() < 2) {
+            if polygons.is_empty() && lines.iter().all(|l| l.len() < 2) {
                 continue;
             }
             let name = f["properties"]["Trail_Name"]
@@ -297,15 +549,14 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
                 .or(f["properties"]["tags"]["name"].as_str())
                 .unwrap_or(class)
                 .to_string();
-            out.push(Feature {
-                id: format!("upload:{i}"),
+            out.push(feature_from_parts(
+                format!("upload:{i}"),
                 name,
-                class: class.into(),
+                class,
                 lines,
-                enabled: true,
-                treatment: Treatment::Insert,
-                tags: f["properties"].clone(),
-            });
+                polygons,
+                f["properties"].clone(),
+            ));
         }
     }
     out
@@ -393,7 +644,8 @@ impl Mesh {
         }
         if edges.is_empty() || edges.values().any(|&(n, d)| n != 2 || d != 0) {
             return Err(format!(
-                "Mesh is not a closed consistently oriented solid: {:?}",
+                "Mesh is not a closed consistently oriented solid ({} vertices): {:?}",
+                self.positions.len() / 3,
                 edges
                     .iter()
                     .filter(|(_, &(n, d))| n != 2 || d != 0)
@@ -475,10 +727,10 @@ fn solid_between(
 fn polygon_surface(poly: &Polygon<f64>, top: impl Fn([f64; 2]) -> f64, base: f64) -> Mesh {
     polygon_surface_detail(poly, top, base, true)
 }
-fn polygon_surface_detail(
+fn polygon_between_detail(
     poly: &Polygon<f64>,
     top: impl Fn([f64; 2]) -> f64,
-    base: f64,
+    bottom: impl Fn([f64; 2]) -> f64,
     densify: bool,
 ) -> Mesh {
     let dense = |r: &LineString<f64>| {
@@ -522,7 +774,15 @@ fn polygon_surface_detail(
             t
         })
         .collect();
-    solid(pts, faces, top, base)
+    solid_between(pts, faces, top, bottom)
+}
+fn polygon_surface_detail(
+    poly: &Polygon<f64>,
+    top: impl Fn([f64; 2]) -> f64,
+    base: f64,
+    densify: bool,
+) -> Mesh {
+    polygon_between_detail(poly, top, |_| base, densify)
 }
 #[derive(Serialize, Deserialize)]
 pub struct Terrain {
@@ -768,8 +1028,44 @@ pub struct Overlay {
     pub class: String,
     pub mesh: Mesh,
 }
-fn feature_polygon(f: &Feature, l: &Layout, width: f64) -> MultiPolygon<f64> {
+const CLASS_ORDER: [&str; 7] = [
+    "water", "glacier", "ski_run", "trail", "road", "stream", "ski_lift",
+];
+fn model_polygon(area: &AreaPolygon, l: &Layout) -> Option<Polygon<f64>> {
+    let ring = |points: &[[f64; 2]]| {
+        LineString(
+            points
+                .iter()
+                .map(|p| {
+                    let p = l.xy(*p);
+                    Coord { x: p[0], y: p[1] }
+                })
+                .collect(),
+        )
+    };
+    let poly = Polygon::new(
+        ring(&area.outer),
+        area.holes.iter().map(|h| ring(h)).collect(),
+    );
+    (area.outer.len() >= 4 && poly.is_valid()).then_some(poly)
+}
+fn feature_polygon(
+    f: &Feature,
+    l: &Layout,
+    s: &Settings,
+    extra_width_mm: f64,
+) -> MultiPolygon<f64> {
     let mut out = MultiPolygon(vec![]);
+    for area in &f.polygons {
+        if let Some(poly) = model_polygon(area, l) {
+            out = out.union(&poly);
+        }
+    }
+    let width = if f.class == "ski_run" {
+        f.width_m.unwrap_or(s.ski_run_width_m) * l.scale
+    } else {
+        s.path_width_mm
+    };
     for line in &f.lines {
         let ls = LineString(
             line.iter()
@@ -779,9 +1075,132 @@ fn feature_polygon(f: &Feature, l: &Layout, width: f64) -> MultiPolygon<f64> {
                 })
                 .collect(),
         );
-        out = out.union(&ls.buffer(width / 2.));
+        out = out.union(&ls.buffer((width + extra_width_mm) / 2.));
     }
     out
+}
+fn feature_level(f: &Feature, g: &Grid, l: &Layout, poly: &Polygon<f64>) -> Option<f64> {
+    if f.surface != ZoneSurface::Level {
+        return None;
+    }
+    let mut level = f64::NEG_INFINITY;
+    for c in &poly.exterior().0 {
+        level = level.max(l.z(g, [c.x, c.y]));
+    }
+    for ring in poly.interiors() {
+        for c in &ring.0 {
+            level = level.max(l.z(g, [c.x, c.y]));
+        }
+    }
+    if let Some(c) = poly.centroid() {
+        level = level.max(l.z(g, [c.x(), c.y()]));
+    }
+    level.is_finite().then_some(level)
+}
+fn terrain_patch(
+    poly: &Polygon<f64>,
+    g: &Grid,
+    l: &Layout,
+    top: impl Fn([f64; 2]) -> f64,
+    bottom: impl Fn([f64; 2]) -> f64,
+) -> Result<Mesh, String> {
+    use spade::Triangulation;
+    let mut vertices = vec![];
+    let mut edges = vec![];
+    let mut add_ring = |ring: &LineString<f64>| {
+        let start = vertices.len();
+        let coords = &ring.0;
+        let count = coords
+            .len()
+            .saturating_sub(usize::from(coords.first() == coords.last()));
+        let mut dense = vec![];
+        for index in 0..count {
+            let a = coords[index];
+            let b = coords[(index + 1) % count];
+            let steps = (((b.x - a.x).hypot(b.y - a.y) / 0.6).ceil() as usize).max(1);
+            for step in 0..steps {
+                let f = step as f64 / steps as f64;
+                dense.push([a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f]);
+            }
+        }
+        for q in &dense {
+            vertices.push(Vertex {
+                p: spade::Point2::new(q[0], q[1]),
+                z: l.z(g, *q),
+            });
+        }
+        for i in 0..dense.len() {
+            edges.push([start + i, start + (i + 1) % dense.len()]);
+        }
+    };
+    add_ring(poly.exterior());
+    for ring in poly.interiors() {
+        add_ring(ring);
+    }
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for c in &poly.exterior().0 {
+        let q = l.lonlat([c.x, c.y]);
+        bounds[0] = bounds[0].min(q[0]);
+        bounds[1] = bounds[1].min(q[1]);
+        bounds[2] = bounds[2].max(q[0]);
+        bounds[3] = bounds[3].max(q[1]);
+    }
+    let index = |value: f64, min: f64, max: f64, count: usize| {
+        (value - min) / (max - min) * (count - 1) as f64
+    };
+    let i0 = (index(bounds[0], g.bounds[0], g.bounds[2], g.width).floor() as isize - 1)
+        .clamp(0, g.width as isize - 1) as usize;
+    let i1 = (index(bounds[2], g.bounds[0], g.bounds[2], g.width).ceil() as isize + 1)
+        .clamp(0, g.width as isize - 1) as usize;
+    let j0 = (index(bounds[1], g.bounds[1], g.bounds[3], g.height).floor() as isize - 1)
+        .clamp(0, g.height as isize - 1) as usize;
+    let j1 = (index(bounds[3], g.bounds[1], g.bounds[3], g.height).ceil() as isize + 1)
+        .clamp(0, g.height as isize - 1) as usize;
+    for j in j0..=j1 {
+        for i in i0..=i1 {
+            let q = l.xy([
+                g.bounds[0] + i as f64 / (g.width - 1) as f64 * (g.bounds[2] - g.bounds[0]),
+                g.bounds[1] + j as f64 / (g.height - 1) as f64 * (g.bounds[3] - g.bounds[1]),
+            ]);
+            if poly.contains(&Point::new(q[0], q[1])) {
+                vertices.push(Vertex {
+                    p: spade::Point2::new(q[0], q[1]),
+                    z: l.z(g, q),
+                });
+            }
+        }
+    }
+    let dt = spade::ConstrainedDelaunayTriangulation::<Vertex>::bulk_load_cdt(vertices, edges)
+        .map_err(|e| format!("Could not triangulate conformal zone: {e:?}"))?;
+    let points: Vec<[f64; 2]> = dt
+        .vertices()
+        .map(|v| [v.position().x, v.position().y])
+        .collect();
+    let mut seen = HashSet::new();
+    let faces = dt
+        .inner_faces()
+        .filter_map(|f| {
+            let v = f.vertices();
+            let face = [
+                v[0].fix().index() as u32,
+                v[1].fix().index() as u32,
+                v[2].fix().index() as u32,
+            ];
+            let a = points[face[0] as usize];
+            let b = points[face[1] as usize];
+            let c = points[face[2] as usize];
+            let center = Point::new((a[0] + b[0] + c[0]) / 3., (a[1] + b[1] + c[1]) / 3.);
+            let mut key = face;
+            key.sort_unstable();
+            (poly.contains(&center) && seen.insert(key)).then_some(face)
+        })
+        .collect();
+    Ok(solid_between(points, faces, top, bottom))
 }
 fn feature_boundary(s: &Settings, l: &Layout) -> MultiPolygon<f64> {
     let b = if s.boundary.len() >= 3 {
@@ -789,7 +1208,7 @@ fn feature_boundary(s: &Settings, l: &Layout) -> MultiPolygon<f64> {
     } else {
         rectangle(l.width, l.depth)
     };
-    b.buffer(-2. * s.path_width_mm)
+    b.buffer(-s.path_clearance_mm.max(0.15))
 }
 // Preview ribbons follow the surface on both sides instead of extending to the model base.
 fn preview_ribbon(poly: &Polygon<f64>, surface: impl Fn([f64; 2]) -> f64) -> Mesh {
@@ -808,25 +1227,23 @@ pub fn overlays(
 ) -> Result<Vec<Overlay>, String> {
     s.validate()?;
     let clip = feature_boundary(s, l);
-    let mut occupied = MultiPolygon(vec![]);
     let mut occupied_inserts = MultiPolygon(vec![]);
     let mut out = vec![];
-    for class in ["trail", "road", "stream"] {
+    for class in CLASS_ORDER {
         let mut inserts = MultiPolygon(vec![]);
         for f in features
             .iter()
             .filter(|f| f.class == class && f.treatment() == Treatment::Insert)
         {
-            inserts = inserts.union(&feature_polygon(f, l, s.path_width_mm));
+            inserts = inserts.union(&feature_polygon(f, l, s, 0.));
         }
         let allowed =
             clip.difference(&occupied_inserts.union(&inserts.buffer(s.path_clearance_mm / 2.)));
-        let mut carved = MultiPolygon(vec![]);
         for f in features
             .iter()
             .filter(|f| f.class == class && f.treatment() != Treatment::Hide)
         {
-            let footprint = feature_polygon(f, l, s.path_width_mm);
+            let footprint = feature_polygon(f, l, s, 0.);
             let footprint = if f.treatment() == Treatment::VCarve {
                 footprint.buffer(-0.001).buffer(0.001)
             } else {
@@ -839,12 +1256,34 @@ pub fn overlays(
             });
             for (i, p) in polygons.0.iter().enumerate() {
                 let mesh = if f.treatment() == Treatment::VCarve {
-                    carve::surface(
-                        carve::mesh(g, s, f, l, p, 10000., false)
-                            .map_err(|e| format!("{} groove: {e}", f.id))?,
-                    )
+                    if f.is_zone() {
+                        let level = feature_level(f, g, l, p);
+                        if let Some(level) = level {
+                            preview_ribbon(p, |_| level - s.carve_depth_mm)
+                        } else {
+                            terrain_patch(
+                                p,
+                                g,
+                                l,
+                                |q| l.z(g, q) - s.carve_depth_mm + 0.02,
+                                |q| l.z(g, q) - s.carve_depth_mm,
+                            )?
+                        }
+                    } else {
+                        carve::surface(
+                            carve::mesh(g, s, f, l, p, 10000., false)
+                                .map_err(|e| format!("{} groove: {e}", f.id))?,
+                        )
+                    }
                 } else {
-                    preview_ribbon(p, |p| l.z(g, p))
+                    let level = feature_level(f, g, l, p);
+                    if let Some(level) = level {
+                        preview_ribbon(p, |_| level)
+                    } else if f.is_zone() {
+                        terrain_patch(p, g, l, |q| l.z(g, q) + 0.35, |q| l.z(g, q))?
+                    } else {
+                        preview_ribbon(p, |q| l.z(g, q))
+                    }
                 };
                 out.push(Overlay {
                     treatment: f.treatment(),
@@ -853,11 +1292,7 @@ pub fn overlays(
                     mesh,
                 });
             }
-            if f.treatment() == Treatment::VCarve {
-                carved = carved.union(&polygons);
-            }
         }
-        occupied = occupied.union(&inserts).union(&carved);
         occupied_inserts = occupied_inserts.union(&inserts);
     }
     Ok(out)
@@ -868,11 +1303,121 @@ pub struct Piece {
     pub class: String,
     pub mesh: Mesh,
     pub origin: [f64; 3],
+    #[serde(default)]
+    pub conformal: bool,
 }
 #[derive(Serialize, Deserialize)]
 pub struct Plan {
     pub inserts: Vec<Piece>,
     pub cutters: Vec<Mesh>,
+}
+fn add_insert_layer(
+    out: &mut Plan,
+    g: &Grid,
+    s: &Settings,
+    l: &Layout,
+    class: &str,
+    layer: &MultiPolygon<f64>,
+    feature: Option<&Feature>,
+    seg: [f64; 2],
+    roof: f64,
+    serial: &mut usize,
+) -> Result<(), String> {
+    let zone = feature.is_some_and(Feature::is_zone);
+    let depth = feature.and_then(|f| f.insert_depth_mm).unwrap_or(if zone {
+        s.zone_insert_depth_mm
+    } else {
+        s.insert_depth_mm
+    });
+    let floor = if zone { s.zone_floor_mm } else { 0.4 };
+    // A level zone keeps one elevation across segmentation cells, so splitting a
+    // large reservoir for a smaller bed never creates visible steps.
+    let fixed_level = feature.and_then(|f| {
+        layer
+            .0
+            .iter()
+            .filter_map(|p| feature_level(f, g, l, p))
+            .max_by(f64::total_cmp)
+    });
+    for row in 0..(l.depth / seg[1]).ceil() as usize {
+        for col in 0..(l.width / seg[0]).ceil() as usize {
+            let x = col as f64 * seg[0];
+            let y = row as f64 * seg[1];
+            let cell = polygon(&[
+                [x, y],
+                [x + seg[0], y],
+                [x + seg[0], y + seg[1]],
+                [x, y + seg[1]],
+            ]);
+            let pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
+            let parts = layer
+                .intersection(&cell.buffer(-s.insert_gap_mm / 2.))
+                .buffer(-0.001)
+                .buffer(0.001);
+            if parts.0.is_empty() {
+                continue;
+            }
+            let top = |q| fixed_level.unwrap_or_else(|| l.z(g, q)) + 0.35;
+            let mut base = f64::INFINITY;
+            for pocket in &pockets.0 {
+                for c in &pocket.exterior().0 {
+                    base = base.min(top([c.x, c.y]) - depth);
+                }
+                for ring in pocket.interiors() {
+                    for c in &ring.0 {
+                        base = base.min(top([c.x, c.y]) - depth);
+                    }
+                }
+            }
+            if !base.is_finite() {
+                continue;
+            }
+            base = base.max(floor + 0.15);
+            for (i, part) in parts.0.iter().enumerate() {
+                // Terrain-following inserts are emitted as simple prisms here.
+                // The browser solid engine intersects each prism with the
+                // original terrain shifted upward by the visible protrusion.
+                // That reuses the exact terrain triangles and avoids a second,
+                // independently triangulated surface along the zone boundary.
+                let conformal = zone && fixed_level.is_none();
+                let mut mesh = if conformal {
+                    polygon_surface(part, |_| roof, base)
+                } else {
+                    polygon_surface(part, top, base)
+                };
+                mesh.validate()
+                    .map_err(|e| format!("{class} insert {row},{col},{i}: {e}"))?;
+                let mut origin = [f64::INFINITY; 3];
+                for p in mesh.positions.chunks_exact(3) {
+                    for k in 0..3 {
+                        origin[k] = origin[k].min(p[k]);
+                    }
+                }
+                for p in mesh.positions.chunks_exact_mut(3) {
+                    for k in 0..3 {
+                        p[k] -= origin[k];
+                    }
+                }
+                *serial += 1;
+                out.inserts.push(Piece {
+                    id: format!("{class}-z{}-r{}-c{}-{}", *serial, row + 1, col + 1, i + 1),
+                    class: class.into(),
+                    mesh,
+                    origin,
+                    conformal,
+                });
+            }
+            for pocket in pockets.buffer(s.path_clearance_mm / 2.).0 {
+                let cutter =
+                    polygon_surface_detail(&pocket, |_| roof, (base - 0.15).max(floor), false);
+                cutter
+                    .validate()
+                    .map_err(|e| format!("{class} pocket {row},{col}: {e}"))?;
+                out.cutters.push(cutter);
+            }
+        }
+    }
+    Ok(())
 }
 pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<Plan, String> {
     s.validate()?;
@@ -887,23 +1432,28 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         .insert_segment_size_mm
         .map(|v| [v, v])
         .unwrap_or(s.max_print_size_mm);
-    let roof = g
+    let roof = (g
         .elevations
         .iter()
         .copied()
-        .fold(f64::NEG_INFINITY, f64::max);
-    let roof = (roof - l.minimum) * l.scale * l.height_factor + l.base_height + 5.;
-    for class in ["trail", "road", "stream"] {
+        .fold(f64::NEG_INFINITY, f64::max)
+        - l.minimum)
+        * l.scale
+        * l.height_factor
+        + l.base_height
+        + 5.;
+    let mut serial = 0;
+    for class in CLASS_ORDER {
+        let occupied_before = occupied.clone();
         let mut union = MultiPolygon(vec![]);
-        for f in features
+        let insert_features: Vec<_> = features
             .iter()
             .filter(|f| f.treatment() == Treatment::Insert && f.class == class)
-        {
-            union = union.union(&feature_polygon(f, l, s.path_width_mm));
+            .collect();
+        for f in &insert_features {
+            union = union.union(&feature_polygon(f, l, s, 0.));
         }
         let layer = union.intersection(&clip).difference(&occupied);
-        // Overlap cutters slightly inside the pocket clearance to avoid coincident Boolean walls.
-        // Keep the actual insert footprint protected, even with zero clearance.
         let protected = occupied_inserts
             .union(&layer)
             .buffer((s.path_clearance_mm / 2. - 0.002).max(0.));
@@ -913,73 +1463,65 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             .iter()
             .filter(|f| f.class == class && f.treatment() == Treatment::VCarve)
         {
-            let domain = feature_polygon(f, l, s.path_width_mm + 0.002)
+            let domain = feature_polygon(f, l, s, 0.002)
                 .buffer(-0.001)
                 .buffer(0.001)
                 .intersection(&allowed);
             for p in &domain.0 {
-                out.cutters.push(carve::mesh(g, s, f, l, p, roof, true)?);
+                let mesh = if f.is_zone() {
+                    polygon_between_detail(
+                        p,
+                        |_| roof,
+                        |q| (l.z(g, q) - s.carve_depth_mm).max(s.zone_floor_mm),
+                        true,
+                    )
+                } else {
+                    carve::mesh(g, s, f, l, p, roof, true)?
+                };
+                mesh.validate()
+                    .map_err(|e| format!("{} recess: {e}", f.id))?;
+                out.cutters.push(mesh);
             }
             carved = carved.union(&domain);
         }
+        if zone_class(class) {
+            let mut claimed = MultiPolygon(vec![]);
+            for f in insert_features {
+                let individual = feature_polygon(f, l, s, 0.)
+                    .intersection(&clip)
+                    .difference(&occupied_before)
+                    .intersection(&layer)
+                    .difference(&claimed);
+                add_insert_layer(
+                    &mut out,
+                    g,
+                    s,
+                    l,
+                    class,
+                    &individual,
+                    Some(f),
+                    seg,
+                    roof,
+                    &mut serial,
+                )?;
+                claimed = claimed.union(&individual);
+            }
+        } else {
+            add_insert_layer(
+                &mut out,
+                g,
+                s,
+                l,
+                class,
+                &layer,
+                None,
+                seg,
+                roof,
+                &mut serial,
+            )?;
+        }
         occupied = occupied.union(&layer).union(&carved);
         occupied_inserts = occupied_inserts.union(&layer);
-        for row in 0..(l.depth / seg[1]).ceil() as usize {
-            for col in 0..(l.width / seg[0]).ceil() as usize {
-                let x = col as f64 * seg[0];
-                let y = row as f64 * seg[1];
-                let cell = polygon(&[
-                    [x, y],
-                    [x + seg[0], y],
-                    [x + seg[0], y + seg[1]],
-                    [x, y + seg[1]],
-                ]);
-                let pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
-                // Remove microscopic point contacts before triangulating printable inserts.
-                let parts = layer
-                    .intersection(&cell.buffer(-s.insert_gap_mm / 2.))
-                    .buffer(-0.001)
-                    .buffer(0.001);
-                let mut base = f64::INFINITY;
-                for p in &pockets.0 {
-                    for c in &p.exterior().0 {
-                        base = base.min(l.z(g, [c.x, c.y]) - s.insert_depth_mm);
-                    }
-                }
-                if !base.is_finite() {
-                    continue;
-                }
-                base = base.max(0.75);
-                for (i, p) in parts.0.iter().enumerate() {
-                    let mut mesh = polygon_surface(p, |p| l.z(g, p) + 0.35, base);
-                    mesh.validate()
-                        .map_err(|e| format!("{class} insert {row},{col},{i}: {e}"))?;
-                    let mut origin = [f64::INFINITY; 3];
-                    for p in mesh.positions.chunks_exact(3) {
-                        for k in 0..3 {
-                            origin[k] = origin[k].min(p[k]);
-                        }
-                    }
-                    for p in mesh.positions.chunks_exact_mut(3) {
-                        for k in 0..3 {
-                            p[k] -= origin[k];
-                        }
-                    }
-                    out.inserts.push(Piece {
-                        id: format!("{class}-r{}-c{}-{}", row + 1, col + 1, i + 1),
-                        class: class.into(),
-                        mesh,
-                        origin,
-                    });
-                }
-                for p in pockets.buffer(s.path_clearance_mm / 2.).0 {
-                    let mesh = polygon_surface_detail(&p, |_| roof, (base - 0.15).max(0.4), false);
-                    mesh.validate()
-                        .map_err(|e| format!("{class} pocket {row},{col}: {e}"))?;
-                    out.cutters.push(mesh);
-                }
-            }
-        }
     }
     Ok(out)
 }
@@ -1008,9 +1550,15 @@ pub fn copernicus_urls(b: [f64; 4], ninety: bool) -> Result<Vec<String>, String>
     }
     Ok(urls)
 }
-pub fn overpass_query(b: [f64; 4]) -> Result<String, String> {
+pub fn overpass_query(b: [f64; 4], winter: bool) -> Result<String, String> {
     validate_bounds(b)?;
-    Ok(format!("[out:json][timeout:45];(way[highway~\"^(path|footway|bridleway|cycleway|track|motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street)$\"]({},{},{},{});way[waterway~\"^(river|stream|drain|ditch)$\"]({},{},{},{}););out body geom;",b[1],b[0],b[3],b[2],b[1],b[0],b[3],b[2]))
+    let bbox = format!("({},{},{},{})", b[1], b[0], b[3], b[2]);
+    let winter_query = if winter {
+        format!("way[\"piste:type\"=\"downhill\"]{bbox};relation[\"piste:type\"=\"downhill\"]{bbox};way[aerialway]{bbox};")
+    } else {
+        String::new()
+    };
+    Ok(format!("[out:json][timeout:45];(way[highway~\"^(path|footway|bridleway|cycleway|track|motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street)$\"]{bbox};way[waterway~\"^(river|stream|drain|ditch)$\"]{bbox};way[natural=water]{bbox};relation[natural=water][type=multipolygon]{bbox};way[landuse=reservoir]{bbox};relation[landuse=reservoir][type=multipolygon]{bbox};way[waterway=riverbank]{bbox};relation[waterway=riverbank][type=multipolygon]{bbox};way[natural=glacier]{bbox};relation[natural=glacier][type=multipolygon]{bbox};{winter_query});out body geom;"))
 }
 #[cfg(test)]
 mod tests {

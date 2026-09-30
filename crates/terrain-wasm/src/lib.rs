@@ -48,6 +48,6 @@ pub fn source_urls(bounds: &str, ninety: bool) -> Result<String, JsValue> {
     .map_err(err)
 }
 #[wasm_bindgen]
-pub fn osm_query(bounds: &str) -> Result<String, JsValue> {
-    overpass_query(serde_json::from_str(bounds).map_err(err)?).map_err(err)
+pub fn osm_query(bounds: &str, winter: bool) -> Result<String, JsValue> {
+    overpass_query(serde_json::from_str(bounds).map_err(err)?, winter).map_err(err)
 }

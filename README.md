@@ -1,11 +1,13 @@
 # Contour Workbench
 
-Design printable landscapes in your browser with Rust/WASM and Three.js. Draw a polygon on an OpenStreetMap slippy map, load elevation, choose trails, roads, and streams, and export terrain with fitted inserts.
+Design printable landscapes in your browser with Rust/WASM and Three.js. Draw a polygon on an OpenStreetMap slippy map, load elevation, choose paths and polygon zones, and export terrain with fitted inserts.
 
 - Full source resolution by default; optional adaptive simplification.
 - Concave polygon extents with draggable vertices, undo, and redraw.
 - USGS 3DEP, geographic GeoTIFF imports, and Copernicus download links.
-- Direct OpenStreetMap queries and GeoJSON imports.
+- Direct OpenStreetMap queries for paths, water, glaciers, ski runs, and lifts, plus GeoJSON imports.
+- Winter mode with broad white ski-run inserts and chair-lift grooves.
+- Continuous shallow zone inlays retain a supporting terrain floor and multipolygon islands.
 - Instant feature toggles, solid review, and STL bundles.
 - Static hosting on GitHub Pages. No Python runtime or backend.
 
@@ -45,4 +47,5 @@ npm run build
 npx playwright install chromium
 node tests/smoke.mjs
 node tests/polygon-smoke.mjs
+node tests/zone-cases.mjs
 ```

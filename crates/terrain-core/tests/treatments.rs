@@ -17,8 +17,12 @@ fn fixture() -> (Grid, Settings, Feature) {
         name: "Test".into(),
         class: "trail".into(),
         lines: vec![vec![[0.00025, 0.0005], [0.00075, 0.0005]]],
+        polygons: vec![],
         enabled: true,
         treatment: Treatment::VCarve,
+        surface: ZoneSurface::Terrain,
+        width_m: None,
+        insert_depth_mm: None,
         tags: serde_json::Value::Null,
     };
     (g, s, f)

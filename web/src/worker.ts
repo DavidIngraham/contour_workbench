@@ -25,7 +25,7 @@ function syncBase(next:Settings){if(!terrain)return;const delta=next.base_height
 async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{await ready;switch(type){
  case 'classify':return JSON.parse(core.classify_features(JSON.stringify(p)));
  case 'urls':return JSON.parse(core.source_urls(JSON.stringify(p.bounds),p.ninety));
- case 'query':return core.osm_query(JSON.stringify(p));
+ case 'query':return core.osm_query(JSON.stringify(p.bounds??p),Boolean(p.winter));
  case 'terrain':grid=p.grid;settings=p.settings;features=p.features;progress(settings.terrain_max_error_mm>0?`Building adaptive terrain (≤ ${settings.terrain_max_error_mm} mm sampled error)…`:'Building terrain at full source resolution…');terrain=JSON.parse(core.build_terrain(JSON.stringify(grid),JSON.stringify(settings)));terrainBuilds++;return {...terrain,mesh:packed(terrain.mesh),terrainBuilds};
  case 'overlays':syncBase(p.settings);features=p.features;settings=p.settings;progress('Draping features over the terrain…');return JSON.parse(core.build_overlays(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))).map((o:Overlay)=>({...o,mesh:packed(o.mesh)}));
  case 'generate':{
@@ -33,7 +33,69 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
  if(!manifold){progress('Loading the solid geometry engine…');manifold=await ManifoldModule({locateFile:()=>manifoldUrl});manifold.setup();}const M=manifold;
  const solid=(m:Mesh)=>{const mesh=new M.Mesh({numProp:3,vertProperties:new Float32Array(m.positions),triVerts:new Uint32Array(m.indices)});mesh.merge();const result=new M.Manifold(mesh);if(result.status()!=='NoError'){const error=result.status();result.delete();throw new Error(`Solid geometry is invalid: ${error}`);}return result;};
  const validatedMesh=(input:InstanceType<typeof M.Manifold>,label:string):Mesh=>{let last:unknown;for(const tolerance of [0,0.0001,0.001,0.005]){const clean=tolerance?input.simplify(tolerance):input;try{const raw=clean.getMesh();const source={positions:Array.from(raw.vertProperties),indices:Array.from(raw.triVerts)};for(const weldTolerance of [0.0000001,0.000001,0.00001,0.0001]){try{const mesh=exportMesh(source,weldTolerance);validate(mesh);return mesh;}catch(e){last=e;}}throw last;}catch(e){last=e;}finally{if(clean!==input)clean.delete();}}throw new Error(label+': '+String(last));};
- let result=solid(terrain.mesh);const cutters=[];try{for(const cut of plan.cutters)cutters.push(solid(cut));if(cutters.length){progress(`Cutting terrain for ${plan.inserts.length} pieces…`);const combined=M.Manifold.union(cutters);const next=result.subtract(combined);result.delete();combined.delete();result=next;}if(result.status()!=='NoError'||result.numTri()===0)throw new Error('Terrain subtraction did not produce a valid solid');if(p.annotations?.length){progress('Adding annotations and attached porches…');for(const a of p.annotations as Annotation[]){if(!a.enabled)continue;const geometry=annotationGeometry(a,grid,settings,terrain.layout);if(geometry.porch){const porch=solid(geometry.porch);const next=result.add(porch);porch.delete();result.delete();result=next;}const parts=geometry.solids.map(m=>solid(m));try{const label=M.Manifold.union(parts);const next=a.treatment==='raised'?result.add(label):result.subtract(label);label.delete();result.delete();result=next;}finally{parts.forEach(m=>m.delete());}if(result.status()!=='NoError')throw new Error('Annotation '+a.name+' could not form a solid. Move it or adjust its size.');}}const mesh=validatedMesh(result,'Terrain');for(const piece of plan.inserts){const raw=solid(piece.mesh);try{piece.mesh=validatedMesh(raw,piece.id);}finally{raw.delete();}}plan.inserts=plan.inserts.filter(p=>p.mesh.indices.length>0);return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length},revision:p.revision};}finally{result.delete();cutters.forEach(c=>c.delete());}}
+ let result=solid(terrain.mesh);
+ const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?result.translate([0,0,0.35]):undefined;
+ const cutters:InstanceType<typeof M.Manifold>[]=[];
+ try{
+  for(const cut of plan.cutters)cutters.push(solid(cut));
+  if(cutters.length){
+   progress(`Cutting terrain for ${plan.inserts.length} pieces…`);
+   const combined=M.Manifold.union(cutters);
+   const next=result.subtract(combined);
+   result.delete();
+   combined.delete();
+   result=next;
+  }
+  if(result.status()!=='NoError'||result.numTri()===0)throw new Error('Terrain subtraction did not produce a valid solid');
+  if(p.annotations?.length){
+   progress('Adding annotations and attached porches…');
+   for(const a of p.annotations as Annotation[]){
+    if(!a.enabled)continue;
+    const geometry=annotationGeometry(a,grid,settings,terrain.layout);
+    if(geometry.porch){
+     const porch=solid(geometry.porch);
+     const next=result.add(porch);
+     porch.delete();
+     result.delete();
+     result=next;
+    }
+    const parts=geometry.solids.map(m=>solid(m));
+    try{
+     const label=M.Manifold.union(parts);
+     const next=a.treatment==='raised'?result.add(label):result.subtract(label);
+     label.delete();
+     result.delete();
+     result=next;
+    }finally{parts.forEach(m=>m.delete());}
+    if(result.status()!=='NoError')throw new Error('Annotation '+a.name+' could not form a solid. Move it or adjust its size.');
+   }
+  }
+  const mesh=validatedMesh(result,'Terrain');
+  for(const piece of plan.inserts){
+   const prism=solid(piece.mesh);
+   let raw=prism;
+   try{
+    if(piece.conformal){
+     if(!raisedTerrain)throw new Error('Terrain surface is unavailable for '+piece.id);
+     const global=prism.translate(piece.origin);
+     const fitted=global.intersect(raisedTerrain);
+     global.delete();
+     raw=fitted.translate(piece.origin.map(v=>-v) as [number,number,number]);
+     fitted.delete();
+    }
+    piece.mesh=validatedMesh(raw,piece.id);
+   }finally{
+    if(raw!==prism)raw.delete();
+    prism.delete();
+   }
+  }
+  plan.inserts=plan.inserts.filter(p=>p.mesh.indices.length>0);
+  return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length},revision:p.revision};
+ }finally{
+  result.delete();
+  raisedTerrain?.delete();
+  cutters.forEach(c=>c.delete());
+ }}
  case 'export':{const asset=p.asset as Asset;const project=p.project as Project;progress('Packaging validated STL files…');const files:Record<string,Uint8Array>={'terrain.stl':stl(asset.terrain),'project.contour.json':strToU8(JSON.stringify(project)),'validation.json':strToU8(JSON.stringify(asset.validation,null,2)),'attribution.txt':strToU8(project.source.attribution+'\nOpenStreetMap data: © OpenStreetMap contributors, ODbL. https://www.openstreetmap.org/copyright\n')};for(const piece of asset.inserts)files[`inserts/${piece.id}.stl`]=stl(piece.mesh);files['insert_manifest.json']=strToU8(JSON.stringify({units:'mm',settings:project.settings,source:project.source,pieces:asset.inserts.map(i=>({file:`${i.id}.stl`,class:i.class,assembly_origin_mm:i.origin}))},null,2));return zipSync(files,{level:3});}
  default:throw new Error('Unknown operation');}}
 self.onmessage=async(e:MessageEvent)=>{const {id,type,payload}=e.data;try{const result=await handle(type,payload,message=>self.postMessage({id,progress:message}));const transfers:Transferable[]=[];const visit=(v:any)=>{if(ArrayBuffer.isView(v)){transfers.push(v.buffer as ArrayBuffer);}else if(v&&typeof v==='object')Object.values(v).forEach(visit);};visit(result);self.postMessage({id,result},[...new Set(transfers)]);}catch(error){self.postMessage({id,error:error instanceof Error?error.message:String(error)});}};
