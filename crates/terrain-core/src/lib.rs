@@ -935,7 +935,11 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                     [x, y + seg[1]],
                 ]);
                 let pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
-                let parts = layer.intersection(&cell.buffer(-s.insert_gap_mm / 2.));
+                // Remove microscopic point contacts before triangulating printable inserts.
+                let parts = layer
+                    .intersection(&cell.buffer(-s.insert_gap_mm / 2.))
+                    .buffer(-0.001)
+                    .buffer(0.001);
                 let mut base = f64::INFINITY;
                 for p in &pockets.0 {
                     for c in &p.exterior().0 {
