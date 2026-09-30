@@ -49,3 +49,7 @@ node tests/smoke.mjs
 node tests/polygon-smoke.mjs
 node tests/zone-cases.mjs
 ```
+
+### Nozzle-aware insert fit
+
+Print setup records nozzle diameter (0.4 mm by default), pocket clearance per side, lower-layer elephant-foot relief, taper height, and assembly draft. Generated inserts keep a full-width seating band at the visible surface and taper only the buried geometry. Thin line inserts clamp the taper so their first layer remains at least one extrusion wide. Every print bundle includes a numbered four-fit calibration coupon, which can also be downloaded independently before generating a terrain model.

@@ -74,6 +74,14 @@ fn connected_zone_is_one_supported_watertight_insert() {
     assert!(!plan.cutters.is_empty());
     assert!(plan.inserts[0].origin[2] >= s.zone_floor_mm);
     plan.inserts[0].mesh.validate().unwrap();
+    let width = |positions: &[f64]| {
+        let xs: Vec<_> = positions.chunks_exact(3).map(|p| p[0]).collect();
+        xs.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - xs.iter().copied().fold(f64::INFINITY, f64::min)
+    };
+    let insert_width = width(&plan.inserts[0].mesh.positions);
+    let pocket_width = width(&plan.cutters[0].positions);
+    assert!(pocket_width - insert_width >= 2. * s.insert_fit_clearance_per_side_mm - 0.01);
     for cutter in plan.cutters {
         cutter.validate().unwrap();
         assert!(cutter

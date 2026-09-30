@@ -1,9 +1,11 @@
 
 import assert from 'node:assert/strict';
 import {chromium} from '@playwright/test';
+import {readFile,mkdir} from 'node:fs/promises';
+import {unzipSync} from 'fflate';
 
 const defaults={
- max_print_size_mm:[180,160],height_factor:1,base_height_mm:2,path_width_mm:1,path_clearance_mm:.15,
+ max_print_size_mm:[180,160],height_factor:1,base_height_mm:2,path_width_mm:1,path_clearance_mm:.15,nozzle_diameter_mm:.4,insert_fit_clearance_per_side_mm:.15,insert_elephant_foot_relief_mm:.18,insert_elephant_foot_height_mm:.4,insert_draft_angle_deg:1.5,
  insert_depth_mm:2,zone_insert_depth_mm:.8,zone_floor_mm:.8,ski_run_width_m:35,carve_depth_mm:.45,
  insert_gap_mm:.35,insert_segment_size_mm:null,terrain_max_error_mm:0,boundary:[]
 };
@@ -62,6 +64,8 @@ try{
   const validation=await page.evaluate(()=>window.contourDiagnostics.asset);
   assert.equal(validation.watertight,true);
   assert.ok(validation.pieces>=1);
+  const tapers=await page.evaluate(()=>window.contourDiagnostics.insertTapers);assert.ok(tapers.length>=1);assert.ok(tapers.some(t=>t.relief>0&&t.height>0));assert.ok(tapers.every(t=>t.relief>=0));
+  if(test.slug==='kingsley-reservoir'){const pending=page.waitForEvent('download');await page.locator('#download').click();const bundle=await pending;await mkdir('../temp',{recursive:true});const path='../temp/kingsley-tapered.zip';await bundle.saveAs(path);const files=unzipSync(new Uint8Array(await readFile(path)));assert.ok(files['calibration/coupon-base.stl']);assert.ok(files['calibration/calibration_manifest.json']);assert.ok(files['insert_manifest.json']);}
   await page.locator('#mode-design').click();
   await page.getByRole('button',{name:/Features/}).click();
   await row.locator('.feature-item>span').click();

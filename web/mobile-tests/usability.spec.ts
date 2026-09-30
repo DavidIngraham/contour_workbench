@@ -11,6 +11,7 @@ test('full-width model, touch controls, settings and feature editing',async({pag
  await page.locator('#mobile-settings').tap();await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded','true');
  await page.getByRole('button',{name:/^Features/,exact:false}).tap();await page.locator('[data-class-treatment="trail"]').selectOption('v_carve');await page.waitForFunction(()=>!(window as any).contourDiagnostics.overlayBusy);await page.locator('[data-toggle]').first().uncheck();await page.locator('[data-toggle]').first().check();await expect(page.locator('[data-treatment]').first()).toHaveValue('v_carve');
  const lake=page.locator('[data-feature]').filter({hasText:'Test lake'});await lake.tap();await expect(lake.locator('[data-surface]')).toBeVisible();await lake.locator('[data-surface]').selectOption('level');await expect(lake.locator('[data-zone-depth]')).toBeVisible();
+ await page.getByRole('button',{name:'Print setup',exact:true}).tap();await expect(page.locator('#nozzle-diameter')).toHaveValue('0.4');await expect(page.locator('#download-calibration')).toBeVisible();
  await page.locator('#mobile-close').tap();await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded','false');
  await page.locator('#generate').tap();await page.waitForFunction(()=>!(window as any).contourDiagnostics.busy);expect(await page.evaluate(()=>(window as any).contourDiagnostics.asset?.watertight)).toBe(true);await expect(page.locator('#download')).toBeEnabled();
 });

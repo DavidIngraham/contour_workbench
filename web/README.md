@@ -79,3 +79,7 @@ Porches snap to a straight boundary segment long enough for the content, with a 
 ## Mobile usability
 
 Phones use a full-width model with a dismissible Settings panel, larger touch targets, and a scrollable polygon dialog. Run npm run test:mobile from web for six Chromium touch-emulation checks at 320 px, 390 px, and landscape sizes. The tests cover layout overflow, settings access, feature visibility and treatment, polygon selection, annotation controls, and model generation. They also run before Pages deployment. These are emulated browser checks, not physical-device or Safari testing.
+
+## Insert fit calibration
+
+The Print setup panel defaults to a 0.4 mm nozzle and exposes nozzle-aware pocket clearance, elephant-foot relief, taper height, and draft angle. The worker builds the buried insert profile in layer-sized steps while preserving the visible footprint and terrain-conforming top. A numbered four-fit calibration base and its inserts can be downloaded separately and are included in every print bundle.

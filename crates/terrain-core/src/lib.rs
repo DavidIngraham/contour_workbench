@@ -17,6 +17,11 @@ pub struct Settings {
     pub base_height_mm: f64,
     pub path_width_mm: f64,
     pub path_clearance_mm: f64,
+    pub nozzle_diameter_mm: f64,
+    pub insert_fit_clearance_per_side_mm: f64,
+    pub insert_elephant_foot_relief_mm: f64,
+    pub insert_elephant_foot_height_mm: f64,
+    pub insert_draft_angle_deg: f64,
     pub insert_depth_mm: f64,
     pub zone_insert_depth_mm: f64,
     pub zone_floor_mm: f64,
@@ -33,8 +38,13 @@ impl Default for Settings {
             max_print_size_mm: [248., 198.],
             height_factor: 1.,
             base_height_mm: 1.,
-            path_width_mm: 0.8,
+            path_width_mm: 0.9,
             path_clearance_mm: 0.1,
+            nozzle_diameter_mm: 0.4,
+            insert_fit_clearance_per_side_mm: 0.15,
+            insert_elephant_foot_relief_mm: 0.18,
+            insert_elephant_foot_height_mm: 0.4,
+            insert_draft_angle_deg: 1.5,
             insert_depth_mm: 2.,
             zone_insert_depth_mm: 0.8,
             zone_floor_mm: 0.8,
@@ -83,6 +93,7 @@ impl Settings {
             self.base_height_mm,
             self.path_width_mm,
             self.path_clearance_mm,
+            self.nozzle_diameter_mm,
             self.insert_depth_mm,
             self.zone_insert_depth_mm,
             self.zone_floor_mm,
@@ -94,8 +105,24 @@ impl Settings {
                 return Err("Dimensions must be finite and positive".into());
             }
         }
-        if !self.terrain_max_error_mm.is_finite() || self.terrain_max_error_mm < 0. {
-            return Err("Height error must be nonnegative".into());
+        for v in [
+            self.insert_fit_clearance_per_side_mm,
+            self.insert_elephant_foot_relief_mm,
+            self.insert_elephant_foot_height_mm,
+            self.insert_draft_angle_deg,
+            self.terrain_max_error_mm,
+        ] {
+            if !v.is_finite() || v < 0. {
+                return Err("Compensation values must be finite and nonnegative".into());
+            }
+        }
+        if self.nozzle_diameter_mm > 2.
+            || self.insert_fit_clearance_per_side_mm > 2.
+            || self.insert_elephant_foot_relief_mm > 2.
+            || self.insert_elephant_foot_height_mm > 5.
+            || self.insert_draft_angle_deg > 10.
+        {
+            return Err("Insert compensation is outside the supported range".into());
         }
         if self.insert_gap_mm <= self.path_clearance_mm {
             return Err("Insert gap must exceed path clearance".into());
@@ -1303,6 +1330,7 @@ pub struct Piece {
     pub class: String,
     pub mesh: Mesh,
     pub origin: [f64; 3],
+    pub insert_depth_mm: f64,
     #[serde(default)]
     pub conformal: bool,
 }
@@ -1404,10 +1432,11 @@ fn add_insert_layer(
                     class: class.into(),
                     mesh,
                     origin,
+                    insert_depth_mm: depth,
                     conformal,
                 });
             }
-            for pocket in pockets.buffer(s.path_clearance_mm / 2.).0 {
+            for pocket in pockets.buffer(s.insert_fit_clearance_per_side_mm).0 {
                 let cutter =
                     polygon_surface_detail(&pocket, |_| roof, (base - 0.15).max(floor), false);
                 cutter
