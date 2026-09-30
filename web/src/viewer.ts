@@ -49,7 +49,8 @@ export class Viewer{
  setWire(value:boolean){this.dirty=true;this.wire=value;if(this.surface)(this.surface.material as THREE.MeshStandardMaterial).wireframe=value;}
  previewHeight(scale:number){this.model.scale.z=scale;this.dirty=true;}
  setContours(value:boolean){this.dirty=true;this.contours=value;const material=this.surface?.material as THREE.MeshStandardMaterial|undefined;if(material?.userData.shader)material.userData.shader.uniforms.showContours.value=value?1:0;}
- fit(){this.dirty=true;const size=Math.max(this.layout?.width||220,this.layout?.depth||200);this.controls.target.set(0,0,12);this.camera.position.set(size*1.12,-size*1.48,size*1.30);this.controls.update();}
+ fit(){this.dirty=true;const size=Math.max(this.layout?.width||220,this.layout?.depth||200);this.controls.target.set(0,0,12);// Look southwest from the lower northeast side of Post Canyon, independent of print-bed rotation.
+ const east=size*1.65,north=size*.9;this.camera.position.set(this.layout?.rotated?-north:east,this.layout?.rotated?east:north,12+size*1.3);this.controls.update();}
  private updateNorth(){if(!this.layout)return;const center=new THREE.Vector3(0,0,10).project(this.camera);const north=new THREE.Vector3(this.layout.rotated?-10:0,this.layout.rotated?0:10,10).project(this.camera);const dx=(north.x-center.x)*this.host.clientWidth,dy=-(north.y-center.y)*this.host.clientHeight;this.onNorthAngle?.(Math.atan2(dx,-dy));}
  north(){const direction=new THREE.Vector3(this.layout?.rotated?-1:0,this.layout?.rotated?0:1,0);const radius=this.camera.position.distanceTo(this.controls.target);const polar=this.controls.getPolarAngle();this.camera.position.copy(this.controls.target).addScaledVector(direction,-radius*Math.sin(polar));this.camera.position.z=this.controls.target.z+radius*Math.cos(polar);this.controls.update();this.dirty=true;}
  setTopo(enabled:boolean){this.topoEnabled=enabled;if(this.topo)this.topo.visible=enabled;this.dirty=true;if(enabled)void this.loadTopo();}
