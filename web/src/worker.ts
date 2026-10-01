@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import {annotationGeometry,type Annotation} from './annotations';
 import {calibrationClearances,fitProfile,insetAtHeight} from './insert-fit';
+import {insetCrossSection} from './insert-taper';
 import init,* as core from './wasm/contour_wasm';
 import ManifoldModule from 'manifold-3d';
 import manifoldUrl from 'manifold-3d/manifold.wasm?url';
@@ -36,9 +37,7 @@ function taperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:number
  const profiledDepth=Math.min(totalDepth,profile.depthMm),divisions=Math.max(1,Math.ceil(profiledDepth/layerMm)),bands:any[]=[];
  try{
   for(let i=0;i<divisions;i++){
-   const z0=profiledDepth*i/divisions,z1=profiledDepth*(i+1)/divisions;let inset=insetAtHeight(profile,z0),cross:any=section,owned=false;
-   for(let retry=0;inset>1e-6&&retry<8;retry++){cross=section.offset(-inset,'Round',2,16);owned=true;if(!cross.isEmpty())break;cross.delete();owned=false;inset*=.5;}
-   if(cross.isEmpty()){if(owned)cross.delete();continue;}
+   const z0=profiledDepth*i/divisions,z1=profiledDepth*(i+1)/divisions,{cross,owned}=insetCrossSection(section,insetAtHeight(profile,z0));
    bands.push(cross.extrude(z1-z0+.0002).translate([0,0,bounds.min[2]+z0-.0001]));if(owned)cross.delete();
   }
   if(totalDepth>profiledDepth-.0001)bands.push(section.extrude(totalDepth-profiledDepth+.0002).translate([0,0,bounds.min[2]+profiledDepth-.0001]));
