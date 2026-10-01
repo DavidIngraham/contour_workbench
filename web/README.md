@@ -96,3 +96,11 @@ node scripts/build-preset.mjs path/to/model.contour.json public/examples/presets
 ```
 
 Add the resulting paths and card copy to `public/examples/catalog.json`. The third argument is optional and captures the loaded viewport.
+
+To apply an exact circular extent before building a preset, run:
+
+```sh
+node scripts/set-circle-extent.mjs input.contour.json output.contour.json 1000
+```
+
+The radius is in meters. The existing project center is retained unless longitude and latitude are supplied as two additional arguments.

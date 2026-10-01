@@ -21,6 +21,7 @@
       "image": "examples/images/mt-hood-meadows.webp",
       "bundle": "examples/presets/mt-hood-meadows.cwpack",
       "badges": [
+        "1 km radius",
         "Winter mode",
         "458 features"
       ]
