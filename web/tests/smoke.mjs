@@ -19,5 +19,5 @@ try{await page.waitForFunction(()=>!window.contourDiagnostics.busy,{},{timeout:1
 console.log('GENERATED',await page.evaluate(()=>window.contourDiagnostics));console.log('GEN STATUS',await page.locator('#status').innerText());
 await page.screenshot({path:'../temp/contour-review.png'});
 assert.equal((await page.evaluate(()=>window.contourDiagnostics)).asset?.watertight,true);
-const downloadPromise=page.waitForEvent('download',{timeout:120000});await page.locator('#download').click();const download=await downloadPromise;await download.saveAs('../temp/contour-print-bundle.zip');
+await page.locator('#download').click();await page.locator('input[name=download-format][value=stl]').check();const downloadPromise=page.waitForEvent('download',{timeout:120000});await page.locator('#download-confirm').click();const download=await downloadPromise;await download.saveAs('../temp/contour-print-bundle.zip');
 await browser.close();

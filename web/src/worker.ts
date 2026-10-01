@@ -5,6 +5,7 @@ import init,* as core from './wasm/contour_wasm';
 import ManifoldModule from 'manifold-3d';
 import manifoldUrl from 'manifold-3d/manifold.wasm?url';
 import {zipSync,strToU8} from 'fflate';
+import {buildThreeMf,type ThreeMfKind} from './three-mf';
 import type {Grid,Settings,Feature,Terrain,Overlay,Mesh,Asset,Piece,Project} from './types';
 
 const ready=init();
@@ -114,6 +115,9 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
    return zipSync(files,{level:6});
   }
   case 'calibration':{const M=await geometry(progress);progress('Building nozzle-aware fit-test pieces…');return zipSync(calibrationFiles(M,p.settings as Settings,''),{level:3});}
+  case 'export-3mf':{
+   const kind=p.kind as ThreeMfKind;progress(kind==='bambu'?'Arranging terrain and inserts across Bambu Studio plates…':'Packaging an assembled portable 3MF…');return buildThreeMf(p.asset as Asset,p.project as Project,kind);
+  }
   case 'export':{
    const asset=p.asset as Asset,project=p.project as Project;progress('Packaging validated STL files and fit test…');
    const files:Record<string,Uint8Array>={'terrain.stl':stl(asset.terrain),'project.contour.json':strToU8(JSON.stringify(project)),'validation.json':strToU8(JSON.stringify(asset.validation,null,2)),'attribution.txt':strToU8(project.source.attribution+'\nOpenStreetMap data: © OpenStreetMap contributors, ODbL. https://www.openstreetmap.org/copyright\n')};

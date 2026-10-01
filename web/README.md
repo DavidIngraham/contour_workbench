@@ -84,6 +84,8 @@ Phones use a full-width model with a dismissible Settings panel, larger touch ta
 
 The Print setup panel defaults to a 0.4 mm nozzle and exposes nozzle-aware pocket clearance, elephant-foot relief, taper height, and draft angle. The worker builds the buried insert profile in layer-sized steps while preserving the visible footprint and terrain-conforming top. A numbered four-fit calibration base and its inserts can be downloaded separately and are included in every print bundle.
 
+After generation, the Download button offers three outputs: a ZIP of separate STL files and project records, a portable assembled 3MF, or a Bambu Studio 3MF. The Bambu variant places terrain on the first plate, shelf-packs inserts onto later plates using the configured print-bed dimensions, and includes nozzle-derived process defaults without selecting a specific printer or filament profile.
+
 
 ## Landing catalog and preset packs
 
@@ -97,10 +99,10 @@ node scripts/build-preset.mjs path/to/model.contour.json public/examples/presets
 
 Add the resulting paths and card copy to `public/examples/catalog.json`. The third argument is optional and captures the loaded viewport.
 
-To apply an exact circular extent before building a preset, run:
+To apply a corner radius while preserving a preset's editable footprint, run:
 
 ```sh
-node scripts/set-circle-extent.mjs input.contour.json output.contour.json 1000
+node scripts/set-corner-radius.mjs input.contour.json output.contour.json 1000
 ```
 
-The radius is in meters. The existing project center is retained unless longitude and latitude are supplied as two additional arguments.
+The radius is in meters. The editable polygon remains intact and the rounded boundary is stored as the terrain extent.

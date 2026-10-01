@@ -65,7 +65,7 @@ try{
   assert.equal(validation.watertight,true);
   assert.ok(validation.pieces>=1);
   const tapers=await page.evaluate(()=>window.contourDiagnostics.insertTapers);assert.ok(tapers.length>=1);assert.ok(tapers.some(t=>t.relief>0&&t.height>0));assert.ok(tapers.every(t=>t.relief>=0));
-  if(test.slug==='kingsley-reservoir'){const pending=page.waitForEvent('download');await page.locator('#download').click();const bundle=await pending;await mkdir('../temp',{recursive:true});const path='../temp/kingsley-tapered.zip';await bundle.saveAs(path);const files=unzipSync(new Uint8Array(await readFile(path)));assert.ok(files['calibration/coupon-base.stl']);assert.ok(files['calibration/calibration_manifest.json']);assert.ok(files['insert_manifest.json']);}
+  if(test.slug==='kingsley-reservoir'){await page.locator('#download').click();await page.locator('input[name=download-format][value=stl]').check();const pending=page.waitForEvent('download');await page.locator('#download-confirm').click();const bundle=await pending;await mkdir('../temp',{recursive:true});const path='../temp/kingsley-tapered.zip';await bundle.saveAs(path);const files=unzipSync(new Uint8Array(await readFile(path)));assert.ok(files['calibration/coupon-base.stl']);assert.ok(files['calibration/calibration_manifest.json']);assert.ok(files['insert_manifest.json']);}
   await page.locator('#mode-design').click();
   await page.getByRole('button',{name:/Features/}).click();
   await row.locator('.feature-item>span').click();
