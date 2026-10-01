@@ -12,6 +12,7 @@ let manifold:Awaited<ReturnType<typeof ManifoldModule>>|undefined;
 let grid:Grid,settings:Settings,terrain:Terrain,features:Feature[]=[];
 let terrainBuilds=0;
 function packed(m:Mesh):Mesh{return {positions:new Float32Array(m.positions),indices:new Uint32Array(m.indices)}}
+function meshBytes(m:Mesh){const positions=Float32Array.from(m.positions),indices=Uint32Array.from(m.indices),out=new Uint8Array(8+positions.byteLength+indices.byteLength),view=new DataView(out.buffer);view.setUint32(0,positions.length,true);view.setUint32(4,indices.length,true);out.set(new Uint8Array(positions.buffer),8);out.set(new Uint8Array(indices.buffer),8+positions.byteLength);return out;}
 function stl(m:Mesh){let out='solid contour_workbench\n';for(let i=0;i<m.indices.length;i+=3){out+='facet normal 0 0 0\nouter loop\n';for(let k=0;k<3;k++){const j=m.indices[i+k]*3;out+=`vertex ${m.positions[j]} ${m.positions[j+1]} ${m.positions[j+2]}\n`;}out+='endloop\nendfacet\n';}return strToU8(out+'endsolid contour_workbench\n');}
 function exportMesh(m:Mesh,tolerance=.0001):Mesh{
  const positions:number[]=[],remap:number[]=[],bins=new Map<string,number[]>();
@@ -75,6 +76,7 @@ function syncBase(next:Settings){if(!terrain)return;const delta=next.base_height
 async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
  await ready;
  switch(type){
+  case 'hydrate':grid=p.project.grid;settings=p.project.settings;features=p.project.features;terrain=p.terrain;return true;
   case 'classify':return JSON.parse(core.classify_features(JSON.stringify(p)));
   case 'urls':return JSON.parse(core.source_urls(JSON.stringify(p.bounds),p.ninety));
   case 'query':return core.osm_query(JSON.stringify(p.bounds??p),Boolean(p.winter));
@@ -101,6 +103,15 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
     plan.inserts=plan.inserts.filter(piece=>piece.mesh.indices.length>0);
     return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length},revision:p.revision};
    }finally{result.delete();raisedTerrain?.delete();cutters.forEach(c=>c.delete());}
+  }
+  case 'preset-pack':{
+   if(!terrain)throw new Error('Build terrain before packing a preset.');
+   const project=p.project as Project,raw=JSON.parse(core.build_overlays(JSON.stringify(project.grid),JSON.stringify(project.settings),JSON.stringify(project.features),JSON.stringify(terrain.layout))) as Overlay[];
+   const files:Record<string,Uint8Array>={},terrainFile='terrain.mesh';
+   files[terrainFile]=meshBytes(terrain.mesh);
+   const packedOverlays=raw.map((overlay,index)=>{const file=`overlays/${index}.mesh`;files[file]=meshBytes(overlay.mesh);return {...overlay,mesh:file};});
+   files['manifest.json']=strToU8(JSON.stringify({version:1,project,terrain:{...terrain,mesh:terrainFile},overlays:packedOverlays}));
+   return zipSync(files,{level:6});
   }
   case 'calibration':{const M=await geometry(progress);progress('Building nozzle-aware fit-test pieces…');return zipSync(calibrationFiles(M,p.settings as Settings,''),{level:3});}
   case 'export':{

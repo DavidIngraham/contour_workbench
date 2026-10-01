@@ -4,7 +4,7 @@ const browser = await chromium.launch({headless:true, args:['--no-sandbox','--us
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 page.on('pageerror',e=>console.log('PAGE ERROR',e.message));
 page.on('console',m=>{if(m.type()==='error')console.log('CONSOLE',m.text())});
-await page.goto('http://localhost:5173');
+await page.goto(new URL('?preset=post-canyon',process.env.APP_URL||'http://localhost:5173').toString());
 try {await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,{},{timeout:90000});}catch(e){console.log('LOAD TIMEOUT',await page.locator('#status').innerText());}
 console.log('STATE',await page.evaluate(()=>window.contourDiagnostics));
 console.log('STATUS',await page.locator('#status').innerText());

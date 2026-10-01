@@ -4,7 +4,7 @@ const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-g
 const page=await browser.newPage({viewport:{width:1440,height:1000}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
 await page.addInitScript(()=>{window.workerCalls=[];const send=Worker.prototype.postMessage;Worker.prototype.postMessage=function(message,...rest){window.workerCalls.push(message.type);return send.call(this,message,...rest);};});
 try{
- await page.goto('http://localhost:5173');await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:240000});
+ await page.goto(new URL('?preset=post-canyon',process.env.APP_URL||'http://localhost:5173').toString());await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:240000});
  const before=await page.evaluate(()=>({calls:window.workerCalls.length,builds:window.contourDiagnostics.terrainBuilds}));
  await page.evaluate(()=>{const input=document.getElementById('base-height');for(let i=0;i<30;i++){input.value=String(1+i/10);input.dispatchEvent(new Event('input',{bubbles:true}));}});
  const after=await page.evaluate(()=>({calls:window.workerCalls.length,builds:window.contourDiagnostics.terrainBuilds,base:window.contourDiagnostics.baseHeight}));assert.equal(after.calls,before.calls);assert.equal(after.builds,before.builds);assert.equal(after.base,3.9);console.log('PASS: 30 base edits, zero worker jobs');

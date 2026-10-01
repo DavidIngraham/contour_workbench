@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "id": "post-canyon",
+      "name": "Post Canyon",
+      "location": "Hood River, Oregon",
+      "description": "A dense trail network across the wooded folds above the Columbia River.",
+      "image": "examples/images/post-canyon.webp",
+      "bundle": "examples/presets/post-canyon.cwpack",
+      "badges": [
+        "10 m terrain",
+        "518 features"
+      ]
+    },
+    {
+      "id": "mt-hood-meadows",
+      "name": "Mt. Hood Meadows",
+      "location": "Mount Hood, Oregon",
+      "description": "Ski runs, chair lifts, glaciers, streams, and mountain roads in winter mode.",
+      "image": "examples/images/mt-hood-meadows.webp",
+      "bundle": "examples/presets/mt-hood-meadows.cwpack",
+      "badges": [
+        "Winter mode",
+        "458 features"
+      ]
+    }
+  ]
+}

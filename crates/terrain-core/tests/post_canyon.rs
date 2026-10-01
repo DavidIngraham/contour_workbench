@@ -3,7 +3,7 @@ use contour_core::*;
 #[ignore = "full real-data integration"]
 fn real_data_plan() {
     let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/public/examples/post-canyon.json");
+        .join("../../tests/resources/post_canyon_example.json");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
     let g: Grid = serde_json::from_value(v["grid"].clone()).unwrap();
     let f = normalize(&v["geojson"]);

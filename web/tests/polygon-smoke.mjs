@@ -4,7 +4,7 @@ const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-g
 const page=await browser.newPage({viewport:{width:1440,height:1000}});
 const errors=[];page.on('pageerror',e=>errors.push(e.message));
 try{
- await page.goto('http://localhost:5173');await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:90000});
+ await page.goto(new URL('?preset=post-canyon',process.env.APP_URL||'http://localhost:5173').toString());await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:90000});
  await page.locator('#change-area').click();await page.locator('#polygon-draw').click();
  const b=await page.locator('#extent-map').boundingBox();const x=b.x+b.width/2,y=b.y+b.height/2;
  for(const [dx,dy] of [[-60,-60],[60,-60],[10,0],[60,60],[-60,60]])await page.mouse.click(x+dx,y+dy);

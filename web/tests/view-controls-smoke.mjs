@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';import {chromium} from '@playwright/test';
 const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 try{const page=await browser.newPage({viewport:{width:1440,height:1000}});const progress=[];await page.addInitScript(()=>{window.progressMessages=[];const Native=window.Worker;window.Worker=class extends Native{constructor(...a){super(...a);this.addEventListener('message',e=>{if(e.data.progress)window.progressMessages.push(e.data.progress);});}};});
- await page.goto('http://localhost:5173');await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:120000});
+ await page.goto(new URL('?preset=post-canyon',process.env.APP_URL||'http://localhost:5173').toString());await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:120000});
  await page.waitForFunction(()=>document.getElementById('topo-attribution').textContent==='USGS The National Map',null,{timeout:60000});
  await page.screenshot({path:'../temp/contour-topo.png'});
  await page.locator('#topo-map').click();assert.equal(await page.locator('#topo-map').evaluate(e=>e.classList.contains('active')),false);await page.locator('#topo-map').click();

@@ -53,3 +53,10 @@ node tests/zone-cases.mjs
 ### Nozzle-aware insert fit
 
 Print setup records nozzle diameter (0.4 mm by default), pocket clearance per side, lower-layer elephant-foot relief, taper height, and assembly draft. Generated inserts keep a full-width seating band at the visible surface and taper only the buried geometry. Thin line inserts clamp the taper so their first layer remains at least one extrusion wide. Every print bundle includes a numbered four-fit calibration coupon, which can also be downloaded independently before generating a terrain model.
+
+
+### Landing catalog and static presets
+
+The opening screen reads `web/public/examples/catalog.json`, so another model is added with one catalog entry, one screenshot, and one `.cwpack` file. A preset pack contains the editable project, prebuilt terrain mesh, and feature overlay meshes keyed to the feature IDs shown in the tree. Post Canyon and Mt. Hood Meadows are bundled. Selecting either model displays the mesh immediately and hydrates the geometry worker in the background.
+
+Select **New landscape** for the guided area, elevation-source, and OpenStreetMap feature wizard.

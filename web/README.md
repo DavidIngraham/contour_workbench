@@ -83,3 +83,16 @@ Phones use a full-width model with a dismissible Settings panel, larger touch ta
 ## Insert fit calibration
 
 The Print setup panel defaults to a 0.4 mm nozzle and exposes nozzle-aware pocket clearance, elephant-foot relief, taper height, and draft angle. The worker builds the buried insert profile in layer-sized steps while preserving the visible footprint and terrain-conforming top. A numbered four-fit calibration base and its inserts can be downloaded separately and are included in every print bundle.
+
+
+## Landing catalog and preset packs
+
+`public/examples/catalog.json` drives the landing cards. Each entry points to a screenshot and a compressed `.cwpack` containing the full editable project, a prebuilt terrain mesh, and prebuilt overlay meshes. Overlay IDs are validated against project feature IDs when the bundle opens, so selection and visibility remain connected to the feature tree.
+
+To add a model, start the Vite development server, save its `.contour.json` project, then run:
+
+```sh
+node scripts/build-preset.mjs path/to/model.contour.json public/examples/presets/model.cwpack public/examples/images/model.png
+```
+
+Add the resulting paths and card copy to `public/examples/catalog.json`. The third argument is optional and captures the loaded viewport.

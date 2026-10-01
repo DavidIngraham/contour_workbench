@@ -6,7 +6,7 @@ import {strFromU8,unzipSync} from 'fflate';
 const browser=await chromium.launch({headless:true,args:['--no-sandbox','--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 const page=await browser.newPage({viewport:{width:1280,height:900}});
 try{
- await page.goto(process.env.APP_URL||'http://localhost:5173');
+ await page.goto(new URL('?preset=post-canyon',process.env.APP_URL||'http://localhost:5173').toString());
  await page.waitForFunction(()=>window.contourDiagnostics?.triangles&&!window.contourDiagnostics.busy,null,{timeout:240000});
  await page.getByRole('button',{name:'Print setup',exact:true}).click();
  assert.equal(await page.locator('#nozzle-diameter').inputValue(),'0.4');
