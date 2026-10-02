@@ -7,4 +7,5 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 contour-core = { path = "../terrain-core" }
 wasm-bindgen = "=0.2.100"
+serde.workspace = true
 serde_json.workspace = true

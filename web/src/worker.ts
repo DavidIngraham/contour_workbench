@@ -3,6 +3,7 @@ import {annotationGeometry,type Annotation} from './annotations';
 import {calibrationSwitchbackCenterlineMm} from './calibration-path';
 import {calibrationClearances,fitProfile,insetAtHeight} from './insert-fit';
 import {insetCrossSection,shouldTaperInsert} from './insert-taper';
+import {decodeMeshPacket} from './mesh-packet';
 import init,* as core from './wasm/contour_wasm';
 import ManifoldModule from 'manifold-3d';
 import manifoldUrl from 'manifold-3d/manifold.wasm?url';
@@ -12,8 +13,15 @@ import type {Grid,Settings,Feature,Terrain,Overlay,Mesh,Asset,Piece,Project} fro
 
 const ready=init();
 let manifold:Awaited<ReturnType<typeof ManifoldModule>>|undefined;
+let rust:core.TerrainSession|undefined,baseTerrainSolid:any;
 let grid:Grid,settings:Settings,terrain:Terrain,features:Feature[]=[];
 let terrainBuilds=0;
+type TerrainPacketMetadata=Omit<Terrain,'mesh'>;
+type OverlayPacketMetadata=Omit<Overlay,'mesh'>;
+type PiecePacketMetadata=Omit<Piece,'mesh'>;
+interface PlanPacketMetadata{inserts:PiecePacketMetadata[];cutter_group_ends:number[];removed_terrain_islands:number}
+function clearBaseTerrainSolid(){baseTerrainSolid?.delete();baseTerrainSolid=undefined;}
+function setGrid(next:Grid){const nextRust=new core.TerrainSession(JSON.stringify(next));rust?.free();rust=nextRust;grid=next;clearBaseTerrainSolid();}
 function packed(m:Mesh):Mesh{return {positions:new Float32Array(m.positions),indices:new Uint32Array(m.indices)}}
 function meshBytes(m:Mesh){const positions=Float32Array.from(m.positions),indices=Uint32Array.from(m.indices),out=new Uint8Array(8+positions.byteLength+indices.byteLength),view=new DataView(out.buffer);view.setUint32(0,positions.length,true);view.setUint32(4,indices.length,true);out.set(new Uint8Array(positions.buffer),8);out.set(new Uint8Array(indices.buffer),8+positions.byteLength);return out;}
 function stl(m:Mesh){let out='solid contour_workbench\n';for(let i=0;i<m.indices.length;i+=3){out+='facet normal 0 0 0\nouter loop\n';for(let k=0;k<3;k++){const j=m.indices[i+k]*3;out+=`vertex ${m.positions[j]} ${m.positions[j+1]} ${m.positions[j+2]}\n`;}out+='endloop\nendfacet\n';}return strToU8(out+'endsolid contour_workbench\n');}
@@ -27,16 +35,25 @@ function exportMesh(m:Mesh,tolerance=.0001):Mesh{
  for(let i=0;i<m.indices.length;i+=3){const f=[remap[m.indices[i]],remap[m.indices[i+1]],remap[m.indices[i+2]]];if(new Set(f).size<3)continue;const key=[...f].sort((a,b)=>a-b).join(','),prev=pending.get(key);if(prev!==undefined){const g=faces[prev]!,k=g.indexOf(f[0]);if(f[1]===g[(k+2)%3]){faces[prev]=null;pending.delete(key);continue;}}pending.set(key,faces.length);faces.push(f);}
  return {positions,indices:faces.filter((f):f is number[]=>f!==null).flat()};
 }
-function validate(m:Mesh){const canonical=new Map<string,number>(),remap:number[]=[];for(let i=0;i<m.positions.length;i+=3){const p=[m.positions[i],m.positions[i+1],m.positions[i+2]];if(p.some(v=>!Number.isFinite(v)))throw new Error('Non-finite mesh coordinate');const key=p.map(v=>v.toFixed(8)).join(',');if(!canonical.has(key))canonical.set(key,canonical.size);remap.push(canonical.get(key)!);}const edges=new Map<string,{count:number;sum:number}>();for(let i=0;i<m.indices.length;i+=3){const t=[remap[m.indices[i]],remap[m.indices[i+1]],remap[m.indices[i+2]]];if(new Set(t).size!==3)throw new Error('Export contains degenerate triangles');for(let k=0;k<3;k++){const a=t[k],b=t[(k+1)%3],key=`${Math.min(a,b)},${Math.max(a,b)}`,edge=edges.get(key)||{count:0,sum:0};edge.count++;edge.sum+=a<b?1:-1;edges.set(key,edge);}}if([...edges.values()].some(e=>e.count!==2||e.sum!==0))throw new Error('Generated mesh is not watertight');}
+function validate(m:Mesh){const canonical=new Map<string,number>(),remap:number[]=[];for(let i=0;i<m.positions.length;i+=3){const p=[m.positions[i],m.positions[i+1],m.positions[i+2]];if(p.some(v=>!Number.isFinite(v)))throw new Error('Non-finite mesh coordinate');const key=p.map(v=>v.toFixed(8)).join(',');if(!canonical.has(key))canonical.set(key,canonical.size);remap.push(canonical.get(key)!);}const edges=new Map<string,{count:number;sum:number}>();for(let i=0;i<m.indices.length;i+=3){const t=[remap[m.indices[i]],remap[m.indices[i+1]],remap[m.indices[i+2]]];if(new Set(t).size!==3)throw new Error('Export contains degenerate triangles');for(let k=0;k<3;k++){const a=t[k],b=t[(k+1)%3],key=`${Math.min(a,b)},${Math.max(a,b)}`,edge=edges.get(key)||{count:0,sum:0};edge.count++;edge.sum+=a<b?1:-1;edges.set(key,edge);}}const invalid=[...edges.entries()].filter(([,edge])=>edge.count!==2||edge.sum!==0);if(invalid.length)throw new Error(`Generated mesh is not watertight (`+invalid.length+` of `+edges.size+` edges; `+invalid.slice(0,5).map(([key,edge])=>key+`=`+edge.count+`/`+edge.sum).join(', ')+`)`);}
 async function geometry(progress:(s:string)=>void){if(!manifold){progress('Loading the solid geometry engine…');manifold=await ManifoldModule({locateFile:()=>manifoldUrl});manifold.setup();}return manifold;}
 function solid(M:any,m:Mesh){const mesh=new M.Mesh({numProp:3,vertProperties:new Float32Array(m.positions),triVerts:new Uint32Array(m.indices)});mesh.merge();const result=new M.Manifold(mesh);if(result.status()!=='NoError'){const error=result.status();result.delete();throw new Error(`Solid geometry is invalid: ${error}`);}return result;}
+function cachedTerrain(M:any){if(!baseTerrainSolid)baseTerrainSolid=solid(M,terrain.mesh);return baseTerrainSolid;}
 function combineMeshes(meshes:Mesh[]):Mesh{
  const positionCount=meshes.reduce((sum,mesh)=>sum+mesh.positions.length,0),indexCount=meshes.reduce((sum,mesh)=>sum+mesh.indices.length,0);
  const positions=new Float32Array(positionCount),indices=new Uint32Array(indexCount);let positionOffset=0,indexOffset=0,vertexOffset=0;
  for(const mesh of meshes){positions.set(mesh.positions,positionOffset);for(const index of mesh.indices)indices[indexOffset++]=Number(index)+vertexOffset;positionOffset+=mesh.positions.length;vertexOffset+=mesh.positions.length/3;}
  return {positions,indices};
 }
-function validatedMesh(input:any,label:string):Mesh{let last:unknown;for(const tolerance of [0,0.0001,0.001,0.005]){const clean=tolerance?input.simplify(tolerance):input;try{const raw=clean.getMesh(),source={positions:Array.from(raw.vertProperties) as number[],indices:Array.from(raw.triVerts) as number[]};for(const weldTolerance of [0.0000001,0.000001,0.00001,0.0001]){try{const mesh=exportMesh(source,weldTolerance);validate(mesh);return mesh;}catch(e){last=e;}}throw last;}catch(e){last=e;}finally{if(clean!==input)clean.delete();}}throw new Error(label+': '+String(last));}
+function manifoldMesh(raw:any):Mesh{
+ const numProp=Number(raw.numProp)||3,numVert=raw.vertProperties.length/numProp,positions=new Array<number>(numVert*3),parent=Array.from({length:numVert},(_,index)=>index);
+ for(let i=0;i<numVert;i++)for(let axis=0;axis<3;axis++)positions[i*3+axis]=raw.vertProperties[i*numProp+axis];
+ const from=raw.mergeFromVert as Uint32Array|undefined,to=raw.mergeToVert as Uint32Array|undefined;
+ if(from&&to)for(let i=0;i<Math.min(from.length,to.length);i++)if(from[i]<numVert&&to[i]<numVert)parent[from[i]]=to[i];
+ const root=(index:number)=>{let next=index,guard=0;while(parent[next]!==next&&guard++<numVert)next=parent[next];let current=index;while(parent[current]!==current){const previous=parent[current];parent[current]=next;current=previous;}return next;};
+ return {positions,indices:Array.from(raw.triVerts as Uint32Array,index=>root(index))};
+}
+function validatedMesh(input:any,label:string):Mesh{let last:unknown;for(const tolerance of [0,0.0001,0.001,0.005]){const clean=tolerance?input.simplify(tolerance):input;try{const raw=clean.getMesh(),source=manifoldMesh(raw);for(const weldTolerance of [0.0000001,0.000001,0.00001,0.0001]){try{const mesh=exportMesh(source,weldTolerance);validate(mesh);return mesh;}catch(e){last=e;}}throw last;}catch(e){last=e;}finally{if(clean!==input)clean.delete();}}throw new Error(label+': '+String(last));}
 function taperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:number,reliefOverride?:number){
  const bounds=prism.boundingBox(),totalDepth=bounds.max[2]-bounds.min[2],profile=fitProfile(s,className,Math.min(depthMm,totalDepth),reliefOverride);
  if(profile.maximumInsetMm<=1e-7)return {solid:prism,profile};
@@ -87,20 +104,32 @@ function calibrationFiles(M:any,s:Settings,prefix='calibration/'):Record<string,
   return files;
  }finally{base.delete();cutters.forEach(c=>c.delete());}
 }
-function syncBase(next:Settings){if(!terrain)return;const delta=next.base_height_mm-terrain.layout.base_height;if(delta){for(let i=2;i<terrain.mesh.positions.length;i+=3)if(terrain.mesh.positions[i]>0)terrain.mesh.positions[i]+=delta;terrain.layout.base_height=next.base_height_mm;}}
+function syncBase(next:Settings){if(!terrain)return;const delta=next.base_height_mm-terrain.layout.base_height;if(delta){for(let i=2;i<terrain.mesh.positions.length;i+=3)if(terrain.mesh.positions[i]>0)terrain.mesh.positions[i]+=delta;terrain.layout.base_height=next.base_height_mm;clearBaseTerrainSolid();}}
 async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
  await ready;
  switch(type){
-  case 'hydrate':grid=p.project.grid;settings=p.project.settings;features=p.project.features;terrain=p.terrain;return true;
+  case 'hydrate':setGrid(p.project.grid);settings=p.project.settings;features=p.project.features;terrain=p.terrain;return true;
   case 'classify':return JSON.parse(core.classify_features(JSON.stringify(p)));
   case 'urls':return JSON.parse(core.source_urls(JSON.stringify(p.bounds),p.ninety));
   case 'query':return core.osm_query(JSON.stringify(p.bounds??p),Boolean(p.winter));
-  case 'terrain':grid=p.grid;settings=p.settings;features=p.features;progress(settings.terrain_max_error_mm>0?`Building adaptive terrain (≤ ${settings.terrain_max_error_mm} mm sampled error)…`:'Building terrain at full source resolution…');terrain=JSON.parse(core.build_terrain(JSON.stringify(grid),JSON.stringify(settings)));terrainBuilds++;return {...terrain,mesh:packed(terrain.mesh),terrainBuilds};
-  case 'overlays':syncBase(p.settings);features=p.features;settings=p.settings;progress('Draping features over the terrain…');return JSON.parse(core.build_overlays(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))).map((o:Overlay)=>({...o,mesh:packed(o.mesh)}));
+  case 'terrain':{
+   setGrid(p.grid);settings=p.settings;features=p.features;progress(settings.terrain_max_error_mm>0?`Building adaptive terrain (≤ ${settings.terrain_max_error_mm} mm sampled error)…`:'Building terrain at full source resolution…');
+   const packet=decodeMeshPacket<TerrainPacketMetadata>(rust!.build_terrain(JSON.stringify(settings)));
+   if(packet.meshes.length!==1)throw new Error('Terrain geometry packet did not contain one mesh.');
+   terrain={...packet.metadata,mesh:packet.meshes[0]};terrainBuilds++;return {...terrain,mesh:packed(terrain.mesh),terrainBuilds};
+  }
+  case 'overlays':{
+   syncBase(p.settings);features=p.features;settings=p.settings;progress('Draping features over the terrain…');
+   const packet=decodeMeshPacket<OverlayPacketMetadata[]>(rust!.build_overlays(JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout)));
+   if(packet.metadata.length!==packet.meshes.length)throw new Error('Overlay geometry packet is inconsistent.');
+   return packet.metadata.map((overlay,index)=>({...overlay,mesh:packet.meshes[index]}));
+  }
   case 'generate':{
    if(!terrain)throw new Error('Load terrain first');syncBase(p.settings);features=p.features;settings=p.settings;progress('Building tapered inserts and continuous pockets…');
-   const plan:{inserts:Piece[];cutters:Mesh[];cutter_group_ends?:number[];removed_terrain_islands:number}=JSON.parse(core.build_plan(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),M=await geometry(progress);
-   let result=solid(M,terrain.mesh);const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?result.translate([0,0,0.35]):undefined;
+   const packet=decodeMeshPacket<PlanPacketMetadata>(rust!.build_plan(JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),insertCount=packet.metadata.inserts.length;
+   if(packet.meshes.length<insertCount)throw new Error('Model geometry packet is inconsistent.');
+   const plan:{inserts:Piece[];cutters:Mesh[];cutter_group_ends:number[];removed_terrain_islands:number}={...packet.metadata,inserts:packet.metadata.inserts.map((piece,index)=>({...piece,mesh:packet.meshes[index]})),cutters:packet.meshes.slice(insertCount)};
+   const M=await geometry(progress);let result=cachedTerrain(M).translate([0,0,0]);const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?cachedTerrain(M).translate([0,0,0.35]):undefined;
    try{
     if(plan.cutters.length){
      const groupEnds=plan.cutter_group_ends?.length?plan.cutter_group_ends:[plan.cutters.length];let groupStart=0;
@@ -128,7 +157,9 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
   }
   case 'preset-pack':{
    if(!terrain)throw new Error('Build terrain before packing a preset.');
-   const project=p.project as Project,raw=JSON.parse(core.build_overlays(JSON.stringify(project.grid),JSON.stringify(project.settings),JSON.stringify(project.features),JSON.stringify(terrain.layout))) as Overlay[];
+   const project=p.project as Project,packet=decodeMeshPacket<OverlayPacketMetadata[]>(rust!.build_overlays(JSON.stringify(project.settings),JSON.stringify(project.features),JSON.stringify(terrain.layout)));
+   if(packet.metadata.length!==packet.meshes.length)throw new Error('Preset overlay geometry packet is inconsistent.');
+   const raw=packet.metadata.map((overlay,index)=>({...overlay,mesh:packet.meshes[index]})) as Overlay[];
    const files:Record<string,Uint8Array>={},terrainFile='terrain.mesh';
    files[terrainFile]=meshBytes(terrain.mesh);
    const packedOverlays=raw.map((overlay,index)=>{const file=`overlays/${index}.mesh`;files[file]=meshBytes(overlay.mesh);return {...overlay,mesh:file};});

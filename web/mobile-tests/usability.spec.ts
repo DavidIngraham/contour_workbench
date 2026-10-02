@@ -14,6 +14,7 @@ test('full-width model, touch controls, settings and feature editing',async({pag
  await page.getByRole('button',{name:'Print setup',exact:true}).tap();await expect(page.locator('#nozzle-diameter')).toHaveValue('0.4');await expect(page.locator('#terrain-island-width')).toHaveValue('');await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');await expect(page.locator('#download-calibration')).toBeVisible();
  await page.locator('#mobile-close').tap();await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded','false');
  await page.locator('#generate').tap();await page.waitForFunction(()=>!(window as any).contourDiagnostics.busy);expect(await page.evaluate(()=>(window as any).contourDiagnostics.asset?.watertight)).toBe(true);await expect(page.locator('#download')).toBeEnabled();
+ await page.locator('#generate').tap();await page.waitForFunction(()=>!(window as any).contourDiagnostics.busy);expect(await page.evaluate(()=>(window as any).contourDiagnostics.asset?.watertight)).toBe(true);
 });
 test('polygon picker and annotation controls stay reachable',async({page})=>{
  await page.locator('#mobile-settings').tap();await page.locator('#change-area').tap();await expect(page.locator('#area-dialog')).toBeVisible();
