@@ -99,7 +99,7 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
   case 'overlays':syncBase(p.settings);features=p.features;settings=p.settings;progress('Draping features over the terrain…');return JSON.parse(core.build_overlays(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))).map((o:Overlay)=>({...o,mesh:packed(o.mesh)}));
   case 'generate':{
    if(!terrain)throw new Error('Load terrain first');syncBase(p.settings);features=p.features;settings=p.settings;progress('Building tapered inserts and continuous pockets…');
-   const plan:{inserts:Piece[];cutters:Mesh[];cutter_group_ends?:number[]}=JSON.parse(core.build_plan(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),M=await geometry(progress);
+   const plan:{inserts:Piece[];cutters:Mesh[];cutter_group_ends?:number[];removed_terrain_islands:number}=JSON.parse(core.build_plan(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),M=await geometry(progress);
    let result=solid(M,terrain.mesh);const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?result.translate([0,0,0.35]):undefined;
    try{
     if(plan.cutters.length){
@@ -123,7 +123,7 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
      }catch(error){throw new Error(piece.id+' ('+(pieceIndex+1)+'/'+plan.inserts.length+'): '+(error instanceof Error?error.message:String(error)));}
     }
     plan.inserts=plan.inserts.filter(piece=>piece.mesh.indices.length>0);
-    return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length},revision:p.revision};
+    return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length,removed_terrain_islands:plan.removed_terrain_islands},revision:p.revision};
    }finally{result.delete();raisedTerrain?.delete();}
   }
   case 'preset-pack':{

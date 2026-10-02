@@ -10,7 +10,7 @@ const project:Project={schema_version:2,name:'Meadows / winter',grid:{bounds:[0,
 const asset:Asset={terrain:box(50,50,5),inserts:[
  {id:'lake & one',class:'water',mesh:box(25,25,2),origin:[10,20,5],insert_depth_mm:1},
  {id:'ski run',class:'ski_run',mesh:box(25,25,2),origin:[20,10,5],insert_depth_mm:1}
-],validation:{watertight:true,triangles:12,pieces:2},revision:1};
+],validation:{watertight:true,triangles:12,pieces:2,removed_terrain_islands:0},revision:1};
 
 describe('3MF export',()=>{
  it('creates a portable assembled package with standard 3MF parts',()=>{

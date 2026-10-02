@@ -18,6 +18,7 @@ pub struct Settings {
     pub path_width_mm: f64,
     pub path_clearance_mm: f64,
     pub nozzle_diameter_mm: f64,
+    pub minimum_terrain_island_width_mm: Option<f64>,
     pub insert_fit_clearance_per_side_mm: f64,
     pub insert_elephant_foot_relief_mm: f64,
     pub insert_elephant_foot_height_mm: f64,
@@ -41,6 +42,7 @@ impl Default for Settings {
             path_width_mm: 0.9,
             path_clearance_mm: 0.1,
             nozzle_diameter_mm: 0.4,
+            minimum_terrain_island_width_mm: None,
             insert_fit_clearance_per_side_mm: 0.15,
             insert_elephant_foot_relief_mm: 0.18,
             insert_elephant_foot_height_mm: 0.4,
@@ -73,6 +75,10 @@ pub fn boundary_bounds(points: &[[f64; 2]]) -> [f64; 4] {
     b
 }
 impl Settings {
+    pub fn effective_minimum_terrain_island_width_mm(&self) -> f64 {
+        self.minimum_terrain_island_width_mm
+            .unwrap_or(self.nozzle_diameter_mm * 1.125 * 3.)
+    }
     pub fn validate(&self) -> Result<(), String> {
         if !self.boundary.is_empty() {
             if self.boundary.len() < 3
@@ -132,6 +138,12 @@ impl Settings {
             .is_some_and(|x| !x.is_finite() || x <= 0.)
         {
             return Err("Segment size must be positive".into());
+        }
+        if self
+            .minimum_terrain_island_width_mm
+            .is_some_and(|x| !x.is_finite() || !(0. ..=20.).contains(&x))
+        {
+            return Err("Minimum terrain island width must be between 0 and 20 mm".into());
         }
         Ok(())
     }
@@ -773,6 +785,29 @@ fn printable_parts(parts: MultiPolygon<f64>, nozzle_diameter_mm: f64) -> MultiPo
     }
     last
 }
+fn remove_unprintable_terrain_islands(
+    pocket: &Polygon<f64>,
+    minimum_width_mm: f64,
+) -> (Polygon<f64>, usize) {
+    if minimum_width_mm <= 0. {
+        return (pocket.clone(), 0);
+    }
+    let mut removed = 0;
+    let interiors = pocket
+        .interiors()
+        .iter()
+        .filter_map(|ring| {
+            let island = Polygon::new(ring.clone(), vec![]);
+            if island.buffer(-minimum_width_mm / 2.).0.is_empty() {
+                removed += 1;
+                None
+            } else {
+                Some(ring.clone())
+            }
+        })
+        .collect();
+    (Polygon::new(pocket.exterior().clone(), interiors), removed)
+}
 fn polygon_between_detail(
     poly: &Polygon<f64>,
     top: impl Fn([f64; 2]) -> f64,
@@ -1358,6 +1393,7 @@ pub struct Plan {
     pub inserts: Vec<Piece>,
     pub cutters: Vec<Mesh>,
     pub cutter_group_ends: Vec<usize>,
+    pub removed_terrain_islands: usize,
 }
 fn add_insert_layer(
     out: &mut Plan,
@@ -1450,7 +1486,12 @@ fn add_insert_layer(
                     conformal,
                 });
             }
-            for pocket in pockets.buffer(s.insert_fit_clearance_per_side_mm).0 {
+            for raw_pocket in pockets.buffer(s.insert_fit_clearance_per_side_mm).0 {
+                let (pocket, removed) = remove_unprintable_terrain_islands(
+                    &raw_pocket,
+                    s.effective_minimum_terrain_island_width_mm(),
+                );
+                out.removed_terrain_islands += removed;
                 let cutter =
                     polygon_surface_detail(&pocket, |_| roof, (base - 0.15).max(floor), false);
                 cutter
@@ -1471,6 +1512,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         inserts: vec![],
         cutters: vec![],
         cutter_group_ends: vec![],
+        removed_terrain_islands: 0,
     };
     let seg = s
         .insert_segment_size_mm
@@ -1700,6 +1742,46 @@ mod tests {
         let t = terrain(&g, &s).unwrap();
         assert!(t.retained_samples < 25);
         t.mesh.validate().unwrap();
+    }
+    #[test]
+    fn terrain_island_width_defaults_to_three_extrusions() {
+        let settings = Settings::default();
+        assert!((settings.effective_minimum_terrain_island_width_mm() - 1.35).abs() < 1e-9);
+        let disabled = Settings {
+            minimum_terrain_island_width_mm: Some(0.),
+            ..settings
+        };
+        assert_eq!(disabled.effective_minimum_terrain_island_width_mm(), 0.);
+    }
+    #[test]
+    fn removes_only_unprintable_enclosed_terrain_islands() {
+        let outer = rectangle(10., 10.);
+        let small = polygon(&[[4.7, 4.7], [5.3, 4.7], [5.3, 5.3], [4.7, 5.3]]);
+        let large = polygon(&[[1., 1.], [3., 1.], [3., 3.], [1., 3.]]);
+        let pocket = Polygon::new(
+            outer.exterior().clone(),
+            vec![small.exterior().clone(), large.exterior().clone()],
+        );
+        let (cleaned, removed) = remove_unprintable_terrain_islands(&pocket, 1.35);
+        assert_eq!(removed, 1);
+        assert_eq!(cleaned.interiors().len(), 1);
+        assert_eq!(cleaned.interiors()[0], *large.exterior());
+    }
+    #[test]
+    fn leaves_open_terrain_channels_unchanged() {
+        let open_notch = polygon(&[
+            [0., 0.],
+            [10., 0.],
+            [10., 10.],
+            [6., 10.],
+            [6., 2.],
+            [4., 2.],
+            [4., 10.],
+            [0., 10.],
+        ]);
+        let (cleaned, removed) = remove_unprintable_terrain_islands(&open_notch, 3.);
+        assert_eq!(removed, 0);
+        assert_eq!(cleaned, open_notch);
     }
     #[test]
     fn tile_hemispheres() {

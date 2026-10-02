@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {calibrationClearances,extrusionWidthMm,fitProfile,insetAtHeight,recommendedInsertWidthMm} from '../src/insert-fit';
+import {calibrationClearances,extrusionWidthMm,fitProfile,insetAtHeight,minimumTerrainIslandWidthMm,recommendedInsertWidthMm} from '../src/insert-fit';
 import {defaults} from '../src/types';
 
 describe('nozzle-aware insert fit',()=>{
@@ -8,6 +8,9 @@ describe('nozzle-aware insert fit',()=>{
   expect(extrusionWidthMm(defaults.nozzle_diameter_mm)).toBeCloseTo(.45);
   expect(defaults.path_width_mm).toBe(.9);
   expect(recommendedInsertWidthMm(.4)).toBeCloseTo(.9);
+  expect(defaults.minimum_terrain_island_width_mm).toBeNull();
+  expect(minimumTerrainIslandWidthMm(defaults)).toBeCloseTo(1.35);
+  expect(minimumTerrainIslandWidthMm({...defaults,minimum_terrain_island_width_mm:2})).toBe(2);
  });
  it('keeps the bottom of a narrow line at least one extrusion wide',()=>{
   const profile=fitProfile(defaults,'trail',defaults.insert_depth_mm);

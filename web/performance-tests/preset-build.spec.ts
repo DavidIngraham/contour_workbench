@@ -14,6 +14,8 @@ for(const preset of [
   const elapsedMs=Date.now()-started,status=await page.locator('#status').innerText(),asset=await page.evaluate(()=>(window as any).contourDiagnostics.asset);
   expect(await page.locator('#status.error').count(),status).toBe(0);
   expect(asset?.watertight,status).toBe(true);
-  console.log(`${preset.name}: ${(elapsedMs/1000).toFixed(1)} s, ${asset.pieces} insert pieces, ${asset.triangles} terrain triangles`);
+  expect(asset?.removed_terrain_islands,status).toBeGreaterThanOrEqual(0);
+  if(preset.id==='post-canyon')expect(asset.removed_terrain_islands,status).toBeGreaterThan(0);
+  console.log(`${preset.name}: ${(elapsedMs/1000).toFixed(1)} s, ${asset.pieces} insert pieces, ${asset.triangles} terrain triangles, ${asset.removed_terrain_islands} terrain pins removed`);
  });
 }

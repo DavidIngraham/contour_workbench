@@ -15,6 +15,7 @@ export interface FitProfile {
 }
 export function extrusionWidthMm(nozzleDiameterMm:number){return nozzleDiameterMm*1.125;}
 export function recommendedInsertWidthMm(nozzleDiameterMm:number){return extrusionWidthMm(nozzleDiameterMm)*2;}
+export function minimumTerrainIslandWidthMm(settings:Pick<Settings,'nozzle_diameter_mm'|'minimum_terrain_island_width_mm'>){return settings.minimum_terrain_island_width_mm??extrusionWidthMm(settings.nozzle_diameter_mm)*3;}
 export function fitProfile(settings:Settings,className:string,depthMm:number,reliefOverride?:number):FitProfile{
  const depth=Math.max(.05,depthMm),extrusion=extrusionWidthMm(settings.nozzle_diameter_mm);
  const lineMaximum=lineClasses.has(className)?Math.max(0,(settings.path_width_mm-extrusion)/2):Infinity;
