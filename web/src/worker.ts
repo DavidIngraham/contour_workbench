@@ -6,10 +6,15 @@ import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import init, * as core from './wasm/contour_wasm';
-import ManifoldModule from 'manifold-3d';
-import manifoldUrl from 'manifold-3d/manifold.wasm?url';
 import { zipSync, strToU8 } from 'fflate';
-import { buildThreeMf, type ThreeMfKind } from './three-mf';
+import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
+import { combineMeshes, loadManifold, solidFromMesh, validatedMesh } from './manifold-adapter';
+import {
+  isEngineCancelRequest,
+  isEngineRequest,
+  type EngineProgress,
+  type EngineRequest,
+} from './engine-contract';
 import type {
   Grid,
   Settings,
@@ -23,8 +28,8 @@ import type {
 } from './types';
 
 const ready = init();
-let manifold: Awaited<ReturnType<typeof ManifoldModule>> | undefined;
-let rust: core.TerrainSession | undefined, baseTerrainSolid: any;
+let rust: core.TerrainSession | undefined;
+let baseTerrainSolid: Manifold | undefined;
 let grid: Grid,
   settings: Settings,
   terrain: Terrain,
@@ -75,190 +80,14 @@ function stl(m: Mesh) {
   }
   return strToU8(out + 'endsolid contour_workbench\n');
 }
-function exportMesh(m: Mesh, tolerance = 0.0001): Mesh {
-  const positions: number[] = [],
-    remap: number[] = [],
-    bins = new Map<string, number[]>();
-  for (let i = 0; i < m.positions.length; i += 3) {
-    const p = m.positions.slice(i, i + 3),
-      cell = p.map(v => Math.floor(v / tolerance));
-    let match: number | undefined;
-    search: for (let x = -1; x <= 1; x++)
-      for (let y = -1; y <= 1; y++)
-        for (let z = -1; z <= 1; z++) {
-          const ids = bins.get(`${cell[0] + x},${cell[1] + y},${cell[2] + z}`) || [];
-          for (const id of ids)
-            if (p.every((v, k) => Math.abs(v - positions[id * 3 + k]) <= tolerance)) {
-              match = id;
-              break search;
-            }
-        }
-    if (match === undefined) {
-      match = positions.length / 3;
-      positions.push(...p);
-      const key = cell.join(',');
-      bins.set(key, [...(bins.get(key) || []), match]);
-    }
-    remap.push(match);
-  }
-  const faces: (number[] | null)[] = [],
-    pending = new Map<string, number>();
-  for (let i = 0; i < m.indices.length; i += 3) {
-    const f = [remap[m.indices[i]], remap[m.indices[i + 1]], remap[m.indices[i + 2]]];
-    if (new Set(f).size < 3) continue;
-    const key = [...f].sort((a, b) => a - b).join(','),
-      prev = pending.get(key);
-    if (prev !== undefined) {
-      const g = faces[prev]!,
-        k = g.indexOf(f[0]);
-      if (f[1] === g[(k + 2) % 3]) {
-        faces[prev] = null;
-        pending.delete(key);
-        continue;
-      }
-    }
-    pending.set(key, faces.length);
-    faces.push(f);
-  }
-  return { positions, indices: faces.filter((f): f is number[] => f !== null).flat() };
-}
-function validate(m: Mesh) {
-  const canonical = new Map<string, number>(),
-    remap: number[] = [];
-  for (let i = 0; i < m.positions.length; i += 3) {
-    const p = [m.positions[i], m.positions[i + 1], m.positions[i + 2]];
-    if (p.some(v => !Number.isFinite(v))) throw new Error('Non-finite mesh coordinate');
-    const key = p.map(v => v.toFixed(8)).join(',');
-    if (!canonical.has(key)) canonical.set(key, canonical.size);
-    remap.push(canonical.get(key)!);
-  }
-  const edges = new Map<string, { count: number; sum: number }>();
-  for (let i = 0; i < m.indices.length; i += 3) {
-    const t = [remap[m.indices[i]], remap[m.indices[i + 1]], remap[m.indices[i + 2]]];
-    if (new Set(t).size !== 3) throw new Error('Export contains degenerate triangles');
-    for (let k = 0; k < 3; k++) {
-      const a = t[k],
-        b = t[(k + 1) % 3],
-        key = `${Math.min(a, b)},${Math.max(a, b)}`,
-        edge = edges.get(key) || { count: 0, sum: 0 };
-      edge.count++;
-      edge.sum += a < b ? 1 : -1;
-      edges.set(key, edge);
-    }
-  }
-  const invalid = [...edges.entries()].filter(([, edge]) => edge.count !== 2 || edge.sum !== 0);
-  if (invalid.length)
-    throw new Error(
-      `Generated mesh is not watertight (` +
-        invalid.length +
-        ` of ` +
-        edges.size +
-        ` edges; ` +
-        invalid
-          .slice(0, 5)
-          .map(([key, edge]) => key + `=` + edge.count + `/` + edge.sum)
-          .join(', ') +
-        `)`,
-    );
-}
-async function geometry(progress: (s: string) => void) {
-  if (!manifold) {
-    progress('Loading the solid geometry engine…');
-    manifold = await ManifoldModule({ locateFile: () => manifoldUrl });
-    manifold.setup();
-  }
-  return manifold;
-}
-function solid(M: any, m: Mesh) {
-  const mesh = new M.Mesh({
-    numProp: 3,
-    vertProperties: new Float32Array(m.positions),
-    triVerts: new Uint32Array(m.indices),
-  });
-  mesh.merge();
-  const result = new M.Manifold(mesh);
-  if (result.status() !== 'NoError') {
-    const error = result.status();
-    result.delete();
-    throw new Error(`Solid geometry is invalid: ${error}`);
-  }
-  return result;
-}
-function cachedTerrain(M: any) {
-  if (!baseTerrainSolid) baseTerrainSolid = solid(M, terrain.mesh);
+function cachedTerrain(module: ManifoldToplevel) {
+  if (!baseTerrainSolid) baseTerrainSolid = solidFromMesh(module, terrain.mesh);
   return baseTerrainSolid;
 }
-function combineMeshes(meshes: Mesh[]): Mesh {
-  const positionCount = meshes.reduce((sum, mesh) => sum + mesh.positions.length, 0),
-    indexCount = meshes.reduce((sum, mesh) => sum + mesh.indices.length, 0);
-  const positions = new Float32Array(positionCount),
-    indices = new Uint32Array(indexCount);
-  let positionOffset = 0,
-    indexOffset = 0,
-    vertexOffset = 0;
-  for (const mesh of meshes) {
-    positions.set(mesh.positions, positionOffset);
-    for (const index of mesh.indices) indices[indexOffset++] = Number(index) + vertexOffset;
-    positionOffset += mesh.positions.length;
-    vertexOffset += mesh.positions.length / 3;
-  }
-  return { positions, indices };
-}
-function manifoldMesh(raw: any): Mesh {
-  const numProp = Number(raw.numProp) || 3,
-    numVert = raw.vertProperties.length / numProp,
-    positions = new Array<number>(numVert * 3),
-    parent = Array.from({ length: numVert }, (_, index) => index);
-  for (let i = 0; i < numVert; i++)
-    for (let axis = 0; axis < 3; axis++)
-      positions[i * 3 + axis] = raw.vertProperties[i * numProp + axis];
-  const from = raw.mergeFromVert as Uint32Array | undefined,
-    to = raw.mergeToVert as Uint32Array | undefined;
-  if (from && to)
-    for (let i = 0; i < Math.min(from.length, to.length); i++)
-      if (from[i] < numVert && to[i] < numVert) parent[from[i]] = to[i];
-  const root = (index: number) => {
-    let next = index,
-      guard = 0;
-    while (parent[next] !== next && guard++ < numVert) next = parent[next];
-    let current = index;
-    while (parent[current] !== current) {
-      const previous = parent[current];
-      parent[current] = next;
-      current = previous;
-    }
-    return next;
-  };
-  return { positions, indices: Array.from(raw.triVerts as Uint32Array, index => root(index)) };
-}
-function validatedMesh(input: any, label: string): Mesh {
-  let last: unknown;
-  for (const tolerance of [0, 0.0001, 0.001, 0.005]) {
-    const clean = tolerance ? input.simplify(tolerance) : input;
-    try {
-      const raw = clean.getMesh(),
-        source = manifoldMesh(raw);
-      for (const weldTolerance of [0.0000001, 0.000001, 0.00001, 0.0001]) {
-        try {
-          const mesh = exportMesh(source, weldTolerance);
-          validate(mesh);
-          return mesh;
-        } catch (e) {
-          last = e;
-        }
-      }
-      throw last;
-    } catch (e) {
-      last = e;
-    } finally {
-      if (clean !== input) clean.delete();
-    }
-  }
-  throw new Error(label + ': ' + String(last));
-}
+
 function taperedSolid(
-  M: any,
-  prism: any,
+  M: ManifoldToplevel,
+  prism: Manifold,
   className: string,
   s: Settings,
   depthMm: number,
@@ -273,7 +102,7 @@ function taperedSolid(
     layerMm = Math.max(0.1, Math.min(0.25, s.nozzle_diameter_mm / 2));
   const profiledDepth = Math.min(totalDepth, profile.depthMm),
     divisions = Math.max(1, Math.ceil(profiledDepth / layerMm)),
-    bands: any[] = [];
+    bands: Manifold[] = [];
   try {
     for (let i = 0; i < divisions; i++) {
       const z0 = (profiledDepth * i) / divisions,
@@ -302,7 +131,13 @@ function taperedSolid(
     bands.forEach(b => b.delete());
   }
 }
-function safeTaperedSolid(M: any, prism: any, className: string, s: Settings, depthMm: number) {
+function safeTaperedSolid(
+  M: ManifoldToplevel,
+  prism: Manifold,
+  className: string,
+  s: Settings,
+  depthMm: number,
+) {
   for (const factor of [1, 0.75, 0.5, 0.25]) {
     const adjusted = { ...s, insert_draft_angle_deg: s.insert_draft_angle_deg * factor };
     let candidate;
@@ -336,7 +171,13 @@ function safeTaperedSolid(M: any, prism: any, className: string, s: Settings, de
 }
 
 const digitSegments: Record<string, string> = { 1: 'bc', 2: 'abdeg', 3: 'abcdg', 4: 'bcfg' };
-function digitCutters(M: any, digit: string, cx: number, cy: number, z: number) {
+function digitCutters(
+  M: ManifoldToplevel,
+  digit: string,
+  cx: number,
+  cy: number,
+  z: number,
+): Manifold[] {
   const map: { [key: string]: [number, number, number, number] } = {
     a: [0, 2, 2.4, 0.42],
     g: [0, 0, 2.4, 0.42],
@@ -352,7 +193,7 @@ function digitCutters(M: any, digit: string, cx: number, cy: number, z: number) 
   });
 }
 function switchbackSolid(
-  M: any,
+  M: ManifoldToplevel,
   cx: number,
   cy: number,
   widthMm: number,
@@ -362,7 +203,7 @@ function switchbackSolid(
   const points = calibrationSwitchbackCenterlineMm.map(
       ([x, y]) => [x + cx, y + cy] as [number, number],
     ),
-    parts: any[] = [];
+    parts: Manifold[] = [];
   try {
     for (let i = 1; i < points.length; i++) {
       const [x0, y0] = points[i - 1],
@@ -388,7 +229,7 @@ function switchbackSolid(
   }
 }
 function calibrationFiles(
-  M: any,
+  M: ManifoldToplevel,
   s: Settings,
   prefix = 'calibration/',
 ): Record<string, Uint8Array> {
@@ -396,7 +237,7 @@ function calibrationFiles(
     centers = [14, 38, 62, 86],
     pathWidth = Math.max(0.05, s.path_width_mm);
   let base = M.Manifold.cube([100, 38, 3]);
-  const cutters: any[] = [];
+  const cutters: Manifold[] = [];
   try {
     clearances.forEach((clearance, index) => {
       cutters.push(switchbackSolid(M, centers[index], 12, pathWidth + 2 * clearance, 2.2, 1));
@@ -410,7 +251,13 @@ function calibrationFiles(
     const files: Record<string, Uint8Array> = {
         [prefix + 'coupon-base.stl']: stl(validatedMesh(base, 'Calibration coupon base')),
       },
-      pieces: any[] = [];
+      pieces: {
+        label: number;
+        clearance_per_side_mm: number;
+        file: string;
+        geometry: string;
+        path_width_mm: number;
+      }[] = [];
     clearances.forEach((clearance, index) => {
       const prism = switchbackSolid(M, 8, 6.2, pathWidth, 2, 0),
         tapered = safeTaperedSolid(M, prism, 'trail', s, 2);
@@ -469,8 +316,18 @@ function syncBase(next: Settings) {
     clearBaseTerrainSolid();
   }
 }
-async function handle(type: string, p: any, progress: (s: string) => void): Promise<any> {
+type Progress = (message: string, phase?: string, completed?: number, total?: number) => void;
+
+const canceledRequests = new Set<number>();
+
+async function checkpoint(id: number) {
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
+  if (canceledRequests.delete(id)) throw new DOMException('Operation canceled', 'AbortError');
+}
+
+async function handle(request: EngineRequest, progress: Progress): Promise<unknown> {
   await ready;
+  const { type, payload: p } = request;
   switch (type) {
     case 'hydrate':
       setGrid(p.project.grid);
@@ -547,7 +404,7 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
         })),
         cutters: packet.meshes.slice(insertCount),
       };
-      const M = await geometry(progress);
+      const M = await loadManifold(progress);
       let result = cachedTerrain(M).translate([0, 0, 0]);
       const raisedTerrain = plan.inserts.some(piece => piece.conformal)
         ? cachedTerrain(M).translate([0, 0, 0.35])
@@ -562,8 +419,14 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
             for (let groupIndex = 0; groupIndex < groupEnds.length; groupIndex++) {
               const groupEnd = groupEnds[groupIndex],
                 group = plan.cutters.slice(groupStart, groupEnd);
-              progress(`Cutting terrain pocket group ${groupIndex + 1} of ${groupEnds.length}…`);
-              const combined = solid(M, combineMeshes(group));
+              progress(
+                `Cutting terrain pocket group ${groupIndex + 1} of ${groupEnds.length}…`,
+                'terrain-pockets',
+                groupIndex,
+                groupEnds.length,
+              );
+              await checkpoint(request.id);
+              const combined = solidFromMesh(M, combineMeshes(group));
               try {
                 const next = result.subtract(combined);
                 result.delete();
@@ -591,13 +454,14 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
             if (!a.enabled) continue;
             const data = annotationGeometry(a, grid, settings, terrain.layout);
             if (data.porch) {
-              const porch = solid(M, data.porch),
+              await checkpoint(request.id);
+              const porch = solidFromMesh(M, data.porch),
                 next = result.add(porch);
               porch.delete();
               result.delete();
               result = next;
             }
-            const parts = data.solids.map(m => solid(M, m));
+            const parts = data.solids.map(mesh => solidFromMesh(M, mesh));
             try {
               const label = M.Manifold.union(parts),
                 next = a.treatment === 'raised' ? result.add(label) : result.subtract(label);
@@ -617,9 +481,15 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
         for (let pieceIndex = 0; pieceIndex < plan.inserts.length; pieceIndex++) {
           const piece = plan.inserts[pieceIndex];
           if (pieceIndex % 10 === 0)
-            progress('Preparing insert ' + (pieceIndex + 1) + ' of ' + plan.inserts.length + '…');
+            progress(
+              'Preparing insert ' + (pieceIndex + 1) + ' of ' + plan.inserts.length + '…',
+              'inserts',
+              pieceIndex,
+              plan.inserts.length,
+            );
           try {
-            const prism = solid(M, piece.mesh),
+            await checkpoint(request.id);
+            const prism = solidFromMesh(M, piece.mesh),
               tapered = shouldTaperInsert(piece.mesh.indices.length)
                 ? safeTaperedSolid(M, prism, piece.class, settings, piece.insert_depth_mm)
                 : {
@@ -720,18 +590,19 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
       return zipSync(files, { level: 6 });
     }
     case 'calibration': {
-      const M = await geometry(progress);
+      const M = await loadManifold(progress);
       progress('Building nozzle-aware fit-test pieces…');
       return zipSync(calibrationFiles(M, p.settings as Settings, ''), { level: 3 });
     }
     case 'export-3mf': {
-      const kind = p.kind as ThreeMfKind;
+      const kind = p.kind;
       progress(
         kind === 'bambu'
           ? 'Arranging terrain and inserts across Bambu Studio plates…'
           : 'Packaging an assembled portable 3MF…',
       );
-      return buildThreeMf(p.asset as Asset, p.project as Project, kind);
+      const { buildThreeMf } = await import('./three-mf');
+      return buildThreeMf(p.asset, p.project, kind);
     }
     case 'export': {
       const asset = p.asset as Asset,
@@ -766,27 +637,38 @@ async function handle(type: string, p: any, progress: (s: string) => void): Prom
           2,
         ),
       );
-      Object.assign(files, calibrationFiles(await geometry(progress), project.settings));
+      Object.assign(files, calibrationFiles(await loadManifold(progress), project.settings));
       return zipSync(files, { level: 3 });
     }
     default:
       throw new Error('Unknown operation');
   }
 }
-self.onmessage = async (e: MessageEvent) => {
-  const { id, type, payload } = e.data;
+self.onmessage = async (event: MessageEvent<unknown>) => {
+  if (isEngineCancelRequest(event.data)) {
+    canceledRequests.add(event.data.cancel);
+    return;
+  }
+  if (!isEngineRequest(event.data)) return;
+  const request = event.data;
   try {
-    const result = await handle(type, payload, message =>
-        self.postMessage({ id, progress: message }),
-      ),
-      transfers: Transferable[] = [];
-    const visit = (v: any) => {
-      if (ArrayBuffer.isView(v)) transfers.push(v.buffer as ArrayBuffer);
-      else if (v && typeof v === 'object') Object.values(v).forEach(visit);
+    const result = await handle(request, (message, phase, completed, total) => {
+      const progress: EngineProgress = { message, phase, completed, total };
+      self.postMessage({ id: request.id, progress });
+    });
+    const transfers: Transferable[] = [];
+    const visit = (value: unknown) => {
+      if (ArrayBuffer.isView(value)) transfers.push(value.buffer as ArrayBuffer);
+      else if (value && typeof value === 'object') Object.values(value).forEach(visit);
     };
     visit(result);
-    self.postMessage({ id, result }, [...new Set(transfers)]);
+    self.postMessage({ id: request.id, result }, [...new Set(transfers)]);
   } catch (error) {
-    self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+    self.postMessage({
+      id: request.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    canceledRequests.delete(request.id);
   }
 };

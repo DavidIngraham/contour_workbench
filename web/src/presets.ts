@@ -1,6 +1,7 @@
 /** Static preset catalog and prebuilt mesh-pack loading. */
 import { strFromU8, unzipSync } from 'fflate';
 import type { Mesh, Overlay, Project, Terrain } from './types';
+import { persistentCacheKey, readPersistentCache, writePersistentCache } from './persistent-cache';
 
 /** One landing-card entry in the static preset catalog. */
 export interface PresetEntry {
@@ -10,6 +11,8 @@ export interface PresetEntry {
   description: string;
   image: string;
   bundle: string;
+  /** Increment whenever the bundle content changes at the same URL. */
+  revision: number;
   badges: string[];
 }
 /** Versioned landing catalog. */
@@ -41,7 +44,6 @@ export function presetUrl(path: string) {
   return import.meta.env.BASE_URL + path.replace(/^\/+/, '');
 }
 /** Load and validate the static landing catalog. */
-/** Download and hydrate a compressed preset pack. */
 export async function loadPresetCatalog(): Promise<PresetCatalog> {
   const response = await fetch(presetUrl('examples/catalog.json'));
   if (!response.ok) throw new Error('The model catalog could not be loaded.');
@@ -75,7 +77,17 @@ export function validatePresetLinks(project: Project, overlays: Overlay[]) {
   const orphan = overlays.find(overlay => !features.has(overlayFeatureId(overlay.id)));
   if (orphan) throw new Error('Preset overlay ' + orphan.id + ' references an unknown feature.');
 }
+/** Download, validate, and persistently cache a hydrated preset pack. */
 export async function loadPreset(entry: PresetEntry): Promise<PresetBundle> {
+  const cacheKey = persistentCacheKey(
+    'preset-v1',
+    JSON.stringify([entry.id, entry.bundle, entry.revision]),
+  );
+  const cached = await readPersistentCache<PresetBundle>(cacheKey, 30 * 24 * 60 * 60 * 1000);
+  if (cached) {
+    validatePresetLinks(cached.project, cached.overlays);
+    return cached;
+  }
   const response = await fetch(presetUrl(entry.bundle));
   if (!response.ok) throw new Error(entry.name + ' could not be loaded.');
   const files = unzipSync(new Uint8Array(await response.arrayBuffer()));
@@ -94,5 +106,6 @@ export async function loadPreset(entry: PresetEntry): Promise<PresetBundle> {
     overlays: manifest.overlays.map(item => ({ ...item, mesh: mesh(item.mesh) })),
   } as PresetBundle;
   validatePresetLinks(bundle.project, bundle.overlays);
+  await writePersistentCache(cacheKey, bundle);
   return bundle;
 }

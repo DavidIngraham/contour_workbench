@@ -1,5 +1,11 @@
 import { it, expect } from 'vitest';
-import { localFrame, regularShape, rotatePolygon, roundPolygon } from '../src/extent-shapes';
+import {
+  localFrame,
+  regularShape,
+  rotatePolygon,
+  roundPolygon,
+  splinePolygon,
+} from '../src/extent-shapes';
 import { validatePolygon } from '../src/polygon';
 it('constructs metric squares and rectangles at latitude', () => {
   for (const lat of [0, 45, 70]) {
@@ -35,4 +41,22 @@ it('makes a circle with a constant ground radius', () => {
     q = p.map(localFrame(p).toXY);
   expect(q).toHaveLength(96);
   q.forEach(([x, y]) => expect(Math.hypot(x, y)).toBeCloseTo(500, 5));
+});
+
+it('creates a valid closed spline that passes through every editable control point', () => {
+  const controls: [number, number][] = [
+    [-121.67, 45.68],
+    [-121.65, 45.68],
+    [-121.645, 45.695],
+    [-121.66, 45.705],
+    [-121.675, 45.695],
+  ];
+  const spline = splinePolygon(controls);
+  expect(spline.length).toBeGreaterThan(controls.length * 4);
+  const stride = spline.length / controls.length;
+  controls.forEach((control, index) => {
+    expect(spline[index * stride][0]).toBeCloseTo(control[0], 10);
+    expect(spline[index * stride][1]).toBeCloseTo(control[1], 10);
+  });
+  expect(() => validatePolygon(spline)).not.toThrow();
 });

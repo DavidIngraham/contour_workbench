@@ -9,12 +9,12 @@ Contour Workbench turns elevation and map features into printable terrain models
 - Full source resolution by default, with optional gradient-driven simplification.
 - Freeform, spline, square, rectangle, and circle extents with editable dimensions and corner radii.
 - USGS 3DEP, geographic GeoTIFF imports, and Copernicus download links.
-- Direct OpenStreetMap queries for paths, water, glaciers, ski runs, and lifts.
+- Direct OpenStreetMap queries with mirror failover and local response caching.
 - Per-feature visibility and Insert/V-carve treatment controls.
 - Nozzle-aware insert clearance, taper, elephant-foot relief, and a calibration coupon.
 - Text and monochrome PNG annotations on the terrain or an attached porch.
 - Separate STL files, portable assembled 3MF, and Bambu Studio multi-plate 3MF.
-- Static hosting on GitHub Pages, with geometry processing performed locally.
+- Static hosting on GitHub Pages, with lazily loaded geometry tools and processing performed locally.
 
 ## Repository layout
 
@@ -62,4 +62,4 @@ npm run test:mobile
 npm run test:presets
 ```
 
-Pushes to `main` run these checks and deploy GitHub Pages automatically.
+Pull requests run the validation workflow. Pushes to `main` repeat the release gate and deploy GitHub Pages automatically.

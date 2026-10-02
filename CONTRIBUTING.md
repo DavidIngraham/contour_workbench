@@ -39,7 +39,11 @@ npm run format
 npm run check
 ```
 
-Run `npm run test:mobile` for responsive UI work and `npm run test:presets` for changes to Rust geometry, the worker, Manifold operations, insert fit, preset packs, or export logic.
+Run `npm run test:mobile` for responsive UI work and `npm run test:presets` for changes to Rust geometry, the worker, Manifold operations, insert fit, preset packs, or export logic. Use `bash scripts/build-wasm.sh` when only the Rust/WASM boundary changed.
+
+When a serialized Rust model changes, update `web/src/serialized-contract.ts` and `web/src/serialized-contract.json` together. Rust and TypeScript parity tests deliberately fail until both sides agree.
+
+When replacing a bundled preset at the same asset URL, increment its `revision` in `web/public/examples/catalog.json` so browsers do not reuse the previous IndexedDB entry.
 
 ## Change boundaries
 

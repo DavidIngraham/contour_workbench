@@ -100,4 +100,11 @@ describe('3MF export', () => {
     expect(manifest.plates[0].objects).toEqual(['Terrain']);
     expect(manifest.plates[1].objects).toEqual(['lake & one', 'ski run']);
   });
+  it('rejects invalid triangle references before creating an archive', () => {
+    const broken: Asset = {
+      ...asset,
+      terrain: { ...asset.terrain, indices: [0, 1, 999] },
+    };
+    expect(() => buildThreeMf(broken, project, 'portable')).toThrow('out-of-range triangle index');
+  });
 });

@@ -1,5 +1,7 @@
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
+import { renderAppShell } from './app-shell';
+import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
 import './style.css';
 import {
   createIcons,
@@ -94,57 +96,7 @@ const esc = (s: unknown) =>
     /[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
-const app = $('app');
-app.innerHTML = `
-<header><div class="brand"><div class="brand-mark">${icon('mountain')}</div><div><h1>Contour Workbench</h1><small>Make a landscape your own</small></div></div><div class="header-right"><span class="saved-indicator"><span class="dot"></span><span id="save-status">Local workspace</span></span><button class="btn ghost" id="open-project">${icon('folder-open')} Open project</button><button class="btn" id="save-project">${icon('save')} Save project</button></div></header>
-<div class="workspace"><aside id="settings-panel" aria-label="Design settings"><button id="mobile-close" class="mobile-only btn" aria-label="Close settings">Close settings ×</button><div class="sidebar-heading"><div><div class="eyebrow">Your workspace</div><h2>Shape the landscape</h2></div><span class="step">01 — 03</span></div><nav class="tabs" aria-label="Workbench panels"><button class="tab active" data-tab="terrain">Terrain</button><button class="tab" data-tab="features">Features <span id="feature-count" class="badge">—</span></button><button class="tab" data-tab="annotations">Annotations</button><button class="tab" data-tab="print">Print setup</button></nav><div class="sidebar-body">
-<div id="tab-terrain"><section class="panel"><div class="panel-title"><h3>Location</h3>${icon('map-pin')}</div><div class="location-card"><strong id="location-name">Post Canyon, Oregon</strong><p id="coordinates">45.69° N · 121.64° W</p><button id="change-area">Choose another area ${icon('arrow-up-right')}</button></div><div class="source-pill"><span class="dot"></span><span id="source-name">Loading example…</span></div></section>
-<section class="panel"><div class="panel-title"><h3>Terrain</h3><small>Shape & scale</small></div><label class="section-label">Print bed <span>width × depth</span></label><div class="input-row"><div class="input-wrap"><input id="bed-width" type="number" min="30" max="1000" value="248" aria-label="Print bed width"/><span>mm</span></div><b>×</b><div class="input-wrap"><input id="bed-depth" type="number" min="30" max="1000" value="198" aria-label="Print bed depth"/><span>mm</span></div></div><label class="section-label" for="height-factor">Vertical exaggeration <output id="height-value">1.0×</output></label><input id="height-factor" type="range" min="0.25" max="3" value="1" step="0.05"/><div class="section-label"><span>Natural</span><span>Dramatic</span></div><label class="section-label" for="base-height">Base thickness</label><div class="input-wrap"><input id="base-height" type="number" min="0.5" max="30" step="0.1" value="1"/><span>mm</span></div><label class="section-label" for="quality">Terrain detail</label><select id="quality"><option value="0">Full source resolution</option><option value="0.02">Adaptive · 0.02 mm error</option><option value="0.05">Adaptive · 0.05 mm error</option><option value="0.1">Adaptive · 0.10 mm error</option><option value="0.25">Adaptive · 0.25 mm error</option></select><div class="quality">${icon('check')}<span id="quality-caption">Every elevation sample, preserved.</span></div></section>
-<section class="panel"><div class="panel-title"><h3>Elevation source</h3></div><select id="source"><option value="auto">Auto · resolution matched to area</option><option value="usgs_3dep_10m">USGS 3DEP · 10 m</option><option value="usgs_3dep_30m">USGS 3DEP · 30 m</option><option value="copernicus_glo30">Copernicus GLO-30 · 30 m</option><option value="copernicus_glo90">Copernicus GLO-90 · 90 m</option></select><button class="btn full-width" id="load-area">${icon('rotate-ccw')} Load selected area</button><div id="tile-downloads" class="help"></div><button class="small-link full-width" id="upload-dem">Use a local GeoTIFF</button><p class="help">Auto selects 10, 30, or 90 m based on area size. Select a source to override. Terrain detail preserves the loaded samples.</p></section></div>
-<div id="tab-features" class="hidden"><section class="panel"><div class="panel-title"><h3>Map features</h3><button class="select-all" id="all-features">Toggle all</button></div><button class="btn full-width" id="fetch-osm">${icon('plus')} Pull from OpenStreetMap</button><label class="winter-toggle"><input id="winter-mode" type="checkbox"/><span><strong>Winter mode</strong><small>Load ski runs and lifts; show glacier inserts.</small></span></label><button class="small-link full-width" id="upload-features">Or upload GeoJSON</button><p class="help">Choose inserts, hidden features, or V-shaped grooves. Water, ice, and ski areas use shallow supported inlays.</p></section><section class="panel"><div class="search">${icon('search')}<input id="feature-search" placeholder="Find a trail, lake, glacier, or ski run…" aria-label="Search features"/></div><div id="feature-list"></div></section></div>
-<div id="tab-annotations" class="hidden"></div><div id="tab-print" class="hidden"><section class="panel"><div class="panel-title"><h3>Feature fit</h3><span class="badge">Millimeters</span></div>${[
-  ['nozzle-diameter', 'Nozzle diameter', '0.4', '0.05', 'mm', '1.2', '0.2'],
-  ['path-width', 'Path width', '0.9', '0.05', 'mm', '20', '0.2'],
-  ['clearance', 'Feature separation', '0.1', '0.05', 'mm', '20', '0.05'],
-  ['fit-clearance', 'Pocket clearance · each side', '0.15', '0.05', 'mm', '2', '0'],
-  ['foot-relief', 'Elephant-foot relief · each side', '0.18', '0.01', 'mm', '2', '0'],
-  ['foot-height', 'Elephant-foot taper height', '0.4', '0.1', 'mm', '5', '0'],
-  ['draft-angle', 'Insert draft angle', '1.5', '0.25', '°', '10', '0'],
-  ['insert-depth', 'Line insert depth', '2', '0.1', 'mm', '20', '0.2'],
-  ['zone-depth', 'Zone insert depth', '0.8', '0.1', 'mm', '20', '0.2'],
-  ['zone-floor', 'Minimum zone floor', '0.8', '0.1', 'mm', '20', '0.2'],
-  ['ski-run-width', 'Fallback ski-run width', '30', '1', 'm', '500', '1'],
-  ['carve-depth', 'V-carve / recess depth', '0.4', '0.05', 'mm', '20', '0.05'],
-  ['insert-gap', 'Insert gap', '0.5', '0.1', 'mm', '20', '0.05'],
-]
-  .map(
-    ([id, label, value, step, unit, max, min]) =>
-      `<label class="section-label" for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/><span>${unit}</span></div>`,
-  )
-  .join(
-    '',
-  )}<label class="section-label" for="terrain-island-width">Minimum terrain island width</label><div class="input-wrap"><input id="terrain-island-width" type="number" min="0" max="20" step="0.05" placeholder="Auto"/><span>mm</span></div><p class="help" id="terrain-island-guidance"></p><div class="quality"><span id="fit-guidance"></span></div><label class="section-label" for="segment">Insert segmentation</label><select id="segment"><option value="">Use full print bed</option><option value="50">50 × 50 mm sections</option><option value="100">100 × 100 mm sections</option></select><p class="help">Full-bed inserts avoid unnecessary breaks. The visible top stays full-size while the buried lower layers taper inward. Narrow inserts automatically retain at least one extrusion of material.</p></section><section class="panel"><div class="panel-title"><h3>Fit calibration</h3></div><p class="help">Download a numbered switchback base and four tapered trail inserts around the selected clearance. Tight turns and close runs expose first-layer swelling and fused path details before a large print.</p><button class="btn full-width" id="download-calibration">${icon('download')} Download fit test</button></section><section class="panel"><div class="panel-title"><h3>Generated asset</h3></div><div id="asset-summary" class="empty-note">When your design is ready, generate the printable model. You can review every piece before downloading.</div><div id="review-controls" class="hidden"><label class="section-label" for="explode">Explode inserts</label><input id="explode" type="range" min="0" max="40" step="1" value="0"/><label class="section-label" for="section">Section view</label><input id="section" type="range" min="0" max="100" value="100"/><div class="review-list" id="piece-list"></div></div></section></div>
-</div><footer class="sidebar-footer">${icon('box')} Runs locally. Your design stays yours.</footer></aside>
-<button id="mobile-scrim" class="mobile-scrim" aria-label="Close settings" hidden></button><main class="stage"><button id="mobile-settings" class="mobile-only btn" aria-controls="settings-panel" aria-expanded="false">Settings</button><div id="viewport" aria-label="Interactive 3D terrain model"></div><div class="stage-top"><div class="project-heading"><div class="crumb">WORKBENCH <span> / </span> <span id="project-crumb">POST CANYON</span></div><h2 id="project-title">A little piece of the outdoors.</h2><p id="project-subtitle">Post Canyon, Oregon · Terrain & trail study</p></div><div class="mode-switch"><button id="mode-design" class="active">${icon('sliders-horizontal')} Design</button><button id="mode-review" disabled>${icon('box')} Review</button></div></div><div id="status" class="status" role="status" aria-live="polite"></div><div class="floating-tools"><button class="tool" id="fit-view" title="Fit model" aria-label="Fit model">${icon('maximize')}</button><button class="tool" id="top-view" title="Top view" aria-label="Top view">${icon('compass')}</button><div class="tool-separator"></div><button class="tool active" id="contours" title="Toggle contour lines" aria-label="Toggle contour lines">${icon('layers')}</button><button class="tool active" id="topo-map" title="Toggle topographic basemap" aria-label="Toggle topographic basemap">${icon('map-pin')}</button><button class="tool" id="wireframe" title="Toggle wireframe" aria-label="Toggle wireframe">${icon('grid-2-x2')}</button><div class="tool-separator"></div><button class="tool" id="draw-boundary" title="Draw model boundary" aria-label="Draw model boundary">${icon('scissors')}</button></div><button class="compass" id="north-up" title="Orient north up" aria-label="Orient north up"><span>N</span><span id="north-arrow">↑</span></button><div class="viewport-hint">Drag to orbit <span> · </span> Scroll to zoom <span> · </span> Click a feature to select</div><div id="boundary-actions" class="hidden"><span id="boundary-count">Click terrain to place boundary vertices</span><button class="btn" id="boundary-apply">Apply</button><button class="btn" id="boundary-clear">Clear</button><button class="btn ghost" id="boundary-cancel">Cancel</button></div><div class="stage-bottom"><div class="model-info"><div class="info-title"><span class="dot"></span><span id="model-caption">PREPARING LANDSCAPE</span></div><div class="metrics"><div class="metric"><strong id="dimensions">— <small>mm</small></strong><p>Model footprint</p></div><div class="metric"><strong id="triangle-count">—</strong><p>Terrain triangles</p></div><div class="metric"><strong id="enabled-count">—</strong><p>Active features</p></div></div></div><div class="model-actions"><button class="btn ghost hidden" id="cancel-job">Cancel</button><button class="btn" id="download" disabled>${icon('download')} Download</button><button class="btn primary" id="generate" disabled>${icon('box')} Generate model ${icon('chevron-right')}</button></div></div><div class="attribution"><span id="topo-attribution"></span> · <a href="https://www.usgs.gov/3d-elevation-program" target="_blank" rel="noopener">USGS / Copernicus elevation</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a></div></main></div>
-<div class="modal-backdrop hidden" id="area-dialog"><section class="modal extent-modal" role="dialog" aria-modal="true" aria-labelledby="area-title">
-<div class="wizard-progress hidden" id="wizard-progress" aria-label="New landscape steps"><span data-wizard-dot="1">1 <b>Area</b></span><span data-wizard-dot="2">2 <b>Terrain</b></span><span data-wizard-dot="3">3 <b>Features</b></span></div>
-<div data-wizard-page="1"><div class="eyebrow" id="area-eyebrow">Choose your landscape</div><h2 id="area-title">Somewhere worth making.</h2><p>Pan and zoom the map, then draw your terrain outline. Concave boundaries are welcome.</p><label>Project name<input id="area-name" value="My landscape" maxlength="80"/></label><div class="shape-controls"><label>Shape<select id="extent-shape"><option value="freeform">Freeform</option><option value="spline">Spline polygon</option><option value="square">Square</option><option value="rectangle">Rectangle</option><option value="circle">Circle</option></select></label><label id="extent-width-label">Width / diameter (m)<input id="extent-width" type="number" min="1" step="100" value="2000"/></label><label id="extent-height-label">Height (m)<input id="extent-height" type="number" min="1" step="100" value="1500"/></label><label>Angle (° clockwise)<input id="extent-angle" type="number" min="-360" max="360" step="5" value="0"/></label><label>Corner radius (m)<input id="extent-radius" type="number" min="0" step="25" value="0"/></label></div><div class="map-toolbar"><button class="btn" id="polygon-draw">Draw / redraw</button><button class="btn" id="polygon-undo">Undo vertex</button><button class="btn" id="polygon-finish">Finish polygon</button></div><div id="extent-map" aria-label="Terrain boundary map"></div><p id="polygon-status" role="status"></p><details><summary>Go to geographic bounds</summary><div class="bounds">${[
-  ['west', 'West longitude', '-121.68'],
-  ['east', 'East longitude', '-121.62'],
-  ['south', 'South latitude', '45.65'],
-  ['north', 'North latitude', '45.70'],
-]
-  .map(
-    ([id, label, v]) =>
-      `<label>${label}<input id="${id}" type="number" step="0.001" value="${v}"/></label>`,
-  )
-  .join('')}</div><button class="btn" id="map-locate">Move map here</button></details></div>
-<div class="hidden wizard-page" data-wizard-page="2"><div class="eyebrow">Step two</div><h2>Choose terrain detail.</h2><p>Automatic selection uses detailed USGS elevation in the United States and global Copernicus coverage elsewhere, while keeping very large areas responsive.</p><div class="wizard-choice"><label for="wizard-source">Elevation source</label><select id="wizard-source"><option value="auto">Automatic · recommended</option><option value="usgs_3dep_10m">USGS 3DEP · 10 m</option><option value="usgs_3dep_30m">USGS 3DEP · 30 m</option><option value="copernicus_glo30">Copernicus GLO-30 · 30 m</option><option value="copernicus_glo90">Copernicus GLO-90 · 90 m</option></select><p class="source-note">Automatic mode chooses 10, 30, or 90 m based on the area and available regional source.</p></div></div>
-<div class="hidden wizard-page" data-wizard-page="3"><div class="eyebrow">Step three</div><h2>Add map features.</h2><p>You can change every feature individually after the landscape opens.</p><div class="wizard-options"><label><input type="radio" name="wizard-features" value="osm" checked/><span><strong>Trails, roads, and water</strong><small>Pull standard landscape features from OpenStreetMap.</small></span></label><label><input type="radio" name="wizard-features" value="winter"/><span><strong>Winter landscape</strong><small>Add ski runs, lifts, and glaciers; start with trails hidden.</small></span></label><label><input type="radio" name="wizard-features" value="none"/><span><strong>Terrain only</strong><small>Start with elevation and add features later.</small></span></label></div></div>
-<div class="modal-actions"><button class="btn ghost" id="area-close">Cancel</button><button class="btn ghost hidden" id="wizard-back">Back</button><button class="btn primary hidden" id="wizard-next">Continue ${icon('chevron-right')}</button><button class="btn" id="area-reuse" disabled>Use loaded elevation</button><button class="btn primary" id="area-load" disabled>Load terrain ${icon('arrow-up-right')}</button></div></section></div>
-<div class="modal-backdrop" id="landing-dialog"><section class="modal landing-modal" role="dialog" aria-modal="true" aria-labelledby="landing-title"><div class="landing-heading"><div><div class="eyebrow">Contour Workbench</div><h2 id="landing-title">Choose a landscape to begin.</h2><p>Open a ready-to-edit model instantly, or shape a new place from the map.</p></div><div class="brand-mark">${icon('mountain')}</div></div><div id="preset-grid" class="preset-grid" aria-live="polite"><div class="preset-loading"><span class="spinner"></span> Loading landscapes…</div></div><div class="landing-footer"><span>Models stay editable after they open.</span><button class="btn ghost" id="landing-open">${icon('folder-open')} Open saved project</button></div></section></div>
-<div class="modal-backdrop hidden" id="download-dialog"><section class="modal download-modal" role="dialog" aria-modal="true" aria-labelledby="download-title"><div class="eyebrow">Export model</div><h2 id="download-title">Choose your print format.</h2><p>Every option uses the same validated terrain and tapered inserts.</p><div class="format-options"><label class="format-option"><input type="radio" name="download-format" value="stl" checked/><span><strong>STL bundle</strong><small>A ZIP of separate STL files, the editable project, validation report, and fit coupon.</small></span><b>Universal</b></label><label class="format-option"><input type="radio" name="download-format" value="portable"/><span><strong>Portable 3MF</strong><small>One standards-based file with the terrain and inserts kept in their assembled positions.</small></span><b>3MF</b></label><label class="format-option"><input type="radio" name="download-format" value="bambu"/><span><strong>Bambu 3MF</strong><small>Terrain on plate 1, with inserts automatically packed onto additional plates.</small></span><b>Multi-plate</b></label></div><p class="export-note" id="bambu-export-note"></p><div class="modal-actions"><button class="btn ghost" id="download-cancel">Cancel</button><button class="btn primary" id="download-confirm">${icon('download')} Download selected</button></div></section></div>
-<input id="file-project" class="hidden" type="file" accept=".json,.contour"/><input id="file-features" class="hidden" type="file" accept=".json,.geojson"/><input id="file-dem" class="hidden" type="file" accept=".tif,.tiff"/>`;
+$('app').innerHTML = renderAppShell(icon);
 createIcons({ icons });
 function mobileSettings(open: boolean) {
   document.body.classList.toggle('settings-open', open);
@@ -600,10 +552,10 @@ async function rebuild(fit = false) {
   updateBusy(true);
   const requested = revision;
   try {
-    const t = await engine.call<Terrain & { terrainBuilds: number }>(
+    const t = await engine.call(
       'terrain',
       { grid: project.grid, settings: project.settings, features: project.features },
-      s => status(s, false, true),
+      progress => status(progress.message, false, true),
     );
     if (requested !== revision) {
       status('Settings changed during generation. Applying the latest design…', false, true);
@@ -614,10 +566,10 @@ async function rebuild(fit = false) {
     terrainBuilds = t.terrainBuilds;
     viewer.model.scale.z = 1;
     viewer.setTerrain(t.mesh, t.layout, fit);
-    overlays = await engine.call<Overlay[]>(
+    overlays = await engine.call(
       'overlays',
       { features: project.features, settings: project.settings },
-      s => status(s, false, true),
+      progress => status(progress.message, false, true),
     );
     viewer.setOverlays(overlays, project.features);
     annotationEditor.refresh();
@@ -644,7 +596,7 @@ async function updateOverlays() {
   if (!busy) status('Updating feature treatments…', false, true);
   const requested = revision;
   try {
-    const result = await engine.call<Overlay[]>('overlays', {
+    const result = await engine.call('overlays', {
       features: project.features,
       settings: project.settings,
     });
@@ -694,7 +646,7 @@ $('generate').onclick = async () => {
   updateBusy(true);
   const requested = revision;
   try {
-    const result = await engine.call<Asset>(
+    const result = await engine.call(
       'generate',
       {
         features: project.features,
@@ -702,7 +654,7 @@ $('generate').onclick = async () => {
         annotations: project.annotations || [],
         revision: requested,
       },
-      s => status(s, false, true),
+      progress => status(progress.message, false, true),
     );
     if (requested !== revision) {
       status('The design changed while generating. Generate again for the latest selection.');
@@ -728,25 +680,6 @@ $('generate').onclick = async () => {
     updateBusy(false);
   }
 };
-function projectFileStem(name: string) {
-  const safe =
-    name
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '-')
-      .trim()
-      .replace(/[. ]+$/g, '')
-      .slice(0, 120)
-      .replace(/[. ]+$/g, '') || 'Contour Workbench';
-  return /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(safe) ? 'Project ' + safe : safe;
-}
-function download(data: BlobPart, name: string, type = 'application/octet-stream') {
-  const blob = new Blob([data], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 30000);
-}
 function downloadDialog(open: boolean) {
   $('download-dialog').classList.toggle('hidden', !open);
   document.querySelector<HTMLElement>('.workspace')!.inert = open;
@@ -772,17 +705,17 @@ $('download-confirm').onclick = async () => {
   updateBusy(true);
   try {
     if (format === 'stl') {
-      const zip = await engine.call<Uint8Array>('export', { asset, project }, s =>
-        status(s, false, true),
+      const zip = await engine.call('export', { asset, project }, s =>
+        status(s.message, false, true),
       );
-      download(zip as unknown as BlobPart, stem + '.zip', 'application/zip');
+      downloadFile(zip as unknown as BlobPart, stem + '.zip', 'application/zip');
       status('STL print bundle downloaded.');
     } else {
       const kind = format === 'bambu' ? 'bambu' : 'portable',
-        file = await engine.call<Uint8Array>('export-3mf', { asset, project, kind }, s =>
-          status(s, false, true),
+        file = await engine.call('export-3mf', { asset, project, kind }, s =>
+          status(s.message, false, true),
         );
-      download(
+      downloadFile(
         file as unknown as BlobPart,
         stem + (kind === 'bambu' ? '-bambu.3mf' : '.3mf'),
         'model/3mf',
@@ -799,10 +732,10 @@ $('download-calibration').onclick = async () => {
   if (!project || busy) return;
   updateBusy(true);
   try {
-    const zip = await engine.call<Uint8Array>('calibration', { settings: project.settings }, s =>
-      status(s, false, true),
+    const zip = await engine.call('calibration', { settings: project.settings }, s =>
+      status(s.message, false, true),
     );
-    download(zip as unknown as BlobPart, 'Contour Workbench fit test.zip', 'application/zip');
+    downloadFile(zip as unknown as BlobPart, 'Contour Workbench fit test.zip', 'application/zip');
     status(
       'Fit-test bundle downloaded. Print the numbered base and inserts before the full model.',
     );
@@ -814,20 +747,18 @@ $('download-calibration').onclick = async () => {
 };
 $('save-project').onclick = () => {
   if (!project) return;
-  download(JSON.stringify(project), 'landscape.contour.json', 'application/json');
+  downloadFile(
+    JSON.stringify(project),
+    projectFileStem(project.name) + '.contour.json',
+    'application/json',
+  );
   $('save-status').textContent = 'Project saved';
 };
 $('open-project').onclick = () => ($('file-project') as HTMLInputElement).click();
 $('landing-open').onclick = () => ($('file-project') as HTMLInputElement).click();
-async function readFile(id: string) {
-  const file = ($(id) as HTMLInputElement).files?.[0];
-  if (!file) return;
-  if (file.size > 100_000_000) throw new Error('Please use a file smaller than 100 MB.');
-  return file;
-}
 $('file-project').onchange = async () => {
   try {
-    const f = await readFile('file-project');
+    const f = await readSelectedFile($<HTMLInputElement>('file-project'));
     if (!f) return;
     const data = JSON.parse(await f.text());
     if (data.schema_version !== 2 || !data.grid || !Array.isArray(data.features))
@@ -847,10 +778,10 @@ $('file-project').onchange = async () => {
 $('upload-features').onclick = () => ($('file-features') as HTMLInputElement).click();
 $('file-features').onchange = async () => {
   try {
-    const f = await readFile('file-features');
+    const f = await readSelectedFile($<HTMLInputElement>('file-features'));
     if (!f) return;
     const data = JSON.parse(await f.text());
-    const added = await engine.call<Feature[]>('classify', data);
+    const added = await engine.call('classify', data);
     const prefix = Date.now();
     added.forEach(a => (a.id = `${prefix}:${a.id}`));
     project.features.push(...added);
@@ -875,14 +806,14 @@ $('fetch-osm').onclick = async () => {
       false,
       true,
     );
-    const query = await engine.call<string>('query', {
+    const query = await engine.call('query', {
       bounds: project.settings.boundary.length
         ? polygonBounds(project.settings.boundary)
         : project.grid.bounds,
       winter: Boolean(project.winter_mode),
     });
     const data = await loadOsm(query, abort.signal);
-    const incoming = await engine.call<Feature[]>('classify', data);
+    const incoming = await engine.call('classify', data);
     const existing = new Map(project.features.map(f => [f.id, f]));
     incoming.forEach(f => {
       if (existing.has(f.id)) {
@@ -1191,7 +1122,7 @@ $('area-load').onclick = async () => {
       ) as Product,
       product = selectedProduct === 'auto' ? automaticProduct(bounds) : selectedProduct;
     if (product.startsWith('copernicus')) {
-      const urls = await engine.call<string[]>('urls', {
+      const urls = await engine.call('urls', {
         bounds,
         ninety: product === 'copernicus_glo90',
       });
@@ -1216,7 +1147,7 @@ $('area-load').onclick = async () => {
       bounds,
       selectedProduct,
       ninety => engine.call('urls', { bounds, ninety }),
-      s => status(s, false, true),
+      message => status(message, false, true),
       abort.signal,
     );
     project = {
@@ -1238,12 +1169,12 @@ $('area-load').onclick = async () => {
           false,
           true,
         );
-        const query = await engine.call<string>('query', {
+        const query = await engine.call('query', {
             bounds,
             winter: featureChoice === 'winter',
           }),
           osm = await loadOsm(query, abort.signal);
-        project.features = await engine.call<Feature[]>('classify', osm);
+        project.features = await engine.call('classify', osm);
         if (featureChoice === 'winter')
           for (const f of project.features) {
             if (f.class === 'trail') f.enabled = false;
@@ -1281,7 +1212,7 @@ $('upload-dem').onclick = () => ($('file-dem') as HTMLInputElement).click();
 $('file-dem').onchange = async () => {
   updateBusy(true);
   try {
-    const f = await readFile('file-dem');
+    const f = await readSelectedFile($<HTMLInputElement>('file-dem'));
     if (!f) return;
     const data = await loadLocalRaster(
       await f.arrayBuffer(),
@@ -1353,15 +1284,13 @@ window.addEventListener('keydown', e => {
 async function buildPresetDownload() {
   if (!project || !terrain) throw new Error('Open a project before building a preset.');
   await engine.call('hydrate', { project, terrain });
-  const packed = await engine.call<Uint8Array>('preset-pack', { project }, s =>
-      status(s, false, true),
-    ),
+  const packed = await engine.call('preset-pack', { project }, s => status(s.message, false, true)),
     name =
       project.name
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, '-')
         .replace(/^-|-$/g, '') || 'landscape';
-  download(packed as unknown as BlobPart, name + '.cwpack', 'application/zip');
+  downloadFile(packed as unknown as BlobPart, name + '.cwpack', 'application/zip');
   status('Static preset bundle downloaded.');
 }
 // Read-only diagnostics for integration tests and performance verification.

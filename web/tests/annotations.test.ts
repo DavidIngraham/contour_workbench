@@ -60,6 +60,27 @@ describe('annotation solids', () => {
     expect(Math.min(...y)).toBeLessThan(0);
     expect(Math.max(...y)).toBeGreaterThan(0);
   });
+  it('builds finite rotated solids for disconnected logo regions', () => {
+    const result = annotationGeometry(
+      {
+        ...a,
+        kind: 'png',
+        angle_deg: 37,
+        pixels_w: 4,
+        pixels_h: 3,
+        mask: [1, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 1],
+      },
+      g,
+      defaults,
+      l,
+    );
+    expect(result.solids.length).toBeGreaterThan(1);
+    for (const mesh of result.solids) {
+      expect(mesh.indices.length).toBeGreaterThan(0);
+      expect(Array.from(mesh.positions).every(Number.isFinite)).toBe(true);
+      expect(Math.max(...mesh.indices)).toBeLessThan(mesh.positions.length / 3);
+    }
+  });
   it('rejects empty converted artwork', () =>
     expect(() => annotationGeometry({ ...a, mask: [0, 0, 0, 0] }, g, defaults, l)).toThrow(
       'empty',

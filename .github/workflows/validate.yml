@@ -1,0 +1,35 @@
+name: Contour Workbench Validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: contour-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
+      - run: bash scripts/check.sh
+      - run: npx playwright install --with-deps chromium
+        working-directory: web
+      - run: npm run test:mobile
+        working-directory: web
+      - run: npm run test:presets
+        working-directory: web

@@ -63,15 +63,21 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 
 `web/src/main.ts` composes the UI, project state, persistence, source loading, and worker requests. Supporting modules isolate major browser responsibilities:
 
-- `providers.ts`: USGS catalog access, raster windows and mosaics, local GeoTIFFs, and Overpass.
+- `app-shell.ts`: static controls, dialogs, and viewport hosts.
+- `providers.ts` and `provider-registry.ts`: raster windows and mosaics, provider selection, USGS/Copernicus catalogs, persistent response caching, and bounded Overpass mirror failover.
 - `extent-map.ts` and `extent-shapes.ts`: slippy-map drawing and editable shapes.
 - `viewer.ts`: Three.js terrain, feature overlays, topographic ground imagery, selection, and review.
 - `annotation-editor.ts` and `annotations.ts`: text/PNG authoring and printable geometry.
 - `presets.ts`: static landing catalog and prebuilt mesh packs.
-- `three-mf.ts`: portable and Bambu-oriented 3MF packages.
-- `client.ts`: request/response protocol for the geometry worker.
+- `three-mf.ts` and `three-mf-validation.ts`: portable/Bambu packages plus mesh, OPC-part, XML, identifier, and build-reference validation.
+- `project-files.ts`: filesystem-safe project names, browser downloads, and upload limits.
+- `engine-contract.ts` and `client.ts`: a discriminated request/result map, structured progress, and request cancellation for the geometry worker.
+- `persistent-cache.ts`: IndexedDB storage with an in-memory fallback and expiration policy.
+- `serialized-contract.ts`: compile-time TypeScript parity with the Rust serialization manifest.
 
 A saved schema-version-2 project contains the elevation grid, provenance, features, annotations, editable extent state, and print settings. It does not depend on a service remaining available after save.
+
+GeoTIFF, Manifold, and 3MF modules are dynamically imported at their first use. The landing and preset-editing path therefore avoids parsing those heavy implementations until a user downloads terrain, generates printable geometry, or exports 3MF.
 
 ### Geometry worker
 
@@ -80,13 +86,14 @@ A saved schema-version-2 project contains the elevation grid, provenance, featur
 - The persistent Rust `TerrainSession`.
 - The current terrain mesh and settings.
 - A cached base Manifold solid.
-- Manifold boolean operations and explicit object deletion.
+- Manifold boolean operations and explicit object deletion through `manifold-adapter.ts`.
 - Watertight export validation and bounded repair attempts.
+- Cooperative cancellation checkpoints between Boolean groups, annotations, and insert operations, with forced worker replacement if native WASM work does not yield promptly.
 - STL bundles, calibration geometry, preset packs, and generation results.
 
 Changing visibility, treatment, width, or carve depth rebuilds overlays or the final plan without rebuilding terrain. Base-thickness edits shift cached terrain vertices and invalidate only the Manifold solid. A new grid or terrain build invalidates the Rust session and cached solid.
 
-The worker retains its terrain buffer. Responses that cross the worker boundary receive a copy, because transferring the retained buffer would detach it and corrupt later generation.
+The worker retains its terrain buffer. Responses that cross the worker boundary receive a copy, because transferring the retained buffer would detach it and corrupt later generation. Worker requests and responses are exhaustively typed by operation; adding an operation requires updating the shared map rather than passing an untyped string and payload.
 
 ### Manifold compatibility
 
@@ -100,10 +107,11 @@ Manifold mesh exports include merge vectors. The worker resolves that topology b
 
 1. The user draws or edits a geographic boundary.
 2. Source policy estimates raster sample count and chooses 10 m, 30 m, or 90 m data for Auto.
-3. USGS data loads directly where available. Copernicus currently supplies tile download links for local GeoTIFF import because the source bucket lacks browser CORS headers.
-4. The UI asks Overpass for supported paths and zones.
-5. Rust normalizes classifications and builds terrain and preview overlays.
-6. Three.js displays the effective design while feature controls remain editable.
+3. The browser checks IndexedDB for the exact product and bounds before resolving or downloading tiles.
+4. The provider registry loads USGS data directly where available. Copernicus supplies direct URLs or download links; local GeoTIFF import remains available when source CORS policy blocks a request.
+5. The UI asks Overpass for supported paths and zones. Transient failures retry through a bounded mirror list, and successful responses are cached for one day.
+6. Rust normalizes classifications and builds terrain and preview overlays.
+7. Three.js displays the effective design while feature controls remain editable.
 
 ### Preset project
 
@@ -125,21 +133,25 @@ Manifold mesh exports include merge vectors. The worker resolves that topology b
 - STL creates a ZIP with terrain and insert files, project data, origins, validation, attribution, and the calibration coupon.
 - Portable 3MF places terrain and inserts in assembly coordinates.
 - Bambu 3MF puts terrain on plate one, shelf-packs inserts onto later configured-bed plates, and includes nozzle-derived process hints without binding to a printer or filament profile.
+- Both 3MF variants validate mesh indices, required OPC parts, XML syntax, core namespace/units, object identifiers, and build references before the archive is returned.
 
 ## Source and geometry constraints
 
 - Geographic bounds are limited to two degrees per side, latitude ±85 degrees, and two million elevation samples.
 - Only geographic WGS84/NAD83 GeoTIFFs are accepted.
 - Auto targets at most one million samples: USGS 10 m for small US areas, 30 m for larger areas, and Copernicus 90 m for giant areas.
-- Overpass availability and coverage can vary. OSM multipolygon holes are retained.
+- Overpass availability and coverage can vary. The registry retries transient failures across two mirrors; permanent request errors are reported immediately. OSM multipolygon holes are retained.
+- Elevation results are cached for 30 days and OSM responses for one day. IndexedDB failures degrade to normal uncached requests.
 - Preview overlays communicate effective placement but final boolean fit is calculated during Generate.
 - Large inserts retain a configurable terrain floor. Inserts remain continuous unless segmentation is explicitly enabled.
 - Watertight validation is a topology guarantee, not a printer or material guarantee.
 
 ## Tests and deployment
 
-`scripts/check.sh` runs Rust formatting, strict Clippy, Rust tests, the WASM build, Prettier verification, TypeScript checking, Vitest, and the production Vite build.
+`scripts/check.sh` installs web dependencies once, then runs Rust formatting, strict Clippy, Rust tests, Prettier verification, TypeScript checking, Vitest, the WASM build, and the production Vite build. `scripts/build-wasm.sh` owns binding generation so CI and local checks do not repeat dependency installation or TypeScript checking.
 
 Playwright mobile tests cover the landing flow, responsive settings, feature controls, shape settings and persistence, annotations, 3MF download choices, and repeated generation. Preset tests build Post Canyon, Mt. Hood Meadows, and the switchback calibration coupon, catching geometry-lifetime and watertightness regressions.
 
-`.github/workflows/contour-pages.yml` runs the full checks on every push to `main`, uploads `web/dist`, and deploys it through GitHub Pages. The workflow can also be run manually.
+`.github/workflows/validate.yml` runs the complete validation suite for pull requests without deployment. `.github/workflows/contour-pages.yml` repeats the release gate on pushes to `main`, uploads `web/dist`, and deploys it through GitHub Pages. Both workflows can also be run manually.
+
+Rust unit tests serialize every shared core model and compare its field names and enum values with `web/src/serialized-contract.json`. TypeScript compile-time checks and Vitest compare that JSON with the literal TypeScript manifest, making field drift fail CI on either side.

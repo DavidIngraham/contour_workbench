@@ -1,6 +1,7 @@
 /** Portable and Bambu-oriented 3MF package generation. All model coordinates are millimeters. */
 import { strToU8, zipSync } from 'fflate';
 import type { Asset, Mesh, Piece, Project } from './types';
+import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
 
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu';
@@ -205,11 +206,12 @@ const relationships = `<?xml version="1.0" encoding="UTF-8"?><Relationships xmln
 
 /** Build an assembled portable 3MF or a Bambu multi-plate archive. */
 export function buildThreeMf(asset: Asset, project: Project, kind: ThreeMfKind): Uint8Array {
-  const objects = records(asset),
-    placements =
-      kind === 'portable'
-        ? assembledPlacement(objects)
-        : packedPlacement(objects, project.settings.max_print_size_mm);
+  const objects = records(asset);
+  for (const object of objects) validateThreeMfMesh(object.mesh, object.name);
+  const placements =
+    kind === 'portable'
+      ? assembledPlacement(objects)
+      : packedPlacement(objects, project.settings.max_print_size_mm);
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
@@ -249,5 +251,6 @@ export function buildThreeMf(asset: Asset, project: Project, kind: ThreeMfKind):
     );
     files['Metadata/model_settings.config'] = strToU8(modelSettings(objects, placements));
   }
+  validateThreeMfFiles(files, kind);
   return zipSync(files, { level: 6 });
 }

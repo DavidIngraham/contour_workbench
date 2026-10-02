@@ -16,6 +16,7 @@
     "check": "npm run format:check && npm run typecheck && npm test"
   },
   "dependencies": {
+    "fast-xml-parser": "5.11.2",
     "fflate": "0.8.3",
     "geotiff": "2.1.4-beta.1",
     "leaflet": "1.9.4",

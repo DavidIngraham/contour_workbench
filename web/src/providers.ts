@@ -1,11 +1,16 @@
 /** Browser data adapters for USGS, Copernicus downloads, GeoTIFF imports, and Overpass. */
 import { automaticProduct, sourceSampleCount } from './source-resolution';
 import { selectUsgsTiles } from './usgs-catalog';
-import { fromUrl, fromArrayBuffer } from 'geotiff';
+import { persistentCacheKey, readPersistentCache, writePersistentCache } from './persistent-cache';
+import { queryOverpass, resolveElevationUrls } from './provider-registry';
 import type { Bounds, Grid, Product, Source } from './types';
-const catalog = 'https://tnmaccess.nationalmap.gov/api/v1/products';
+
+type GeoTiffModule = typeof import('geotiff');
+type GeoTiff = Awaited<ReturnType<GeoTiffModule['fromUrl']>>;
+const elevationCacheAgeMs = 30 * 24 * 60 * 60 * 1000;
+const osmCacheAgeMs = 24 * 60 * 60 * 1000;
 /** Fetch JSON and translate service failures into user-facing errors. */
-export async function fetchJson(url: string, signal?: AbortSignal): Promise<any> {
+export async function fetchJson(url: string, signal?: AbortSignal): Promise<unknown> {
   const response = await fetch(url, { signal });
   if (!response.ok)
     throw new Error(
@@ -40,7 +45,7 @@ interface WindowRaster {
   url: string;
 }
 async function raster(
-  tiff: Awaited<ReturnType<typeof fromUrl>>,
+  tiff: GeoTiff,
   b: Bounds,
   url: string,
   signal?: AbortSignal,
@@ -161,40 +166,31 @@ export async function loadElevation(
     throw new Error(
       'This area exceeds the 2 million sample browser limit at the selected resolution. Choose a coarser source or a smaller area.',
     );
-  let urls: string[] = [];
-  let resolved = product;
-  if (product.startsWith('usgs')) {
-    progress('Finding USGS elevation coverage…');
-    const dataset =
-      product === 'usgs_3dep_30m'
-        ? 'National Elevation Dataset (NED) 1 arc-second'
-        : 'National Elevation Dataset (NED) 1/3 arc-second';
-    let offset = 0;
-    const items: any[] = [];
-    do {
-      const q = new URLSearchParams({
-        bbox: bounds.join(','),
-        datasets: dataset,
-        outputFormat: 'JSON',
-        max: '100',
-        offset: String(offset),
-      });
-      const data = await fetchJson(`${catalog}?${q}`, signal);
-      if (data.error) throw new Error('USGS catalog query failed. Try again later.');
-      items.push(...(data.items || []));
-      offset += 100;
-      if (offset >= (data.total || 0)) break;
-      if (offset > 1000) throw new Error('Too many elevation assets. Select a smaller area.');
-    } while (true);
-    urls = selectUsgsTiles(items);
-    if (!urls.length)
-      throw new Error(
-        'No 3DEP rasters were found here. Select Copernicus GLO-30 and load the area to use the global source.',
-      );
-    resolved = product === 'usgs_3dep_30m' ? product : 'usgs_3dep_10m';
-  } else urls = await copernicusUrls(product === 'copernicus_glo90');
+  const requestedProduct = product as Exclude<Product, 'auto'>;
+  const cacheKey = persistentCacheKey(
+    'elevation-v1',
+    JSON.stringify([requestedProduct, bounds.map(value => Number(value.toFixed(7)))]),
+  );
+  const cached = await readPersistentCache<{ grid: Grid; source: Source }>(
+    cacheKey,
+    elevationCacheAgeMs,
+  );
+  if (cached) {
+    progress(`Using cached ${cached.source.name} elevation…`);
+    return cached;
+  }
+  if (requestedProduct.startsWith('usgs')) progress('Finding USGS elevation coverage…');
+  const { urls, product: resolved } = await resolveElevationUrls({
+    bounds,
+    product: requestedProduct,
+    signal,
+    copernicusUrls,
+    fetchJson,
+    selectUsgsTiles: items => selectUsgsTiles(items as Parameters<typeof selectUsgsTiles>[0]),
+  });
   if (urls.length > 16)
     throw new Error('More than 16 raster assets are needed. Choose a smaller area.');
+  const { fromUrl } = await import('geotiff');
   const windows: WindowRaster[] = [];
   for (let i = 0; i < urls.length; i++) {
     progress(`Reading elevation tile ${i + 1} of ${urls.length}…`);
@@ -215,10 +211,13 @@ export async function loadElevation(
       : 'Copernicus DEM: © DLR e.V. 2010–2014 and © Airbus Defence and Space GmbH 2014–2018, provided under COPERNICUS by the European Union and ESA.',
     urls,
   };
-  return { grid, source };
+  const result = { grid, source };
+  await writePersistentCache(cacheKey, result);
+  return result;
 }
 /** Decode an uploaded geographic GeoTIFF over the requested bounds. */
 export async function loadLocalRaster(buffer: ArrayBuffer, bounds: Bounds) {
+  const { fromArrayBuffer } = await import('geotiff');
   const tiff = await fromArrayBuffer(buffer);
   const r = await raster(tiff, bounds, 'uploaded GeoTIFF');
   if (!r) throw new Error('GeoTIFF does not intersect the selected area');
@@ -232,22 +231,12 @@ export async function loadLocalRaster(buffer: ArrayBuffer, bounds: Bounds) {
     } as Source,
   };
 }
-const osmCache = new Map<string, unknown>();
-/** Run and session-cache an Overpass query. */
+/* Run an Overpass query with persistent caching and mirror failover. */
 export async function loadOsm(query: string, signal: AbortSignal) {
-  if (osmCache.has(query)) return osmCache.get(query);
-  const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    body: new URLSearchParams({ data: query }),
-    signal,
-  });
-  if (!response.ok)
-    throw new Error(
-      `OpenStreetMap service is busy (${response.status}). Wait before retrying; your features are unchanged.`,
-    );
-  const data = await response.json();
-  if (data.remark) throw new Error(`OSM query was incomplete: ${data.remark}`);
-  if (!Array.isArray(data.elements)) throw new Error('Invalid OSM response');
-  osmCache.set(query, data);
+  const key = persistentCacheKey('overpass-v1', query);
+  const cached = await readPersistentCache<unknown>(key, osmCacheAgeMs);
+  if (cached) return cached;
+  const data = await queryOverpass(query, signal);
+  await writePersistentCache(key, data);
   return data;
 }

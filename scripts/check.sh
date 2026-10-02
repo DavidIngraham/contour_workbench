@@ -10,7 +10,12 @@ fi
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings -A clippy::chunks-exact-to-as-chunks
 cargo test --workspace
-bash scripts/build-web.sh
 
 cd web
+npm ci
 npm run check
+cd ..
+
+bash scripts/build-wasm.sh
+cd web
+npx vite build

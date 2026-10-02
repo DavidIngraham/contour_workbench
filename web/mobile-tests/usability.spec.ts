@@ -172,6 +172,9 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await expect(page.locator('#extent-shape')).toHaveValue('rectangle');
   await expect(page.locator('#extent-angle')).toHaveValue('35');
   await expect(page.locator('#extent-radius')).toHaveValue('50');
+  await page.locator('#extent-shape').selectOption('spline');
+  await expect(page.locator('#extent-radius')).toBeDisabled();
+  await page.locator('#extent-angle').fill('15');
   await page.locator('#extent-shape').selectOption('circle');
   await page.locator('#extent-width').fill('600');
   await expect(page.locator('#extent-angle')).toBeDisabled();
