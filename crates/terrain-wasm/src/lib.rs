@@ -1,3 +1,11 @@
+#![warn(missing_docs)]
+//! Browser boundary for Contour Workbench's Rust geometry core.
+//!
+//! A session owns the elevation grid so repeated overlay and model builds do not
+//! resend or reparse the largest project object. Geometry is returned in the
+//! versioned `CWB1` packet format: JSON metadata followed by aligned
+//! `f32` positions and `u32` triangle indices.
+
 use contour_core::*;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -89,6 +97,7 @@ struct PlanMetadata<'a> {
     removed_terrain_islands: usize,
 }
 
+/// Stateful browser geometry session that owns one validated elevation grid.
 #[wasm_bindgen]
 pub struct TerrainSession {
     grid: Grid,
@@ -96,6 +105,7 @@ pub struct TerrainSession {
 
 #[wasm_bindgen]
 impl TerrainSession {
+    /// Parse and validate an elevation grid, then create a reusable session.
     #[wasm_bindgen(constructor)]
     pub fn new(grid: &str) -> Result<TerrainSession, JsValue> {
         let grid: Grid = serde_json::from_str(grid).map_err(err)?;
@@ -103,13 +113,7 @@ impl TerrainSession {
         Ok(Self { grid })
     }
 
-    pub fn replace_grid(&mut self, grid: &str) -> Result<(), JsValue> {
-        let grid: Grid = serde_json::from_str(grid).map_err(err)?;
-        grid.validate().map_err(err)?;
-        self.grid = grid;
-        Ok(())
-    }
-
+    /// Build terrain and return one packed mesh plus layout metadata.
     pub fn build_terrain(&self, settings: &str) -> Result<Vec<u8>, JsValue> {
         let settings: Settings = serde_json::from_str(settings).map_err(err)?;
         let terrain = terrain(&self.grid, &settings).map_err(err)?;
@@ -121,6 +125,7 @@ impl TerrainSession {
         encode_packet(&metadata, &[&terrain.mesh])
     }
 
+    /// Build lightweight feature previews and return a packed mesh packet.
     pub fn build_overlays(
         &self,
         settings: &str,
@@ -143,6 +148,7 @@ impl TerrainSession {
         encode_packet(&metadata, &meshes)
     }
 
+    /// Build insert and cutter geometry for the browser solid-boolean stage.
     pub fn build_plan(
         &self,
         settings: &str,
@@ -174,12 +180,14 @@ impl TerrainSession {
     }
 }
 
+/// Normalize Overpass JSON or GeoJSON into supported features.
 #[wasm_bindgen]
 pub fn classify_features(input: &str) -> Result<String, JsValue> {
     let value = serde_json::from_str(input).map_err(err)?;
     serde_json::to_string(&normalize(&value)).map_err(err)
 }
 
+/// Return Copernicus tile URLs covering serialized geographic bounds.
 #[wasm_bindgen]
 pub fn source_urls(bounds: &str, ninety: bool) -> Result<String, JsValue> {
     serde_json::to_string(
@@ -188,6 +196,7 @@ pub fn source_urls(bounds: &str, ninety: bool) -> Result<String, JsValue> {
     .map_err(err)
 }
 
+/// Return an Overpass query for serialized bounds and optional winter features.
 #[wasm_bindgen]
 pub fn osm_query(bounds: &str, winter: bool) -> Result<String, JsValue> {
     overpass_query(serde_json::from_str(bounds).map_err(err)?, winter).map_err(err)

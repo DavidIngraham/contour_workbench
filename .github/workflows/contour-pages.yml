@@ -1,15 +1,19 @@
 name: Contour Workbench Pages
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: contour-pages
   cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -23,11 +27,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
       - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
-      - run: cargo test --workspace
-      - run: bash scripts/build-web.sh
-      - run: npm test
-        working-directory: web
+      - run: bash scripts/check.sh
       - run: npx playwright install --with-deps chromium
         working-directory: web
       - run: npm run test:mobile
@@ -37,6 +39,7 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist
+
   deploy:
     needs: build
     runs-on: ubuntu-latest

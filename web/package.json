@@ -9,7 +9,11 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",
     "test:mobile": "playwright test --config playwright.mobile.config.ts",
-    "test:presets": "playwright test --config playwright.presets.config.ts"
+    "test:presets": "playwright test --config playwright.presets.config.ts",
+    "format": "prettier --write \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run format:check && npm run typecheck && npm test"
   },
   "dependencies": {
     "fflate": "0.8.3",
@@ -24,6 +28,7 @@
     "@types/leaflet": "1.9.21",
     "@types/node": "^22.20.4",
     "@types/three": "0.180.0",
+    "prettier": "3.9.9",
     "typescript": "5.8.3",
     "vite": "6.4.3",
     "vitest": "4.1.11"

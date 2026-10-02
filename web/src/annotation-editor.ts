@@ -1,38 +1,519 @@
+/** DOM editor for creating and placing printable annotations. */
 import * as THREE from 'three';
-import type {Viewer} from './viewer';
-import type {Project,Terrain,Mesh} from './types';
-import {annotationGeometry,combineMeshes,type Annotation} from './annotations';
-const esc=(s:string)=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
+import type { Viewer } from './viewer';
+import type { Project, Terrain, Mesh } from './types';
+import { annotationGeometry, combineMeshes, type Annotation } from './annotations';
+const esc = (s: string) =>
+  s.replace(
+    /[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
+  );
+/** Manages annotation controls, rasterization, selection, and placement callbacks. */
 export class AnnotationEditor {
- private group=new THREE.Group();private selected='';private placing=false;private consumedClick=false;private drag?:{kind:string;x:number;y:number;angle:number;width:number;height:number;center:THREE.Vector3;start:THREE.Vector3};private ray=new THREE.Raycaster();private panel:HTMLElement;private warning='';
- constructor(private viewer:Viewer,private state:()=>{project:Project;terrain:Terrain},private changed:()=>void,private show:()=>void){
- this.panel=document.getElementById('tab-annotations')!;viewer.model.add(this.group);this.panel.innerHTML=`<section class="panel"><h3>Annotations</h3><div class="annotation-actions"><button class="btn" id="add-text">Add text</button><button class="btn" id="add-logo">Upload PNG</button></div><input hidden id="annotation-file" type="file" accept="image/png"/><p class="help">Select a label to drag it. Drag the corner to resize or the round handle to rotate. Porch labels snap to a straight model edge.</p><div id="annotation-list"></div></section><section class="panel" id="annotation-form"></section><p class="help" id="annotation-warning" role="status"></p>`;
- this.el('add-text').onclick=()=>this.add('text');this.el('add-logo').onclick=()=>this.el<HTMLInputElement>('annotation-file').click();this.el<HTMLInputElement>('annotation-file').onchange=async()=>{try{const f=this.el<HTMLInputElement>('annotation-file').files?.[0];if(!f)return;if(f.size>2_000_000)throw new Error('Choose a PNG smaller than 2 MB.');const uri=await new Promise<string>((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result));r.onerror=reject;r.readAsDataURL(f);});const a=this.add('png');a.image=uri;a.name=f.name;await this.raster(a);this.form();this.commit();}catch(e){this.message(String(e));}};
- const canvas=viewer.renderer.domElement;canvas.addEventListener('click',e=>{if(this.consumedClick){e.stopImmediatePropagation();this.consumedClick=false;}},true);canvas.addEventListener('pointerdown',e=>this.down(e),true);canvas.addEventListener('pointermove',e=>this.move(e),true);canvas.addEventListener('pointerup',e=>{if(this.drag){this.drag=undefined;viewer.controls.enabled=true;canvas.releasePointerCapture(e.pointerId);e.stopImmediatePropagation();this.form();}},true);canvas.addEventListener('pointercancel',()=>{this.drag=undefined;viewer.controls.enabled=true;});window.addEventListener('keydown',e=>{if(e.key==='Escape')this.placing=false;});
- }
- private el<T extends HTMLElement=HTMLElement>(id:string){return document.getElementById(id) as T;}
- private current(){return this.state().project?.annotations?.find(a=>a.id===this.selected);}
- private message(s:string){this.el('annotation-warning').textContent=s;}
- private add(kind:'text'|'png'){const {project,terrain}=this.state();if(!terrain)throw new Error('Load terrain first');const a:Annotation={id:crypto.randomUUID(),name:kind==='text'?'New label':'Logo',kind,text:'My landscape',threshold:128,invert:false,mask:[],pixels_w:1,pixels_h:1,enabled:true,placement:'terrain',treatment:'raised',x_mm:terrain.layout.width/2,y_mm:terrain.layout.depth/2,width_mm:35,height_mm:10,angle_deg:0,depth_mm:.6,porch_depth_mm:16,porch_align:'base'};(project.annotations??=[]).push(a);this.selected=a.id;this.show();if(kind==='text'){void this.raster(a).then(()=>this.commit());}this.form();return a;}
- private async raster(a:Annotation){const canvas=document.createElement('canvas');canvas.width=128;canvas.height=48;const ctx=canvas.getContext('2d')!;if(a.kind==='text'){ctx.fillStyle='white';ctx.fillRect(0,0,128,48);ctx.fillStyle='black';ctx.font='bold 36px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(a.text.slice(0,80),64,24,124);}else if(a.image){const image=new Image();await new Promise<void>((resolve,reject)=>{image.onload=()=>resolve();image.onerror=()=>reject(new Error('PNG could not be decoded'));image.src=a.image!;});canvas.height=Math.max(8,Math.min(128,Math.round(128*image.height/image.width)));ctx.drawImage(image,0,0,128,canvas.height);if(!a.mask.length)a.height_mm=a.width_mm*image.height/image.width;}const data=ctx.getImageData(0,0,canvas.width,canvas.height).data;a.pixels_w=canvas.width;a.pixels_h=canvas.height;a.mask=[];for(let i=0;i<data.length;i+=4){const dark=(data[i]*.2126+data[i+1]*.7152+data[i+2]*.0722)<a.threshold;a.mask.push(data[i+3]>128&&(a.invert?!dark:dark)?1:0);}this.maskPreview(a);}
- private maskPreview(a:Annotation){const canvas=this.el<HTMLCanvasElement>('annotation-mask');if(!canvas)return;canvas.width=a.pixels_w;canvas.height=a.pixels_h;const ctx=canvas.getContext('2d')!;ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#294d40';a.mask.forEach((v,i)=>{if(v)ctx.fillRect(i%a.pixels_w,Math.floor(i/a.pixels_w),1,1);});}
- private form(){const a=this.current();const rows=this.state().project?.annotations||[];this.el('annotation-list').innerHTML=rows.map(a=>`<div class="annotation-row"><input type="checkbox" data-visible="${a.id}" ${a.enabled?'checked':''} aria-label="Show ${esc(a.name)}"/><button class="small-link" data-annotation="${a.id}">${esc(a.name)}</button></div>`).join('');this.panel.querySelectorAll<HTMLElement>('[data-annotation]').forEach(el=>el.onclick=()=>{this.selected=el.dataset.annotation!;this.form();this.refresh();});this.panel.querySelectorAll<HTMLInputElement>('[data-visible]').forEach(el=>el.onchange=()=>{rows.find(a=>a.id===el.dataset.visible)!.enabled=el.checked;this.commit();});const host=this.el('annotation-form');if(!a){host.innerHTML='<p class="help">Add text or a PNG to begin.</p>';return;}
- host.innerHTML=`<label>Name<input id="ann-name" value="${esc(a.name)}"/></label>${a.kind==='text'?`<label>Text<input id="ann-text" maxlength="80" value="${esc(a.text)}"/></label>`:`<label>Threshold<input id="ann-threshold" type="range" min="1" max="255" value="${a.threshold}"/></label><label><input id="ann-invert" type="checkbox" ${a.invert?'checked':''}/> Invert dark / light</label>`}<canvas id="annotation-mask" title="Solid areas in the printable annotation"></canvas><label>Placement<select id="ann-placement"><option value="terrain">Terrain top</option><option value="porch">Attached porch</option></select></label><label>Treatment<select id="ann-treatment"><option value="raised">Raised</option><option value="engraved">Engraved</option></select></label><button class="btn full-width" id="ann-place">Click model to place</button><div class="annotation-fields">${[['width_mm','Width (mm)'],['height_mm','Height (mm)'],['angle_deg','Angle (°)'],['depth_mm',a.treatment==='raised'?'Raised height (mm)':'Engraving depth (mm)'],...(a.placement==='porch'?[['porch_depth_mm','Porch depth (mm)']]:[])].map(([key,label])=>`<label>${label}<input data-ann-number="${key}" type="number" step="${key==='angle_deg'?'5':'0.1'}" value="${a[key as keyof Annotation]}"/></label>`).join('')}</div>${a.placement==='porch'?`<label>Porch top<select id="ann-align"><option value="base">At base height</option><option value="edge">At terrain edge</option></select></label><p class="help">Width and minimum depth fit the content with a 3 mm margin. Rotation follows the selected edge.</p>`:''}<div class="annotation-actions"><button class="btn" id="ann-duplicate">Duplicate</button><button class="btn" id="ann-delete">Delete</button></div>`;
- this.el<HTMLInputElement>('ann-name').oninput=e=>{a.name=(e.target as HTMLInputElement).value;this.commit();};if(a.kind==='text')this.el<HTMLInputElement>('ann-text').oninput=async e=>{a.text=(e.target as HTMLInputElement).value;await this.raster(a);this.commit();};else{this.el<HTMLInputElement>('ann-threshold').oninput=async e=>{a.threshold=Number((e.target as HTMLInputElement).value);await this.raster(a);this.commit();};this.el<HTMLInputElement>('ann-invert').onchange=async e=>{a.invert=(e.target as HTMLInputElement).checked;await this.raster(a);this.commit();};}
- for(const key of ['placement','treatment'] as const){this.el<HTMLSelectElement>('ann-'+key).value=a[key];this.el<HTMLSelectElement>('ann-'+key).onchange=e=>{(a as any)[key]=(e.target as HTMLSelectElement).value;this.form();this.commit();};}host.querySelectorAll<HTMLInputElement>('[data-ann-number]').forEach(el=>{el.disabled=el.dataset.annNumber==='angle_deg'&&a.placement==='porch';el.oninput=()=>{const v=Number(el.value);if(Number.isFinite(v)&&(el.dataset.annNumber==='angle_deg'||v>0)){(a as any)[el.dataset.annNumber!]=v;this.commit();}};});if(a.placement==='porch'){this.el<HTMLSelectElement>('ann-align').value=a.porch_align;this.el<HTMLSelectElement>('ann-align').onchange=e=>{a.porch_align=(e.target as HTMLSelectElement).value as any;this.commit();};}this.el('ann-place').onclick=()=>{this.placing=true;this.message('Click the terrain to place the annotation; porches snap to the nearest suitable edge.');};this.el('ann-delete').onclick=()=>{this.state().project.annotations=rows.filter(x=>x.id!==a.id);this.selected='';this.form();this.commit();};this.el('ann-duplicate').onclick=()=>{const copy=structuredClone(a);copy.id=crypto.randomUUID();copy.name+=' copy';copy.x_mm+=5;rows.push(copy);this.selected=copy.id;this.form();this.commit();};this.maskPreview(a);
- }
- private porchMaterial(a:Annotation,center:number[],angle:number){
- const material=new THREE.MeshStandardMaterial({color:0x819981,roughness:.9});if(a.treatment!=='engraved')return material;
- const canvas=document.createElement('canvas');canvas.width=a.pixels_w;canvas.height=a.pixels_h;const ctx=canvas.getContext('2d')!;ctx.fillStyle='black';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='white';a.mask.forEach((v,i)=>{if(v)ctx.fillRect(i%a.pixels_w,Math.floor(i/a.pixels_w),1,1);});
- const texture=new THREE.CanvasTexture(canvas);texture.magFilter=THREE.NearestFilter;texture.minFilter=THREE.NearestFilter;texture.generateMipmaps=false;material.userData.annotationTexture=texture;
- material.onBeforeCompile=shader=>{shader.uniforms.annotationMask={value:texture};shader.uniforms.annotationCenter={value:new THREE.Vector2(center[0],center[1])};shader.uniforms.annotationSize={value:new THREE.Vector2(a.width_mm,a.height_mm)};shader.uniforms.annotationRotation={value:new THREE.Vector2(Math.cos(angle),Math.sin(angle))};shader.vertexShader='varying vec3 annotationPosition;varying float annotationTop;\n'+shader.vertexShader;shader.vertexShader=shader.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\nannotationPosition=position;annotationTop=normal.z;');shader.fragmentShader='varying vec3 annotationPosition;varying float annotationTop;uniform sampler2D annotationMask;uniform vec2 annotationCenter;uniform vec2 annotationSize;uniform vec2 annotationRotation;\n'+shader.fragmentShader;shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>','#include <color_fragment>\nvec2 delta=annotationPosition.xy-annotationCenter;\nvec2 uv=vec2(delta.x*annotationRotation.x+delta.y*annotationRotation.y,-delta.x*annotationRotation.y+delta.y*annotationRotation.x)/annotationSize+0.5;\nif(annotationTop>0.1&&uv.x>=0.0&&uv.x<=1.0&&uv.y>=0.0&&uv.y<=1.0&&texture2D(annotationMask,uv).r>0.5)discard;');};return material;}
+  private group = new THREE.Group();
+  private selected = '';
+  private placing = false;
+  private consumedClick = false;
+  private drag?: {
+    kind: string;
+    x: number;
+    y: number;
+    angle: number;
+    width: number;
+    height: number;
+    center: THREE.Vector3;
+    start: THREE.Vector3;
+  };
+  private ray = new THREE.Raycaster();
+  private panel: HTMLElement;
+  private warning = '';
+  constructor(
+    private viewer: Viewer,
+    private state: () => { project: Project; terrain: Terrain },
+    private changed: () => void,
+    private show: () => void,
+  ) {
+    this.panel = document.getElementById('tab-annotations')!;
+    viewer.model.add(this.group);
+    this.panel.innerHTML = `<section class="panel"><h3>Annotations</h3><div class="annotation-actions"><button class="btn" id="add-text">Add text</button><button class="btn" id="add-logo">Upload PNG</button></div><input hidden id="annotation-file" type="file" accept="image/png"/><p class="help">Select a label to drag it. Drag the corner to resize or the round handle to rotate. Porch labels snap to a straight model edge.</p><div id="annotation-list"></div></section><section class="panel" id="annotation-form"></section><p class="help" id="annotation-warning" role="status"></p>`;
+    this.el('add-text').onclick = () => this.add('text');
+    this.el('add-logo').onclick = () => this.el<HTMLInputElement>('annotation-file').click();
+    this.el<HTMLInputElement>('annotation-file').onchange = async () => {
+      try {
+        const f = this.el<HTMLInputElement>('annotation-file').files?.[0];
+        if (!f) return;
+        if (f.size > 2_000_000) throw new Error('Choose a PNG smaller than 2 MB.');
+        const uri = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = reject;
+          r.readAsDataURL(f);
+        });
+        const a = this.add('png');
+        a.image = uri;
+        a.name = f.name;
+        await this.raster(a);
+        this.form();
+        this.commit();
+      } catch (e) {
+        this.message(String(e));
+      }
+    };
+    const canvas = viewer.renderer.domElement;
+    canvas.addEventListener(
+      'click',
+      e => {
+        if (this.consumedClick) {
+          e.stopImmediatePropagation();
+          this.consumedClick = false;
+        }
+      },
+      true,
+    );
+    canvas.addEventListener('pointerdown', e => this.down(e), true);
+    canvas.addEventListener('pointermove', e => this.move(e), true);
+    canvas.addEventListener(
+      'pointerup',
+      e => {
+        if (this.drag) {
+          this.drag = undefined;
+          viewer.controls.enabled = true;
+          canvas.releasePointerCapture(e.pointerId);
+          e.stopImmediatePropagation();
+          this.form();
+        }
+      },
+      true,
+    );
+    canvas.addEventListener('pointercancel', () => {
+      this.drag = undefined;
+      viewer.controls.enabled = true;
+    });
+    window.addEventListener('keydown', e => {
+      if (e.key === 'Escape') this.placing = false;
+    });
+  }
+  private el<T extends HTMLElement = HTMLElement>(id: string) {
+    return document.getElementById(id) as T;
+  }
+  private current() {
+    return this.state().project?.annotations?.find(a => a.id === this.selected);
+  }
+  private message(s: string) {
+    this.el('annotation-warning').textContent = s;
+  }
+  private add(kind: 'text' | 'png') {
+    const { project, terrain } = this.state();
+    if (!terrain) throw new Error('Load terrain first');
+    const a: Annotation = {
+      id: crypto.randomUUID(),
+      name: kind === 'text' ? 'New label' : 'Logo',
+      kind,
+      text: 'My landscape',
+      threshold: 128,
+      invert: false,
+      mask: [],
+      pixels_w: 1,
+      pixels_h: 1,
+      enabled: true,
+      placement: 'terrain',
+      treatment: 'raised',
+      x_mm: terrain.layout.width / 2,
+      y_mm: terrain.layout.depth / 2,
+      width_mm: 35,
+      height_mm: 10,
+      angle_deg: 0,
+      depth_mm: 0.6,
+      porch_depth_mm: 16,
+      porch_align: 'base',
+    };
+    (project.annotations ??= []).push(a);
+    this.selected = a.id;
+    this.show();
+    if (kind === 'text') {
+      void this.raster(a).then(() => this.commit());
+    }
+    this.form();
+    return a;
+  }
+  private async raster(a: Annotation) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 48;
+    const ctx = canvas.getContext('2d')!;
+    if (a.kind === 'text') {
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, 128, 48);
+      ctx.fillStyle = 'black';
+      ctx.font = 'bold 36px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(a.text.slice(0, 80), 64, 24, 124);
+    } else if (a.image) {
+      const image = new Image();
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('PNG could not be decoded'));
+        image.src = a.image!;
+      });
+      canvas.height = Math.max(8, Math.min(128, Math.round((128 * image.height) / image.width)));
+      ctx.drawImage(image, 0, 0, 128, canvas.height);
+      if (!a.mask.length) a.height_mm = (a.width_mm * image.height) / image.width;
+    }
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    a.pixels_w = canvas.width;
+    a.pixels_h = canvas.height;
+    a.mask = [];
+    for (let i = 0; i < data.length; i += 4) {
+      const dark = data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722 < a.threshold;
+      a.mask.push(data[i + 3] > 128 && (a.invert ? !dark : dark) ? 1 : 0);
+    }
+    this.maskPreview(a);
+  }
+  private maskPreview(a: Annotation) {
+    const canvas = this.el<HTMLCanvasElement>('annotation-mask');
+    if (!canvas) return;
+    canvas.width = a.pixels_w;
+    canvas.height = a.pixels_h;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#294d40';
+    a.mask.forEach((v, i) => {
+      if (v) ctx.fillRect(i % a.pixels_w, Math.floor(i / a.pixels_w), 1, 1);
+    });
+  }
+  private form() {
+    const a = this.current();
+    const rows = this.state().project?.annotations || [];
+    this.el('annotation-list').innerHTML = rows
+      .map(
+        a =>
+          `<div class="annotation-row"><input type="checkbox" data-visible="${a.id}" ${a.enabled ? 'checked' : ''} aria-label="Show ${esc(a.name)}"/><button class="small-link" data-annotation="${a.id}">${esc(a.name)}</button></div>`,
+      )
+      .join('');
+    this.panel.querySelectorAll<HTMLElement>('[data-annotation]').forEach(
+      el =>
+        (el.onclick = () => {
+          this.selected = el.dataset.annotation!;
+          this.form();
+          this.refresh();
+        }),
+    );
+    this.panel.querySelectorAll<HTMLInputElement>('[data-visible]').forEach(
+      el =>
+        (el.onchange = () => {
+          rows.find(a => a.id === el.dataset.visible)!.enabled = el.checked;
+          this.commit();
+        }),
+    );
+    const host = this.el('annotation-form');
+    if (!a) {
+      host.innerHTML = '<p class="help">Add text or a PNG to begin.</p>';
+      return;
+    }
+    host.innerHTML = `<label>Name<input id="ann-name" value="${esc(a.name)}"/></label>${a.kind === 'text' ? `<label>Text<input id="ann-text" maxlength="80" value="${esc(a.text)}"/></label>` : `<label>Threshold<input id="ann-threshold" type="range" min="1" max="255" value="${a.threshold}"/></label><label><input id="ann-invert" type="checkbox" ${a.invert ? 'checked' : ''}/> Invert dark / light</label>`}<canvas id="annotation-mask" title="Solid areas in the printable annotation"></canvas><label>Placement<select id="ann-placement"><option value="terrain">Terrain top</option><option value="porch">Attached porch</option></select></label><label>Treatment<select id="ann-treatment"><option value="raised">Raised</option><option value="engraved">Engraved</option></select></label><button class="btn full-width" id="ann-place">Click model to place</button><div class="annotation-fields">${[['width_mm', 'Width (mm)'], ['height_mm', 'Height (mm)'], ['angle_deg', 'Angle (°)'], ['depth_mm', a.treatment === 'raised' ? 'Raised height (mm)' : 'Engraving depth (mm)'], ...(a.placement === 'porch' ? [['porch_depth_mm', 'Porch depth (mm)']] : [])].map(([key, label]) => `<label>${label}<input data-ann-number="${key}" type="number" step="${key === 'angle_deg' ? '5' : '0.1'}" value="${a[key as keyof Annotation]}"/></label>`).join('')}</div>${a.placement === 'porch' ? `<label>Porch top<select id="ann-align"><option value="base">At base height</option><option value="edge">At terrain edge</option></select></label><p class="help">Width and minimum depth fit the content with a 3 mm margin. Rotation follows the selected edge.</p>` : ''}<div class="annotation-actions"><button class="btn" id="ann-duplicate">Duplicate</button><button class="btn" id="ann-delete">Delete</button></div>`;
+    this.el<HTMLInputElement>('ann-name').oninput = e => {
+      a.name = (e.target as HTMLInputElement).value;
+      this.commit();
+    };
+    if (a.kind === 'text')
+      this.el<HTMLInputElement>('ann-text').oninput = async e => {
+        a.text = (e.target as HTMLInputElement).value;
+        await this.raster(a);
+        this.commit();
+      };
+    else {
+      this.el<HTMLInputElement>('ann-threshold').oninput = async e => {
+        a.threshold = Number((e.target as HTMLInputElement).value);
+        await this.raster(a);
+        this.commit();
+      };
+      this.el<HTMLInputElement>('ann-invert').onchange = async e => {
+        a.invert = (e.target as HTMLInputElement).checked;
+        await this.raster(a);
+        this.commit();
+      };
+    }
+    for (const key of ['placement', 'treatment'] as const) {
+      this.el<HTMLSelectElement>('ann-' + key).value = a[key];
+      this.el<HTMLSelectElement>('ann-' + key).onchange = e => {
+        (a as any)[key] = (e.target as HTMLSelectElement).value;
+        this.form();
+        this.commit();
+      };
+    }
+    host.querySelectorAll<HTMLInputElement>('[data-ann-number]').forEach(el => {
+      el.disabled = el.dataset.annNumber === 'angle_deg' && a.placement === 'porch';
+      el.oninput = () => {
+        const v = Number(el.value);
+        if (Number.isFinite(v) && (el.dataset.annNumber === 'angle_deg' || v > 0)) {
+          (a as any)[el.dataset.annNumber!] = v;
+          this.commit();
+        }
+      };
+    });
+    if (a.placement === 'porch') {
+      this.el<HTMLSelectElement>('ann-align').value = a.porch_align;
+      this.el<HTMLSelectElement>('ann-align').onchange = e => {
+        a.porch_align = (e.target as HTMLSelectElement).value as any;
+        this.commit();
+      };
+    }
+    this.el('ann-place').onclick = () => {
+      this.placing = true;
+      this.message(
+        'Click the terrain to place the annotation; porches snap to the nearest suitable edge.',
+      );
+    };
+    this.el('ann-delete').onclick = () => {
+      this.state().project.annotations = rows.filter(x => x.id !== a.id);
+      this.selected = '';
+      this.form();
+      this.commit();
+    };
+    this.el('ann-duplicate').onclick = () => {
+      const copy = structuredClone(a);
+      copy.id = crypto.randomUUID();
+      copy.name += ' copy';
+      copy.x_mm += 5;
+      rows.push(copy);
+      this.selected = copy.id;
+      this.form();
+      this.commit();
+    };
+    this.maskPreview(a);
+  }
+  private porchMaterial(a: Annotation, center: number[], angle: number) {
+    const material = new THREE.MeshStandardMaterial({ color: 0x819981, roughness: 0.9 });
+    if (a.treatment !== 'engraved') return material;
+    const canvas = document.createElement('canvas');
+    canvas.width = a.pixels_w;
+    canvas.height = a.pixels_h;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = 'black';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = 'white';
+    a.mask.forEach((v, i) => {
+      if (v) ctx.fillRect(i % a.pixels_w, Math.floor(i / a.pixels_w), 1, 1);
+    });
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.magFilter = THREE.NearestFilter;
+    texture.minFilter = THREE.NearestFilter;
+    texture.generateMipmaps = false;
+    material.userData.annotationTexture = texture;
+    material.onBeforeCompile = shader => {
+      shader.uniforms.annotationMask = { value: texture };
+      shader.uniforms.annotationCenter = { value: new THREE.Vector2(center[0], center[1]) };
+      shader.uniforms.annotationSize = { value: new THREE.Vector2(a.width_mm, a.height_mm) };
+      shader.uniforms.annotationRotation = {
+        value: new THREE.Vector2(Math.cos(angle), Math.sin(angle)),
+      };
+      shader.vertexShader =
+        'varying vec3 annotationPosition;varying float annotationTop;\n' + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nannotationPosition=position;annotationTop=normal.z;',
+      );
+      shader.fragmentShader =
+        'varying vec3 annotationPosition;varying float annotationTop;uniform sampler2D annotationMask;uniform vec2 annotationCenter;uniform vec2 annotationSize;uniform vec2 annotationRotation;\n' +
+        shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        '#include <color_fragment>',
+        '#include <color_fragment>\nvec2 delta=annotationPosition.xy-annotationCenter;\nvec2 uv=vec2(delta.x*annotationRotation.x+delta.y*annotationRotation.y,-delta.x*annotationRotation.y+delta.y*annotationRotation.x)/annotationSize+0.5;\nif(annotationTop>0.1&&uv.x>=0.0&&uv.x<=1.0&&uv.y>=0.0&&uv.y<=1.0&&texture2D(annotationMask,uv).r>0.5)discard;',
+      );
+    };
+    return material;
+  }
 
- private commit(){this.changed();this.refresh();const a=this.current();if(a){const row=this.panel.querySelector<HTMLElement>('[data-annotation="'+a.id+'"]');if(row)row.textContent=a.name;}}
- refresh(review=false){this.group.traverse(o=>{if(o instanceof THREE.Mesh||o instanceof THREE.Line){o.geometry.dispose();const material=o.material as THREE.Material;material.userData.annotationTexture?.dispose();material.dispose();}});this.group.clear();this.group.visible=!review;this.warning='';const {project,terrain}=this.state();if(!terrain||review)return;const cuts:Mesh[]=[];for(const a of project.annotations||[]){if(!a.enabled||!a.mask.length)continue;try{const g=annotationGeometry(a,project.grid,project.settings,terrain.layout);if(a.treatment==='engraved')cuts.push(...g.preview);const mesh=new THREE.Mesh(this.viewer.geometry(combineMeshes(g.preview)),new THREE.MeshStandardMaterial({color:a.treatment==='raised'?0xdcc291:0x233c30,roughness:.85}));mesh.userData.annotation=a.id;this.group.add(mesh);if(g.porch){const porch=new THREE.Mesh(this.viewer.geometry(g.porch),this.porchMaterial(a,g.center,g.angle));porch.userData.annotation=a.id;this.group.add(porch);}if(a.id===this.selected){const center=new THREE.Vector3(...g.center);const c=Math.cos(g.angle),s=Math.sin(g.angle);const points=[[-a.width_mm/2,-a.height_mm/2],[a.width_mm/2,-a.height_mm/2],[a.width_mm/2,a.height_mm/2],[-a.width_mm/2,a.height_mm/2],[-a.width_mm/2,-a.height_mm/2]].map(([x,y])=>new THREE.Vector3(center.x+x*c-y*s,center.y+x*s+y*c,center.z+a.depth_mm+.2));const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),new THREE.LineBasicMaterial({color:0xff9b43,depthTest:false}));line.renderOrder=100;this.group.add(line);for(const kind of a.placement==='porch'?['resize']:['resize','rotate']){const handle=new THREE.Mesh(new THREE.SphereGeometry(1.4,12,8),new THREE.MeshBasicMaterial({color:kind==='resize'?0xff9b43:0x426bce,depthTest:false}));handle.position.copy(kind==='resize'?points[2]:new THREE.Vector3(center.x-s*(a.height_mm/2+6),center.y+c*(a.height_mm/2+6),center.z+a.depth_mm+.2));handle.userData={annotation:a.id,handle:kind,center};handle.renderOrder=101;this.group.add(handle);}}}catch(e){this.warning=(e as Error).message;}}
- this.viewer.annotationCuts(cuts);this.message(this.warning);this.viewer.invalidate();}
- sync(){if(!this.current())this.selected='';this.form();this.refresh();}
- private cast(e:PointerEvent){const r=this.viewer.renderer.domElement.getBoundingClientRect();this.ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),this.viewer.camera);}
- private plane(z:number){const p=new THREE.Vector3();this.ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),-(z+this.viewer.model.position.z)),p);return this.viewer.model.worldToLocal(p);}
- private down(e:PointerEvent){if(!this.group.visible||e.button!==0)return;this.cast(e);if(this.placing){this.consumedClick=true;const hit=this.ray.intersectObjects(this.viewer.land.children,true)[0];if(hit&&this.current()){const p=this.viewer.model.worldToLocal(hit.point);this.current()!.x_mm=p.x;this.current()!.y_mm=p.y;this.placing=false;this.commit();}e.stopImmediatePropagation();return;}const hit=this.ray.intersectObjects(this.group.children,true).find(h=>h.object.userData.annotation);if(!hit)return;this.consumedClick=true;this.selected=hit.object.userData.annotation;const a=this.current()!;const center=(hit.object.userData.center as THREE.Vector3|undefined)||this.viewer.model.worldToLocal(hit.point.clone());this.drag={kind:hit.object.userData.handle||'move',x:a.x_mm,y:a.y_mm,angle:a.angle_deg,width:a.width_mm,height:a.height_mm,center,start:this.plane(center.z)};this.viewer.controls.enabled=false;this.viewer.renderer.domElement.setPointerCapture(e.pointerId);e.stopImmediatePropagation();this.show();this.form();this.refresh();}
- private move(e:PointerEvent){if(!this.drag)return;this.cast(e);const a=this.current()!,d=this.drag,p=this.plane(d.center.z);if(d.kind==='move'){a.x_mm=d.x+p.x-d.start.x;a.y_mm=d.y+p.y-d.start.y;}else if(d.kind==='rotate'){a.angle_deg=d.angle+(Math.atan2(p.y-d.center.y,p.x-d.center.x)-Math.atan2(d.start.y-d.center.y,d.start.x-d.center.x))*180/Math.PI;}else{const ratio=p.distanceTo(d.center)/Math.max(.1,d.start.distanceTo(d.center));a.width_mm=Math.max(2,d.width*ratio);a.height_mm=Math.max(2,d.height*ratio);}this.commit();e.stopImmediatePropagation();}
+  private commit() {
+    this.changed();
+    this.refresh();
+    const a = this.current();
+    if (a) {
+      const row = this.panel.querySelector<HTMLElement>('[data-annotation="' + a.id + '"]');
+      if (row) row.textContent = a.name;
+    }
+  }
+  refresh(review = false) {
+    this.group.traverse(o => {
+      if (o instanceof THREE.Mesh || o instanceof THREE.Line) {
+        o.geometry.dispose();
+        const material = o.material as THREE.Material;
+        material.userData.annotationTexture?.dispose();
+        material.dispose();
+      }
+    });
+    this.group.clear();
+    this.group.visible = !review;
+    this.warning = '';
+    const { project, terrain } = this.state();
+    if (!terrain || review) return;
+    const cuts: Mesh[] = [];
+    for (const a of project.annotations || []) {
+      if (!a.enabled || !a.mask.length) continue;
+      try {
+        const g = annotationGeometry(a, project.grid, project.settings, terrain.layout);
+        if (a.treatment === 'engraved') cuts.push(...g.preview);
+        const mesh = new THREE.Mesh(
+          this.viewer.geometry(combineMeshes(g.preview)),
+          new THREE.MeshStandardMaterial({
+            color: a.treatment === 'raised' ? 0xdcc291 : 0x233c30,
+            roughness: 0.85,
+          }),
+        );
+        mesh.userData.annotation = a.id;
+        this.group.add(mesh);
+        if (g.porch) {
+          const porch = new THREE.Mesh(
+            this.viewer.geometry(g.porch),
+            this.porchMaterial(a, g.center, g.angle),
+          );
+          porch.userData.annotation = a.id;
+          this.group.add(porch);
+        }
+        if (a.id === this.selected) {
+          const center = new THREE.Vector3(...g.center);
+          const c = Math.cos(g.angle),
+            s = Math.sin(g.angle);
+          const points = [
+            [-a.width_mm / 2, -a.height_mm / 2],
+            [a.width_mm / 2, -a.height_mm / 2],
+            [a.width_mm / 2, a.height_mm / 2],
+            [-a.width_mm / 2, a.height_mm / 2],
+            [-a.width_mm / 2, -a.height_mm / 2],
+          ].map(
+            ([x, y]) =>
+              new THREE.Vector3(
+                center.x + x * c - y * s,
+                center.y + x * s + y * c,
+                center.z + a.depth_mm + 0.2,
+              ),
+          );
+          const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(points),
+            new THREE.LineBasicMaterial({ color: 0xff9b43, depthTest: false }),
+          );
+          line.renderOrder = 100;
+          this.group.add(line);
+          for (const kind of a.placement === 'porch' ? ['resize'] : ['resize', 'rotate']) {
+            const handle = new THREE.Mesh(
+              new THREE.SphereGeometry(1.4, 12, 8),
+              new THREE.MeshBasicMaterial({
+                color: kind === 'resize' ? 0xff9b43 : 0x426bce,
+                depthTest: false,
+              }),
+            );
+            handle.position.copy(
+              kind === 'resize'
+                ? points[2]
+                : new THREE.Vector3(
+                    center.x - s * (a.height_mm / 2 + 6),
+                    center.y + c * (a.height_mm / 2 + 6),
+                    center.z + a.depth_mm + 0.2,
+                  ),
+            );
+            handle.userData = { annotation: a.id, handle: kind, center };
+            handle.renderOrder = 101;
+            this.group.add(handle);
+          }
+        }
+      } catch (e) {
+        this.warning = (e as Error).message;
+      }
+    }
+    this.viewer.annotationCuts(cuts);
+    this.message(this.warning);
+    this.viewer.invalidate();
+  }
+  sync() {
+    if (!this.current()) this.selected = '';
+    this.form();
+    this.refresh();
+  }
+  private cast(e: PointerEvent) {
+    const r = this.viewer.renderer.domElement.getBoundingClientRect();
+    this.ray.setFromCamera(
+      new THREE.Vector2(
+        ((e.clientX - r.left) / r.width) * 2 - 1,
+        (-(e.clientY - r.top) / r.height) * 2 + 1,
+      ),
+      this.viewer.camera,
+    );
+  }
+  private plane(z: number) {
+    const p = new THREE.Vector3();
+    this.ray.ray.intersectPlane(
+      new THREE.Plane(new THREE.Vector3(0, 0, 1), -(z + this.viewer.model.position.z)),
+      p,
+    );
+    return this.viewer.model.worldToLocal(p);
+  }
+  private down(e: PointerEvent) {
+    if (!this.group.visible || e.button !== 0) return;
+    this.cast(e);
+    if (this.placing) {
+      this.consumedClick = true;
+      const hit = this.ray.intersectObjects(this.viewer.land.children, true)[0];
+      if (hit && this.current()) {
+        const p = this.viewer.model.worldToLocal(hit.point);
+        this.current()!.x_mm = p.x;
+        this.current()!.y_mm = p.y;
+        this.placing = false;
+        this.commit();
+      }
+      e.stopImmediatePropagation();
+      return;
+    }
+    const hit = this.ray
+      .intersectObjects(this.group.children, true)
+      .find(h => h.object.userData.annotation);
+    if (!hit) return;
+    this.consumedClick = true;
+    this.selected = hit.object.userData.annotation;
+    const a = this.current()!;
+    const center =
+      (hit.object.userData.center as THREE.Vector3 | undefined) ||
+      this.viewer.model.worldToLocal(hit.point.clone());
+    this.drag = {
+      kind: hit.object.userData.handle || 'move',
+      x: a.x_mm,
+      y: a.y_mm,
+      angle: a.angle_deg,
+      width: a.width_mm,
+      height: a.height_mm,
+      center,
+      start: this.plane(center.z),
+    };
+    this.viewer.controls.enabled = false;
+    this.viewer.renderer.domElement.setPointerCapture(e.pointerId);
+    e.stopImmediatePropagation();
+    this.show();
+    this.form();
+    this.refresh();
+  }
+  private move(e: PointerEvent) {
+    if (!this.drag) return;
+    this.cast(e);
+    const a = this.current()!,
+      d = this.drag,
+      p = this.plane(d.center.z);
+    if (d.kind === 'move') {
+      a.x_mm = d.x + p.x - d.start.x;
+      a.y_mm = d.y + p.y - d.start.y;
+    } else if (d.kind === 'rotate') {
+      a.angle_deg =
+        d.angle +
+        ((Math.atan2(p.y - d.center.y, p.x - d.center.x) -
+          Math.atan2(d.start.y - d.center.y, d.start.x - d.center.x)) *
+          180) /
+          Math.PI;
+    } else {
+      const ratio = p.distanceTo(d.center) / Math.max(0.1, d.start.distanceTo(d.center));
+      a.width_mm = Math.max(2, d.width * ratio);
+      a.height_mm = Math.max(2, d.height * ratio);
+    }
+    this.commit();
+    e.stopImmediatePropagation();
+  }
 }

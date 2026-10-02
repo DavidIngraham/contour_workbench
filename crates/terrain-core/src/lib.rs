@@ -1,4 +1,8 @@
+#![warn(missing_docs)]
 //! Contour Workbench's platform-independent geometry and source-planning core.
+//!
+//! Geographic inputs use `[longitude, latitude]` pairs in decimal degrees. Generated
+//! geometry uses millimeters in the printer coordinate system.
 mod carve;
 use geo::{
     BooleanOps, Buffer, Centroid, Contains, Coord, Intersects, LineString, MultiPolygon, Point,
@@ -9,28 +13,49 @@ use serde_json::Value;
 use spade::FloatTriangulation;
 use std::collections::{HashMap, HashSet};
 
+/// Validated controls that affect terrain, overlays, inserts, and pockets.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Maximum printable width and depth in millimeters.
     pub max_print_size_mm: [f64; 2],
+    /// Multiplier applied to terrain relief after horizontal scaling.
     pub height_factor: f64,
+    /// Solid base thickness below the lowest terrain point, in millimeters.
     pub base_height_mm: f64,
+    /// Default finished width of linear features, in millimeters.
     pub path_width_mm: f64,
+    /// Extra path-pocket clearance per side, in millimeters.
     pub path_clearance_mm: f64,
+    /// Printer nozzle diameter used for minimum-feature calculations, in millimeters.
     pub nozzle_diameter_mm: f64,
+    /// Optional minimum retained terrain-island width, in millimeters.
     pub minimum_terrain_island_width_mm: Option<f64>,
+    /// Pocket clearance added on each side of an insert, in millimeters.
     pub insert_fit_clearance_per_side_mm: f64,
+    /// Lower-edge inset used to compensate for elephant foot, in millimeters.
     pub insert_elephant_foot_relief_mm: f64,
+    /// Height over which elephant-foot relief is applied, in millimeters.
     pub insert_elephant_foot_height_mm: f64,
+    /// Assembly draft applied to buried insert walls, in degrees.
     pub insert_draft_angle_deg: f64,
+    /// Default depth of line-feature inserts, in millimeters.
     pub insert_depth_mm: f64,
+    /// Default depth of polygon-zone inserts, in millimeters.
     pub zone_insert_depth_mm: f64,
+    /// Minimum terrain floor retained below large zone inserts, in millimeters.
     pub zone_floor_mm: f64,
+    /// Ground width assigned to centerline ski runs, in meters.
     pub ski_run_width_m: f64,
+    /// Maximum V-carve depth, in millimeters.
     pub carve_depth_mm: f64,
+    /// Separation between independently printable insert parts, in millimeters.
     pub insert_gap_mm: f64,
+    /// Optional square segmentation size for inserts, in millimeters.
     pub insert_segment_size_mm: Option<f64>,
+    /// Maximum sampled vertical error for adaptive terrain; zero preserves full resolution.
     pub terrain_max_error_mm: f64,
+    /// Optional terrain boundary as longitude/latitude vertices.
     pub boundary: Vec<[f64; 2]>,
 }
 impl Default for Settings {
@@ -59,6 +84,7 @@ impl Default for Settings {
         }
     }
 }
+/// Return `[west, south, east, north]` for longitude/latitude vertices.
 pub fn boundary_bounds(points: &[[f64; 2]]) -> [f64; 4] {
     let mut b = [
         f64::INFINITY,
@@ -75,10 +101,12 @@ pub fn boundary_bounds(points: &[[f64; 2]]) -> [f64; 4] {
     b
 }
 impl Settings {
+    /// Return the configured island width or the nozzle-derived default.
     pub fn effective_minimum_terrain_island_width_mm(&self) -> f64 {
         self.minimum_terrain_island_width_mm
             .unwrap_or(self.nozzle_diameter_mm * 1.125 * 3.)
     }
+    /// Validate dimensions, compensation ranges, and boundary topology.
     pub fn validate(&self) -> Result<(), String> {
         if !self.boundary.is_empty() {
             if self.boundary.len() < 3
@@ -148,14 +176,20 @@ impl Settings {
         Ok(())
     }
 }
+/// Rectilinear elevation samples covering a geographic bounding box.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Grid {
+    /// Geographic bounds as `[west, south, east, north]`.
     pub bounds: [f64; 4],
+    /// Number of samples along the longitude axis.
     pub width: usize,
+    /// Number of samples along the latitude axis.
     pub height: usize,
+    /// Row-major elevations in meters above the source datum.
     pub elevations: Vec<f64>,
 }
 impl Grid {
+    /// Validate grid dimensions, bounds, sample count, and finite elevations.
     pub fn validate(&self) -> Result<(), String> {
         if self.width < 2
             || self.height < 2
@@ -170,6 +204,7 @@ impl Grid {
         }
         Ok(())
     }
+    /// Bilinearly sample the grid at a longitude and latitude.
     pub fn sample(&self, lon: f64, lat: f64) -> f64 {
         let x = ((lon - self.bounds[0]) / (self.bounds[2] - self.bounds[0])
             * (self.width - 1) as f64)
@@ -188,6 +223,7 @@ impl Grid {
             + z(i + 1, j + 1) * u * v
     }
 }
+/// Validate supported geographic bounds and reject dateline crossings.
 pub fn validate_bounds(b: [f64; 4]) -> Result<(), String> {
     if b.iter().any(|x| !x.is_finite())
         || b[0] >= b[2]
@@ -206,50 +242,73 @@ pub fn validate_bounds(b: [f64; 4]) -> Result<(), String> {
     }
     Ok(())
 }
+/// Geometry treatment selected for a feature.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Treatment {
+    /// Create a separately printable insert and matching pocket.
     #[default]
     Insert,
+    /// Exclude the feature from preview and generated geometry.
     Hide,
+    /// Cut a terrain-following V-shaped groove.
     VCarve,
 }
+/// Surface policy for a polygon-zone insert.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoneSurface {
+    /// Follow the terrain surface.
     #[default]
     Terrain,
+    /// Use one level elevation across the zone.
     Level,
 }
+/// Polygon-zone geometry with optional interior holes.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AreaPolygon {
+    /// Closed exterior ring as longitude/latitude vertices.
     pub outer: Vec<[f64; 2]>,
     #[serde(default)]
+    /// Closed interior rings as longitude/latitude vertices.
     pub holes: Vec<Vec<[f64; 2]>>,
 }
+/// Normalized line or polygon feature imported from OSM or GeoJSON.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Feature {
+    /// Stable source identifier used by the feature tree and preset overlays.
     pub id: String,
+    /// User-facing feature name.
     pub name: String,
+    /// Classification such as `trail`, `water`, or `ski_run`.
     pub class: String,
     #[serde(default)]
+    /// Line strings as longitude/latitude vertices.
     pub lines: Vec<Vec<[f64; 2]>>,
     #[serde(default)]
+    /// Polygon geometry for area features.
     pub polygons: Vec<AreaPolygon>,
     #[serde(default = "yes")]
+    /// Whether the feature participates in preview and generation.
     pub enabled: bool,
     #[serde(default)]
+    /// Selected geometry treatment when enabled.
     pub treatment: Treatment,
     #[serde(default)]
+    /// Surface policy used by polygon-zone inserts.
     pub surface: ZoneSurface,
     #[serde(default)]
+    /// Optional source-ground width override in meters.
     pub width_m: Option<f64>,
     #[serde(default)]
+    /// Optional insert-depth override in millimeters.
     pub insert_depth_mm: Option<f64>,
     #[serde(default)]
+    /// Original source properties retained for inspection and round trips.
     pub tags: Value,
 }
 impl Feature {
+    /// Return the effective treatment, accounting for visibility.
     pub fn treatment(&self) -> Treatment {
         if self.enabled {
             self.treatment
@@ -257,6 +316,7 @@ impl Feature {
             Treatment::Hide
         }
     }
+    /// Return whether this feature should be handled as an area zone.
     pub fn is_zone(&self) -> bool {
         !self.polygons.is_empty() || matches!(self.class.as_str(), "water" | "glacier" | "ski_run")
     }
@@ -281,6 +341,7 @@ fn default_surface(class: &str) -> ZoneSurface {
         ZoneSurface::Terrain
     }
 }
+/// Classify source properties into a supported Contour Workbench feature class.
 pub fn classify(p: &Value) -> Option<&'static str> {
     let p = p.get("tags").filter(|x| x.is_object()).unwrap_or(p);
     if p.get("Trail_Name")
@@ -488,6 +549,7 @@ fn feature_from_parts(
         tags,
     }
 }
+/// Normalize an Overpass response or GeoJSON feature collection.
 pub fn normalize(input: &Value) -> Vec<Feature> {
     let mut out = vec![];
     if let Some(elements) = input.get("elements").and_then(Value::as_array) {
@@ -600,18 +662,28 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
     }
     out
 }
+/// Geographic-to-printer transformation chosen for a terrain model.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct Layout {
+    /// Geographic bounds as `[west, south, east, north]`.
     pub bounds: [f64; 4],
+    /// Model width in millimeters.
     pub width: f64,
+    /// Model depth in millimeters.
     pub depth: f64,
+    /// Millimeters of model XY per meter on the ground.
     pub scale: f64,
+    /// Whether the geographic extent was rotated 90 degrees to fit the bed.
     pub rotated: bool,
+    /// Minimum source elevation used as the relief datum, in meters.
     pub minimum: f64,
+    /// Vertical relief multiplier.
     pub height_factor: f64,
+    /// Base thickness in millimeters.
     pub base_height: f64,
 }
 impl Layout {
+    /// Choose the orientation and scale that maximize print-bed usage.
     pub fn new(g: &Grid, s: &Settings) -> Self {
         let b = if s.boundary.is_empty() {
             g.bounds
@@ -635,6 +707,7 @@ impl Layout {
             base_height: s.base_height_mm,
         }
     }
+    /// Convert longitude/latitude to model XY millimeters.
     pub fn xy(&self, p: [f64; 2]) -> [f64; 2] {
         let u = (p[0] - self.bounds[0]) / (self.bounds[2] - self.bounds[0]);
         let v = (p[1] - self.bounds[1]) / (self.bounds[3] - self.bounds[1]);
@@ -644,6 +717,7 @@ impl Layout {
             [u * self.width, v * self.depth]
         }
     }
+    /// Convert model XY millimeters to longitude/latitude.
     pub fn lonlat(&self, p: [f64; 2]) -> [f64; 2] {
         let (u, v) = if self.rotated {
             (p[1] / self.depth, 1. - p[0] / self.width)
@@ -655,17 +729,22 @@ impl Layout {
             self.bounds[1] + v * (self.bounds[3] - self.bounds[1]),
         ]
     }
+    /// Sample terrain height at model XY, returning millimeters above the build plate.
     pub fn z(&self, g: &Grid, p: [f64; 2]) -> f64 {
         let q = self.lonlat(p);
         (g.sample(q[0], q[1]) - self.minimum) * self.scale * self.height_factor + self.base_height
     }
 }
+/// Indexed triangle mesh in printer-space millimeters.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Mesh {
+    /// Flat XYZ vertex array.
     pub positions: Vec<f64>,
+    /// Counter-clockwise triangle indices.
     pub indices: Vec<u32>,
 }
 impl Mesh {
+    /// Verify indices and closed, consistently oriented two-manifold edges.
     pub fn validate(&self) -> Result<(), String> {
         let mut edges: HashMap<(u32, u32), (u32, i32)> = HashMap::new();
         for t in self.indices.chunks_exact(3) {
@@ -694,6 +773,7 @@ impl Mesh {
         }
         Ok(())
     }
+    /// Serialize this mesh as an ASCII STL in millimeters.
     pub fn stl(&self) -> String {
         let mut s = String::from("solid contour_workbench\n");
         for t in self.indices.chunks_exact(3) {
@@ -865,13 +945,19 @@ fn polygon_surface_detail(
 ) -> Mesh {
     polygon_between_detail(poly, top, |_| base, densify)
 }
+/// Generated terrain solid and the layout used to construct it.
 #[derive(Serialize, Deserialize)]
 pub struct Terrain {
+    /// Closed terrain mesh.
     pub mesh: Mesh,
+    /// Geographic-to-model transformation for this terrain.
     pub layout: Layout,
+    /// Number of elevation samples in the source grid.
     pub source_samples: usize,
+    /// Number of elevation samples retained after optional simplification.
     pub retained_samples: usize,
 }
+/// Build a closed terrain solid from an elevation grid and validated settings.
 pub fn terrain(g: &Grid, s: &Settings) -> Result<Terrain, String> {
     g.validate()?;
     s.validate()?;
@@ -1009,12 +1095,14 @@ impl spade::HasPosition for Vertex {
         self.p
     }
 }
+type TerrainTriangulation = (Vec<[f64; 2]>, Vec<[u32; 3]>);
+
 fn adaptive(
     pts: &[[f64; 2]],
     g: &Grid,
     tol: f64,
     l: &Layout,
-) -> Result<(Vec<[f64; 2]>, Vec<[u32; 3]>), String> {
+) -> Result<TerrainTriangulation, String> {
     use spade::Triangulation;
     let mut selected = vec![false; pts.len()];
     let min = g
@@ -1102,11 +1190,16 @@ fn adaptive(
         .collect();
     Ok((points, faces))
 }
+/// Lightweight design-preview mesh associated with one feature.
 #[derive(Serialize, Deserialize)]
 pub struct Overlay {
+    /// Effective feature treatment.
     pub treatment: Treatment,
+    /// Feature or feature-part identifier.
     pub id: String,
+    /// Normalized feature class.
     pub class: String,
+    /// Preview mesh in assembly coordinates.
     pub mesh: Mesh,
 }
 const CLASS_ORDER: [&str; 7] = [
@@ -1300,6 +1393,7 @@ fn preview_ribbon(poly: &Polygon<f64>, surface: impl Fn([f64; 2]) -> f64) -> Mes
     }
     mesh
 }
+/// Build feature preview meshes without running final solid booleans.
 pub fn overlays(
     g: &Grid,
     s: &Settings,
@@ -1378,36 +1472,58 @@ pub fn overlays(
     }
     Ok(out)
 }
+/// Separately printable insert piece and its assembly origin.
 #[derive(Serialize, Deserialize)]
 pub struct Piece {
+    /// Stable generated piece identifier.
     pub id: String,
+    /// Normalized feature class.
     pub class: String,
+    /// Piece-local printable mesh.
     pub mesh: Mesh,
+    /// Translation from piece-local coordinates to terrain assembly coordinates, in millimeters.
     pub origin: [f64; 3],
+    /// Buried depth of the piece in millimeters.
     pub insert_depth_mm: f64,
     #[serde(default)]
+    /// Whether the browser must intersect the prism with a shifted terrain surface.
     pub conformal: bool,
 }
+/// Geometry plan consumed by the browser solid-boolean stage.
 #[derive(Serialize, Deserialize)]
 pub struct Plan {
+    /// Separately printable insert pieces.
     pub inserts: Vec<Piece>,
+    /// Pocket and V-carve cutters, ordered by processing group.
     pub cutters: Vec<Mesh>,
+    /// Exclusive cutter indices that end each boolean group.
     pub cutter_group_ends: Vec<usize>,
+    /// Count of enclosed terrain pins removed as too narrow to print reliably.
     pub removed_terrain_islands: usize,
 }
+struct InsertLayerContext<'a> {
+    grid: &'a Grid,
+    settings: &'a Settings,
+    layout: &'a Layout,
+    class: &'a str,
+    segment_size_mm: [f64; 2],
+    roof_mm: f64,
+}
+
 fn add_insert_layer(
     out: &mut Plan,
-    g: &Grid,
-    s: &Settings,
-    l: &Layout,
-    class: &str,
+    context: &InsertLayerContext<'_>,
     layer: &MultiPolygon<f64>,
     feature: Option<&Feature>,
     depth: f64,
-    seg: [f64; 2],
-    roof: f64,
     serial: &mut usize,
 ) -> Result<(), String> {
+    let g = context.grid;
+    let s = context.settings;
+    let l = context.layout;
+    let class = context.class;
+    let seg = context.segment_size_mm;
+    let roof = context.roof_mm;
     let zone = feature.is_some_and(Feature::is_zone);
     let floor = if zone { s.zone_floor_mm } else { 0.4 };
     // A level zone keeps one elevation across segmentation cells, so splitting a
@@ -1503,6 +1619,7 @@ fn add_insert_layer(
     }
     Ok(())
 }
+/// Build insert pieces and grouped cutter meshes for final solid generation.
 pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<Plan, String> {
     s.validate()?;
     let clip = feature_boundary(s, l);
@@ -1571,6 +1688,14 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             }
             carved = carved.union(&domain);
         }
+        let insert_context = InsertLayerContext {
+            grid: g,
+            settings: s,
+            layout: l,
+            class,
+            segment_size_mm: seg,
+            roof_mm: roof,
+        };
         if zone_class(class) {
             let mut claimed = MultiPolygon(vec![]);
             let mut terrain_groups: Vec<(f64, &Feature, MultiPolygon<f64>)> = vec![];
@@ -1584,15 +1709,10 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                 if f.surface == ZoneSurface::Level {
                     add_insert_layer(
                         &mut out,
-                        g,
-                        s,
-                        l,
-                        class,
+                        &insert_context,
                         &individual,
                         Some(f),
                         depth,
-                        seg,
-                        roof,
                         &mut serial,
                     )?;
                 } else if let Some((_, _, group)) = terrain_groups
@@ -1608,30 +1728,20 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             for (depth, feature, group) in terrain_groups {
                 add_insert_layer(
                     &mut out,
-                    g,
-                    s,
-                    l,
-                    class,
+                    &insert_context,
                     &group,
                     Some(feature),
                     depth,
-                    seg,
-                    roof,
                     &mut serial,
                 )?;
             }
         } else {
             add_insert_layer(
                 &mut out,
-                g,
-                s,
-                l,
-                class,
+                &insert_context,
                 &layer,
                 None,
                 s.insert_depth_mm,
-                seg,
-                roof,
                 &mut serial,
             )?;
         }
@@ -1643,6 +1753,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
     }
     Ok(out)
 }
+/// Construct public Copernicus GLO-30 or GLO-90 tile URLs for geographic bounds.
 pub fn copernicus_urls(b: [f64; 4], ninety: bool) -> Result<Vec<String>, String> {
     validate_bounds(b)?;
     let bucket = if ninety {
@@ -1668,6 +1779,7 @@ pub fn copernicus_urls(b: [f64; 4], ninety: bool) -> Result<Vec<String>, String>
     }
     Ok(urls)
 }
+/// Build the Overpass query for supported features within geographic bounds.
 pub fn overpass_query(b: [f64; 4], winter: bool) -> Result<String, String> {
     validate_bounds(b)?;
     let bbox = format!("({},{},{},{})", b[1], b[0], b[3], b[2]);

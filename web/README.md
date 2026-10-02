@@ -43,22 +43,16 @@ Generate constructs the printable terrain and fitted inserts. Review supports ex
 ## Verify
 
 ```sh
-cargo test --workspace
-cargo test -p contour-core --test post_canyon -- --ignored
+bash scripts/check.sh
 cd web
-npm test
-npm run build
 npx playwright install chromium
-# With npm run dev running on port 5173:
-node tests/smoke.mjs
-node tests/zone-cases.mjs
+npm run test:mobile
+npm run test:presets
 ```
-
-The browser smoke test loads the real example, verifies that toggling a feature does not rebuild terrain, generates the solid model, and downloads its STL bundle to `temp/`.
 
 ## GitHub Pages
 
-In repository Settings → Pages, choose **GitHub Actions**. Run the **Contour Workbench Pages** workflow manually. It tests Rust, builds WASM and the static site, tests the web code, and deploys `web/dist`. No deployment is triggered merely by editing this project.
+In repository Settings → Pages, choose **GitHub Actions**. Every push to `main` runs formatting, lint, Rust, web, mobile, and full preset-generation checks before deploying `web/dist`. The **Contour Workbench Pages** workflow also supports manual runs.
 
 ## V-carves and view controls
 
@@ -78,7 +72,7 @@ Porches snap to a straight boundary segment long enough for the content, with a 
 
 ## Mobile usability
 
-Phones use a full-width model with a dismissible Settings panel, larger touch targets, and a scrollable polygon dialog. Run npm run test:mobile from web for six Chromium touch-emulation checks at 320 px, 390 px, and landscape sizes. The tests cover layout overflow, settings access, feature visibility and treatment, polygon selection, annotation controls, and model generation. They also run before Pages deployment. These are emulated browser checks, not physical-device or Safari testing.
+Phones use a full-width model with a dismissible Settings panel, larger touch targets, and a scrollable polygon dialog. Run npm run test:mobile from web for nine Chromium touch-emulation checks at 320 px, 390 px, and landscape sizes. The tests cover layout overflow, settings access, feature visibility and treatment, polygon selection, annotation controls, and model generation. They also run before Pages deployment. These are emulated browser checks, not physical-device or Safari testing.
 
 ## Insert fit calibration
 

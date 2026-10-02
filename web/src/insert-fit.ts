@@ -1,34 +1,86 @@
-import type {Settings} from './types';
+/** Nozzle-aware insert fit and elephant-foot compensation calculations. */
+import type { Settings } from './types';
 
-const lineClasses=new Set(['trail','road','stream','ski_lift']);
+const lineClasses = new Set(['trail', 'road', 'stream', 'ski_lift']);
 
+/** Vertical inset profile for one printable insert. */
 export interface FitProfile {
- depthMm:number;
- extrusionWidthMm:number;
- minimumTopWidthMm:number;
- footReliefMm:number;
- footHeightMm:number;
- draftBottomInsetMm:number;
- draftHeightMm:number;
- draftAngleDeg:number;
- maximumInsetMm:number;
+  depthMm: number;
+  extrusionWidthMm: number;
+  minimumTopWidthMm: number;
+  footReliefMm: number;
+  footHeightMm: number;
+  draftBottomInsetMm: number;
+  draftHeightMm: number;
+  draftAngleDeg: number;
+  maximumInsetMm: number;
 }
-export function extrusionWidthMm(nozzleDiameterMm:number){return nozzleDiameterMm*1.125;}
-export function recommendedInsertWidthMm(nozzleDiameterMm:number){return extrusionWidthMm(nozzleDiameterMm)*2;}
-export function minimumTerrainIslandWidthMm(settings:Pick<Settings,'nozzle_diameter_mm'|'minimum_terrain_island_width_mm'>){return settings.minimum_terrain_island_width_mm??extrusionWidthMm(settings.nozzle_diameter_mm)*3;}
-export function fitProfile(settings:Settings,className:string,depthMm:number,reliefOverride?:number):FitProfile{
- const depth=Math.max(.05,depthMm),extrusion=extrusionWidthMm(settings.nozzle_diameter_mm);
- const lineMaximum=lineClasses.has(className)?Math.max(0,(settings.path_width_mm-extrusion)/2):Infinity;
- const footRelief=Math.min(Math.max(0,reliefOverride??settings.insert_elephant_foot_relief_mm),lineMaximum);
- const seatingBand=Math.min(Math.max(.25,settings.nozzle_diameter_mm*.75),depth*.4);
- const draftHeight=Math.max(0,depth-seatingBand);
- const requestedDraft=Math.tan(settings.insert_draft_angle_deg*Math.PI/180)*draftHeight;
- const draftBottomInset=Math.min(requestedDraft,Math.max(0,lineMaximum-footRelief));
- return {depthMm:depth,extrusionWidthMm:extrusion,minimumTopWidthMm:extrusion*2,footReliefMm:footRelief,footHeightMm:Math.min(settings.insert_elephant_foot_height_mm,Math.max(.05,depth-seatingBand)),draftBottomInsetMm:draftBottomInset,draftHeightMm:draftHeight,draftAngleDeg:settings.insert_draft_angle_deg,maximumInsetMm:footRelief+draftBottomInset};
+/** Estimate line width from nozzle diameter. */
+export function extrusionWidthMm(nozzleDiameterMm: number) {
+  return nozzleDiameterMm * 1.125;
 }
-export function insetAtHeight(profile:FitProfile,heightMm:number){
- const foot=profile.footHeightMm>0?profile.footReliefMm*Math.max(0,1-heightMm/profile.footHeightMm):0;
- const draft=profile.draftHeightMm>0?profile.draftBottomInsetMm*Math.max(0,1-heightMm/profile.draftHeightMm):0;
- return Math.min(profile.maximumInsetMm,foot+draft);
+/** Return a two-extrusion minimum visible insert width. */
+export function recommendedInsertWidthMm(nozzleDiameterMm: number) {
+  return extrusionWidthMm(nozzleDiameterMm) * 2;
 }
-export function calibrationClearances(settings:Settings){return [-.05,0,.05,.1].map(offset=>Math.max(.05,Math.round((settings.insert_fit_clearance_per_side_mm+offset)*100)/100));}
+/** Return the configured or nozzle-derived printable terrain-island width. */
+export function minimumTerrainIslandWidthMm(
+  settings: Pick<Settings, 'nozzle_diameter_mm' | 'minimum_terrain_island_width_mm'>,
+) {
+  return (
+    settings.minimum_terrain_island_width_mm ?? extrusionWidthMm(settings.nozzle_diameter_mm) * 3
+  );
+}
+/** Derive relief and draft limits for an insert class and depth. */
+export function fitProfile(
+  settings: Settings,
+  className: string,
+  depthMm: number,
+  reliefOverride?: number,
+): FitProfile {
+  const depth = Math.max(0.05, depthMm),
+    extrusion = extrusionWidthMm(settings.nozzle_diameter_mm);
+  const lineMaximum = lineClasses.has(className)
+    ? Math.max(0, (settings.path_width_mm - extrusion) / 2)
+    : Infinity;
+  const footRelief = Math.min(
+    Math.max(0, reliefOverride ?? settings.insert_elephant_foot_relief_mm),
+    lineMaximum,
+  );
+  const seatingBand = Math.min(Math.max(0.25, settings.nozzle_diameter_mm * 0.75), depth * 0.4);
+  const draftHeight = Math.max(0, depth - seatingBand);
+  const requestedDraft = Math.tan((settings.insert_draft_angle_deg * Math.PI) / 180) * draftHeight;
+  const draftBottomInset = Math.min(requestedDraft, Math.max(0, lineMaximum - footRelief));
+  return {
+    depthMm: depth,
+    extrusionWidthMm: extrusion,
+    minimumTopWidthMm: extrusion * 2,
+    footReliefMm: footRelief,
+    footHeightMm: Math.min(
+      settings.insert_elephant_foot_height_mm,
+      Math.max(0.05, depth - seatingBand),
+    ),
+    draftBottomInsetMm: draftBottomInset,
+    draftHeightMm: draftHeight,
+    draftAngleDeg: settings.insert_draft_angle_deg,
+    maximumInsetMm: footRelief + draftBottomInset,
+  };
+}
+/** Evaluate total cross-section inset at a height above the insert bottom. */
+export function insetAtHeight(profile: FitProfile, heightMm: number) {
+  const foot =
+    profile.footHeightMm > 0
+      ? profile.footReliefMm * Math.max(0, 1 - heightMm / profile.footHeightMm)
+      : 0;
+  const draft =
+    profile.draftHeightMm > 0
+      ? profile.draftBottomInsetMm * Math.max(0, 1 - heightMm / profile.draftHeightMm)
+      : 0;
+  return Math.min(profile.maximumInsetMm, foot + draft);
+}
+/** Generate four clearance values centered around the selected fit. */
+export function calibrationClearances(settings: Settings) {
+  return [-0.05, 0, 0.05, 0.1].map(offset =>
+    Math.max(0.05, Math.round((settings.insert_fit_clearance_per_side_mm + offset) * 100) / 100),
+  );
+}

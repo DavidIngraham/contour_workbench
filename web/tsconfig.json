@@ -1,1 +1,24 @@
-{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","lib":["ES2022","DOM","DOM.Iterable","WebWorker"],"strict":true,"skipLibCheck":true,"allowJs":true,"noEmit":true,"resolveJsonModule":true},"include":["src","tests","vite.config.ts"]}
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "strict": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "noEmit": true,
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src",
+    "tests",
+    "mobile-tests",
+    "performance-tests",
+    "scripts",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.mobile.config.ts",
+    "playwright.presets.config.ts"
+  ]
+}

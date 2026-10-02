@@ -1,18 +1,160 @@
-export type Bounds = [number,number,number,number];
-export interface Grid {bounds:Bounds;width:number;height:number;elevations:number[]}
-export interface Settings {max_print_size_mm:[number,number];height_factor:number;base_height_mm:number;path_width_mm:number;path_clearance_mm:number;nozzle_diameter_mm:number;minimum_terrain_island_width_mm:number|null;insert_fit_clearance_per_side_mm:number;insert_elephant_foot_relief_mm:number;insert_elephant_foot_height_mm:number;insert_draft_angle_deg:number;insert_depth_mm:number;zone_insert_depth_mm:number;zone_floor_mm:number;ski_run_width_m:number;carve_depth_mm:number;insert_gap_mm:number;insert_segment_size_mm:number|null;terrain_max_error_mm:number;boundary:[number,number][]}
-export const defaults:Settings={max_print_size_mm:[248,198],height_factor:1,base_height_mm:1,path_width_mm:.9,path_clearance_mm:.1,nozzle_diameter_mm:.4,minimum_terrain_island_width_mm:null,insert_fit_clearance_per_side_mm:.15,insert_elephant_foot_relief_mm:.18,insert_elephant_foot_height_mm:.4,insert_draft_angle_deg:1.5,insert_depth_mm:2,zone_insert_depth_mm:.8,zone_floor_mm:.8,ski_run_width_m:30,carve_depth_mm:.4,insert_gap_mm:.5,insert_segment_size_mm:null,terrain_max_error_mm:0,boundary:[]};
-export type Treatment = 'insert'|'hide'|'v_carve';
-export type FeatureClass='trail'|'road'|'stream'|'water'|'glacier'|'ski_run'|'ski_lift';
-export type ZoneSurface='terrain'|'level';
-export interface AreaPolygon {outer:[number,number][];holes:[number,number][][]}
-export interface Feature {treatment?:Treatment;id:string;name:string;class:FeatureClass;lines:[number,number][][];polygons?:AreaPolygon[];enabled:boolean;tags:Record<string,unknown>;surface?:ZoneSurface;width_m?:number;insert_depth_mm?:number}
-export interface Mesh {positions:number[]|Float32Array;indices:number[]|Uint32Array}
-export interface Layout {bounds:Bounds;width:number;depth:number;scale:number;rotated:boolean;minimum:number;height_factor:number;base_height:number}
-export interface Terrain {mesh:Mesh;layout:Layout;source_samples:number;retained_samples:number}
-export interface Overlay {treatment:Treatment;id:string;class:Feature['class'];mesh:Mesh}
-export interface Piece {id:string;class:string;mesh:Mesh;origin:[number,number,number];insert_depth_mm:number;conformal?:boolean;taper_relief_mm?:number;taper_height_mm?:number;draft_angle_deg?:number}
-export interface Asset {terrain:Mesh;inserts:Piece[];validation:{watertight:boolean;triangles:number;pieces:number;removed_terrain_islands:number};revision:number}
-export interface Source {product:string;name:string;retrieved:string;attribution:string;urls?:string[];bundled?:boolean}
-export interface Project {annotations?:import('./annotations').Annotation[];extent_editor?:import('./extent-shapes').ExtentEditorState;winter_mode?:boolean;schema_version:2;name:string;grid:Grid;source:Source;features:Feature[];settings:Settings}
-export type Product='auto'|'usgs_3dep_10m'|'usgs_3dep_30m'|'copernicus_glo30'|'copernicus_glo90';
+/** Shared serialized project and mesh contracts. Geographic coordinates use longitude/latitude; model geometry uses millimeters. */
+/** Geographic bounds ordered as west, south, east, north. */
+export type Bounds = [number, number, number, number];
+/** Row-major elevation grid in geographic coordinates with elevations in meters. */
+export interface Grid {
+  bounds: Bounds;
+  width: number;
+  height: number;
+  elevations: number[];
+}
+/** User-controlled geometry and print settings; unit suffixes identify physical units. */
+export interface Settings {
+  max_print_size_mm: [number, number];
+  height_factor: number;
+  base_height_mm: number;
+  path_width_mm: number;
+  path_clearance_mm: number;
+  nozzle_diameter_mm: number;
+  minimum_terrain_island_width_mm: number | null;
+  insert_fit_clearance_per_side_mm: number;
+  insert_elephant_foot_relief_mm: number;
+  insert_elephant_foot_height_mm: number;
+  insert_draft_angle_deg: number;
+  insert_depth_mm: number;
+  zone_insert_depth_mm: number;
+  zone_floor_mm: number;
+  ski_run_width_m: number;
+  carve_depth_mm: number;
+  insert_gap_mm: number;
+  insert_segment_size_mm: number | null;
+  terrain_max_error_mm: number;
+  boundary: [number, number][];
+}
+/** Defaults used for new projects and backward-compatible deserialization. */
+export const defaults: Settings = {
+  max_print_size_mm: [248, 198],
+  height_factor: 1,
+  base_height_mm: 1,
+  path_width_mm: 0.9,
+  path_clearance_mm: 0.1,
+  nozzle_diameter_mm: 0.4,
+  minimum_terrain_island_width_mm: null,
+  insert_fit_clearance_per_side_mm: 0.15,
+  insert_elephant_foot_relief_mm: 0.18,
+  insert_elephant_foot_height_mm: 0.4,
+  insert_draft_angle_deg: 1.5,
+  insert_depth_mm: 2,
+  zone_insert_depth_mm: 0.8,
+  zone_floor_mm: 0.8,
+  ski_run_width_m: 30,
+  carve_depth_mm: 0.4,
+  insert_gap_mm: 0.5,
+  insert_segment_size_mm: null,
+  terrain_max_error_mm: 0,
+  boundary: [],
+};
+/** Effective geometry operation selected for a feature. */
+export type Treatment = 'insert' | 'hide' | 'v_carve';
+/** Feature classes supported by classification, preview, and generation. */
+export type FeatureClass =
+  'trail' | 'road' | 'stream' | 'water' | 'glacier' | 'ski_run' | 'ski_lift';
+/** Polygon-zone surface behavior. */
+export type ZoneSurface = 'terrain' | 'level';
+/** Polygon-zone ring data, including preserved holes. */
+export interface AreaPolygon {
+  outer: [number, number][];
+  holes: [number, number][][];
+}
+/** Normalized OSM or GeoJSON feature stored in a project. */
+export interface Feature {
+  treatment?: Treatment;
+  id: string;
+  name: string;
+  class: FeatureClass;
+  lines: [number, number][][];
+  polygons?: AreaPolygon[];
+  enabled: boolean;
+  tags: Record<string, unknown>;
+  surface?: ZoneSurface;
+  width_m?: number;
+  insert_depth_mm?: number;
+}
+/** Indexed triangle mesh in printer-space millimeters. */
+export interface Mesh {
+  positions: number[] | Float32Array;
+  indices: number[] | Uint32Array;
+}
+/** Geographic-to-printer coordinate transform produced by Rust. */
+export interface Layout {
+  bounds: Bounds;
+  width: number;
+  depth: number;
+  scale: number;
+  rotated: boolean;
+  minimum: number;
+  height_factor: number;
+  base_height: number;
+}
+/** Generated terrain mesh and source-resolution statistics. */
+export interface Terrain {
+  mesh: Mesh;
+  layout: Layout;
+  source_samples: number;
+  retained_samples: number;
+}
+/** Lightweight preview mesh linked to a feature identifier. */
+export interface Overlay {
+  treatment: Treatment;
+  id: string;
+  class: Feature['class'];
+  mesh: Mesh;
+}
+/** Printable insert mesh with its assembly origin and fit metadata. */
+export interface Piece {
+  id: string;
+  class: string;
+  mesh: Mesh;
+  origin: [number, number, number];
+  insert_depth_mm: number;
+  conformal?: boolean;
+  taper_relief_mm?: number;
+  taper_height_mm?: number;
+  draft_angle_deg?: number;
+}
+/** Validated printable terrain and insert result. */
+export interface Asset {
+  terrain: Mesh;
+  inserts: Piece[];
+  validation: {
+    watertight: boolean;
+    triangles: number;
+    pieces: number;
+    removed_terrain_islands: number;
+  };
+  revision: number;
+}
+/** Elevation provenance saved with a project. */
+export interface Source {
+  product: string;
+  name: string;
+  retrieved: string;
+  attribution: string;
+  urls?: string[];
+  bundled?: boolean;
+}
+/** Complete editable project persisted in .contour.json and preset packs. */
+export interface Project {
+  annotations?: import('./annotations').Annotation[];
+  extent_editor?: import('./extent-shapes').ExtentEditorState;
+  winter_mode?: boolean;
+  schema_version: 2;
+  name: string;
+  grid: Grid;
+  source: Source;
+  features: Feature[];
+  settings: Settings;
+}
+/** Elevation product choices exposed by the source selector. */
+export type Product =
+  'auto' | 'usgs_3dep_10m' | 'usgs_3dep_30m' | 'copernicus_glo30' | 'copernicus_glo90';

@@ -2,6 +2,36 @@ use super::*;
 use geo::BoundingRect;
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
+type CarveTriangulation = ConstrainedDelaunayTriangulation<Point2<f64>>;
+
+fn add_constraint_segment(
+    triangulation: &mut CarveTriangulation,
+    start: [f64; 2],
+    end: [f64; 2],
+    spacing_mm: f64,
+) -> Result<(), String> {
+    let count =
+        (((end[0] - start[0]).hypot(end[1] - start[1]) / spacing_mm).ceil() as usize).max(1);
+    let mut previous = None;
+    for step in 0..=count {
+        let fraction = step as f64 / count as f64;
+        let point = Point2::new(
+            start[0] + fraction * (end[0] - start[0]),
+            start[1] + fraction * (end[1] - start[1]),
+        );
+        let handle = triangulation
+            .insert(point)
+            .map_err(|error| format!("Groove triangulation: {error:?}"))?;
+        if let Some(previous) = previous {
+            if previous != handle {
+                triangulation.add_constraint_and_split(previous, handle, |point| point);
+            }
+        }
+        previous = Some(handle);
+    }
+    Ok(())
+}
+
 /// Triangulate the groove footprint with constrained centerlines so its bottom
 /// has an actual V cross-section, rather than a flat-bottom pocket.
 pub(super) fn mesh(
@@ -13,29 +43,16 @@ pub(super) fn mesh(
     roof: f64,
     clamp_floor: bool,
 ) -> Result<Mesh, String> {
-    let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
-    let mut constrain = |a: [f64; 2], b: [f64; 2], spacing: f64| -> Result<(), String> {
-        let count = (((b[0] - a[0]).hypot(b[1] - a[1]) / spacing).ceil() as usize).max(1);
-        let mut last = None;
-        for i in 0..=count {
-            let t = i as f64 / count as f64;
-            let p = Point2::new(a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1]));
-            let h = cdt
-                .insert(p)
-                .map_err(|e| format!("Groove triangulation: {e:?}"))?;
-            if let Some(prev) = last {
-                if prev != h {
-                    cdt.add_constraint_and_split(prev, h, |p| p);
-                }
-            }
-            last = Some(h);
-        }
-        Ok(())
-    };
-    let spacing = (s.path_width_mm / 2.).min(0.4).max(0.05);
+    let mut cdt = CarveTriangulation::new();
+    let spacing = (s.path_width_mm / 2.).clamp(0.05, 0.4);
     for ring in std::iter::once(domain.exterior()).chain(domain.interiors()) {
         for pair in ring.0.windows(2) {
-            constrain([pair[0].x, pair[0].y], [pair[1].x, pair[1].y], spacing)?;
+            add_constraint_segment(
+                &mut cdt,
+                [pair[0].x, pair[0].y],
+                [pair[1].x, pair[1].y],
+                spacing,
+            )?;
         }
     }
     let bounds = domain.bounding_rect().ok_or("Empty groove region")?;
@@ -60,12 +77,16 @@ pub(super) fn mesh(
                 geo::MultiLineString(vec![LineString::from(vec![(a[0], a[1]), (b[0], b[1])])]);
             for part in interior.clip(&line, false).0 {
                 for pair in part.0.windows(2) {
-                    constrain([pair[0].x, pair[0].y], [pair[1].x, pair[1].y], spacing)?;
+                    add_constraint_segment(
+                        &mut cdt,
+                        [pair[0].x, pair[0].y],
+                        [pair[1].x, pair[1].y],
+                        spacing,
+                    )?;
                 }
             }
         }
     }
-    drop(constrain);
     let pts: Vec<_> = cdt
         .vertices()
         .map(|v| {
