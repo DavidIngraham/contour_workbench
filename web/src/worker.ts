@@ -1,5 +1,6 @@
 /// <reference lib="webworker" />
 import {annotationGeometry,type Annotation} from './annotations';
+import {calibrationSwitchbackCenterlineMm} from './calibration-path';
 import {calibrationClearances,fitProfile,insetAtHeight} from './insert-fit';
 import {insetCrossSection,shouldTaperInsert} from './insert-taper';
 import init,* as core from './wasm/contour_wasm';
@@ -66,15 +67,23 @@ function safeTaperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:nu
 
 const digitSegments:Record<string,string>={1:'bc',2:'abdeg',3:'abcdg',4:'bcfg'};
 function digitCutters(M:any,digit:string,cx:number,cy:number,z:number){const map:{[key:string]:[number,number,number,number]}={a:[0,2,2.4,.42],g:[0,0,2.4,.42],d:[0,-2,2.4,.42],f:[-1.2,1,.42,1.8],b:[1.2,1,.42,1.8],e:[-1.2,-1,.42,1.8],c:[1.2,-1,.42,1.8]};return [...(digitSegments[digit]||'')].map(key=>{const [x,y,w,h]=map[key];return M.Manifold.cube([w,h,.6]).translate([cx+x-w/2,cy+y-h/2,z]);});}
-function calibrationFiles(M:any,s:Settings,prefix='calibration/'):Record<string,Uint8Array>{
- const clearances=calibrationClearances(s),centers=[14,38,62,86],insertSize:[number,number]=[12,10];let base=M.Manifold.cube([100,36,3]);const cutters:any[]=[];
+function switchbackSolid(M:any,cx:number,cy:number,widthMm:number,heightMm:number,zMm:number){
+ const points=calibrationSwitchbackCenterlineMm.map(([x,y])=>[x+cx,y+cy] as [number,number]),parts:any[]=[];
  try{
-  clearances.forEach((clearance,index)=>{const w=insertSize[0]+2*clearance,h=insertSize[1]+2*clearance;cutters.push(M.Manifold.cube([w,h,2.2]).translate([centers[index]-w/2,11-h/2,1]));cutters.push(...digitCutters(M,String(index+1),centers[index],29,2.7));});
+  for(let i=1;i<points.length;i++){const [x0,y0]=points[i-1],[x1,y1]=points[i],dx=x1-x0,dy=y1-y0,length=Math.hypot(dx,dy),angle=Math.atan2(dy,dx)*180/Math.PI;parts.push(M.Manifold.cube([length,widthMm,heightMm]).translate([-length/2,-widthMm/2,0]).rotate([0,0,angle]).translate([(x0+x1)/2,(y0+y1)/2,zMm]));}
+  for(const [x,y] of points)parts.push(M.Manifold.cylinder(heightMm,widthMm/2,widthMm/2,16).translate([x,y,zMm]));
+  return M.Manifold.union(parts);
+ }finally{parts.forEach(part=>part.delete());}
+}
+function calibrationFiles(M:any,s:Settings,prefix='calibration/'):Record<string,Uint8Array>{
+ const clearances=calibrationClearances(s),centers=[14,38,62,86],pathWidth=Math.max(.05,s.path_width_mm);let base=M.Manifold.cube([100,38,3]);const cutters:any[]=[];
+ try{
+  clearances.forEach((clearance,index)=>{cutters.push(switchbackSolid(M,centers[index],12,pathWidth+2*clearance,2.2,1));cutters.push(...digitCutters(M,String(index+1),centers[index],32,2.7));});
   const combined=M.Manifold.union(cutters),cut=base.subtract(combined);base.delete();base=cut;combined.delete();
   const files:Record<string,Uint8Array>={[prefix+'coupon-base.stl']:stl(validatedMesh(base,'Calibration coupon base'))},pieces:any[]=[];
-  clearances.forEach((clearance,index)=>{const prism=M.Manifold.cube([insertSize[0],insertSize[1],2]),tapered=taperedSolid(M,prism,'calibration',s,2);files[`${prefix}insert-${index+1}-clearance-${clearance.toFixed(2)}mm.stl`]=stl(validatedMesh(tapered.solid,`Calibration insert ${index+1}`));if(tapered.solid!==prism)tapered.solid.delete();prism.delete();pieces.push({label:index+1,clearance_per_side_mm:clearance,file:`insert-${index+1}-clearance-${clearance.toFixed(2)}mm.stl`});});
-  files[prefix+'calibration_manifest.json']=strToU8(JSON.stringify({units:'mm',nozzle_diameter_mm:s.nozzle_diameter_mm,elephant_foot_relief_mm:s.insert_elephant_foot_relief_mm,elephant_foot_height_mm:s.insert_elephant_foot_height_mm,draft_angle_deg:s.insert_draft_angle_deg,pieces},null,2));
-  files[prefix+'README.txt']=strToU8('CONTOUR WORKBENCH FIT TEST\n\nPrint coupon-base.stl normally. Print each numbered insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats without force, then enter its clearance-per-side value in Print setup.\n\n'+pieces.map(p=>`${p.label}: ${p.clearance_per_side_mm.toFixed(2)} mm clearance per side\n`).join(''));
+  clearances.forEach((clearance,index)=>{const prism=switchbackSolid(M,8,6.2,pathWidth,2,0),tapered=safeTaperedSolid(M,prism,'trail',s,2);files[`${prefix}insert-${index+1}-clearance-${clearance.toFixed(2)}mm.stl`]=stl(validatedMesh(tapered.solid,`Calibration switchback insert ${index+1}`));if(tapered.solid!==prism)tapered.solid.delete();prism.delete();pieces.push({label:index+1,clearance_per_side_mm:clearance,file:`insert-${index+1}-clearance-${clearance.toFixed(2)}mm.stl`,geometry:'trail_switchback',path_width_mm:pathWidth});});
+  files[prefix+'calibration_manifest.json']=strToU8(JSON.stringify({units:'mm',geometry:'trail_switchback',path_width_mm:pathWidth,nozzle_diameter_mm:s.nozzle_diameter_mm,elephant_foot_relief_mm:s.insert_elephant_foot_relief_mm,elephant_foot_height_mm:s.insert_elephant_foot_height_mm,draft_angle_deg:s.insert_draft_angle_deg,pieces},null,2));
+  files[prefix+'README.txt']=strToU8('CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThis coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: '+pathWidth.toFixed(2)+' mm\nConfigured nozzle: '+s.nozzle_diameter_mm.toFixed(2)+' mm\n\n'+pieces.map(p=>`${p.label}: ${p.clearance_per_side_mm.toFixed(2)} mm clearance per side\n`).join(''));
   return files;
  }finally{base.delete();cutters.forEach(c=>c.delete());}
 }

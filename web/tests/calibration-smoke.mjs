@@ -26,7 +26,10 @@ try{
  assert.ok(names.includes('README.txt'));
  const manifest=JSON.parse(strFromU8(files['calibration_manifest.json']));
  assert.equal(manifest.nozzle_diameter_mm,.4);
+ assert.equal(manifest.geometry,'trail_switchback');
+ assert.equal(manifest.path_width_mm,.9);
+ assert.ok(manifest.pieces.every(piece=>piece.geometry==='trail_switchback'&&piece.path_width_mm===.9));
  assert.deepEqual(manifest.pieces.map(p=>p.clearance_per_side_mm),[.1,.15,.2,.25]);
- for(const name of names.filter(name=>name.endsWith('.stl')))assert.ok(files[name].length>1000,name+' is unexpectedly small');
+ for(const name of names.filter(name=>name.endsWith('.stl'))){assert.ok(files[name].length>1000,name+' is unexpectedly small');const facets=(strFromU8(files[name]).match(/facet normal/g)||[]).length;assert.ok(facets>500,name+' does not contain the expected detailed switchback geometry');}
  console.log('PASS calibration-coupon',names,manifest.pieces);
 }finally{await browser.close();}
