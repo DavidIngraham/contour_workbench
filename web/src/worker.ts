@@ -1,7 +1,7 @@
 /// <reference lib="webworker" />
 import {annotationGeometry,type Annotation} from './annotations';
 import {calibrationClearances,fitProfile,insetAtHeight} from './insert-fit';
-import {insetCrossSection} from './insert-taper';
+import {insetCrossSection,shouldTaperInsert} from './insert-taper';
 import init,* as core from './wasm/contour_wasm';
 import ManifoldModule from 'manifold-3d';
 import manifoldUrl from 'manifold-3d/manifold.wasm?url';
@@ -29,6 +29,12 @@ function exportMesh(m:Mesh,tolerance=.0001):Mesh{
 function validate(m:Mesh){const canonical=new Map<string,number>(),remap:number[]=[];for(let i=0;i<m.positions.length;i+=3){const p=[m.positions[i],m.positions[i+1],m.positions[i+2]];if(p.some(v=>!Number.isFinite(v)))throw new Error('Non-finite mesh coordinate');const key=p.map(v=>v.toFixed(8)).join(',');if(!canonical.has(key))canonical.set(key,canonical.size);remap.push(canonical.get(key)!);}const edges=new Map<string,{count:number;sum:number}>();for(let i=0;i<m.indices.length;i+=3){const t=[remap[m.indices[i]],remap[m.indices[i+1]],remap[m.indices[i+2]]];if(new Set(t).size!==3)throw new Error('Export contains degenerate triangles');for(let k=0;k<3;k++){const a=t[k],b=t[(k+1)%3],key=`${Math.min(a,b)},${Math.max(a,b)}`,edge=edges.get(key)||{count:0,sum:0};edge.count++;edge.sum+=a<b?1:-1;edges.set(key,edge);}}if([...edges.values()].some(e=>e.count!==2||e.sum!==0))throw new Error('Generated mesh is not watertight');}
 async function geometry(progress:(s:string)=>void){if(!manifold){progress('Loading the solid geometry engine…');manifold=await ManifoldModule({locateFile:()=>manifoldUrl});manifold.setup();}return manifold;}
 function solid(M:any,m:Mesh){const mesh=new M.Mesh({numProp:3,vertProperties:new Float32Array(m.positions),triVerts:new Uint32Array(m.indices)});mesh.merge();const result=new M.Manifold(mesh);if(result.status()!=='NoError'){const error=result.status();result.delete();throw new Error(`Solid geometry is invalid: ${error}`);}return result;}
+function combineMeshes(meshes:Mesh[]):Mesh{
+ const positionCount=meshes.reduce((sum,mesh)=>sum+mesh.positions.length,0),indexCount=meshes.reduce((sum,mesh)=>sum+mesh.indices.length,0);
+ const positions=new Float32Array(positionCount),indices=new Uint32Array(indexCount);let positionOffset=0,indexOffset=0,vertexOffset=0;
+ for(const mesh of meshes){positions.set(mesh.positions,positionOffset);for(const index of mesh.indices)indices[indexOffset++]=Number(index)+vertexOffset;positionOffset+=mesh.positions.length;vertexOffset+=mesh.positions.length/3;}
+ return {positions,indices};
+}
 function validatedMesh(input:any,label:string):Mesh{let last:unknown;for(const tolerance of [0,0.0001,0.001,0.005]){const clean=tolerance?input.simplify(tolerance):input;try{const raw=clean.getMesh(),source={positions:Array.from(raw.vertProperties) as number[],indices:Array.from(raw.triVerts) as number[]};for(const weldTolerance of [0.0000001,0.000001,0.00001,0.0001]){try{const mesh=exportMesh(source,weldTolerance);validate(mesh);return mesh;}catch(e){last=e;}}throw last;}catch(e){last=e;}finally{if(clean!==input)clean.delete();}}throw new Error(label+': '+String(last));}
 function taperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:number,reliefOverride?:number){
  const bounds=prism.boundingBox(),totalDepth=bounds.max[2]-bounds.min[2],profile=fitProfile(s,className,Math.min(depthMm,totalDepth),reliefOverride);
@@ -49,8 +55,8 @@ function taperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:number
 }
 function safeTaperedSolid(M:any,prism:any,className:string,s:Settings,depthMm:number){
  for(const factor of [1,.75,.5,.25]){
-  const adjusted={...s,insert_draft_angle_deg:s.insert_draft_angle_deg*factor};
-  const candidate=taperedSolid(M,prism,className,adjusted,depthMm,s.insert_elephant_foot_relief_mm*factor);
+  const adjusted={...s,insert_draft_angle_deg:s.insert_draft_angle_deg*factor};let candidate;
+  try{candidate=taperedSolid(M,prism,className,adjusted,depthMm,s.insert_elephant_foot_relief_mm*factor);}catch{continue;}
   if(candidate.solid===prism)continue;
   try{validatedMesh(candidate.solid,'Taper check');return candidate;}catch{candidate.solid.delete();}
  }
@@ -84,25 +90,32 @@ async function handle(type:string,p:any,progress:(s:string)=>void):Promise<any>{
   case 'overlays':syncBase(p.settings);features=p.features;settings=p.settings;progress('Draping features over the terrain…');return JSON.parse(core.build_overlays(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))).map((o:Overlay)=>({...o,mesh:packed(o.mesh)}));
   case 'generate':{
    if(!terrain)throw new Error('Load terrain first');syncBase(p.settings);features=p.features;settings=p.settings;progress('Building tapered inserts and continuous pockets…');
-   const plan:{inserts:Piece[];cutters:Mesh[]}=JSON.parse(core.build_plan(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),M=await geometry(progress);
-   let result=solid(M,terrain.mesh);const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?result.translate([0,0,0.35]):undefined,cutters:any[]=[];
+   const plan:{inserts:Piece[];cutters:Mesh[];cutter_group_ends?:number[]}=JSON.parse(core.build_plan(JSON.stringify(grid),JSON.stringify(settings),JSON.stringify(features),JSON.stringify(terrain.layout))),M=await geometry(progress);
+   let result=solid(M,terrain.mesh);const raisedTerrain=plan.inserts.some(piece=>piece.conformal)?result.translate([0,0,0.35]):undefined;
    try{
-    for(const cut of plan.cutters)cutters.push(solid(M,cut));
-    if(cutters.length){progress(`Cutting terrain for ${plan.inserts.length} pieces…`);const combined=M.Manifold.union(cutters),next=result.subtract(combined);result.delete();combined.delete();result=next;}
+    if(plan.cutters.length){
+     const groupEnds=plan.cutter_group_ends?.length?plan.cutter_group_ends:[plan.cutters.length];let groupStart=0;
+     try{
+      for(let groupIndex=0;groupIndex<groupEnds.length;groupIndex++){const groupEnd=groupEnds[groupIndex],group=plan.cutters.slice(groupStart,groupEnd);progress(`Cutting terrain pocket group ${groupIndex+1} of ${groupEnds.length}…`);const combined=solid(M,combineMeshes(group));try{const next=result.subtract(combined);result.delete();result=next;}finally{combined.delete();}if(result.status()!=='NoError'||result.numTri()===0)throw new Error(`Pocket group ${groupIndex+1} did not produce a valid terrain solid`);groupStart=groupEnd;}
+     }catch(error){throw new Error('Terrain pockets: '+(error instanceof Error?error.message:String(error)));}
+    }
     if(result.status()!=='NoError'||result.numTri()===0)throw new Error('Terrain subtraction did not produce a valid solid');
     if(p.annotations?.length){progress('Adding annotations and attached porches…');for(const a of p.annotations as Annotation[]){if(!a.enabled)continue;const data=annotationGeometry(a,grid,settings,terrain.layout);if(data.porch){const porch=solid(M,data.porch),next=result.add(porch);porch.delete();result.delete();result=next;}const parts=data.solids.map(m=>solid(M,m));try{const label=M.Manifold.union(parts),next=a.treatment==='raised'?result.add(label):result.subtract(label);label.delete();result.delete();result=next;}finally{parts.forEach(m=>m.delete());}if(result.status()!=='NoError')throw new Error('Annotation '+a.name+' could not form a solid. Move it or adjust its size.');}}
     const mesh=validatedMesh(result,'Terrain');
-    for(const piece of plan.inserts){
-     const prism=solid(M,piece.mesh),tapered=safeTaperedSolid(M,prism,piece.class,settings,piece.insert_depth_mm);let raw=tapered.solid;
+    for(let pieceIndex=0;pieceIndex<plan.inserts.length;pieceIndex++){
+     const piece=plan.inserts[pieceIndex];if(pieceIndex%10===0)progress('Preparing insert '+(pieceIndex+1)+' of '+plan.inserts.length+'…');
      try{
-      piece.taper_relief_mm=tapered.profile.footReliefMm;piece.taper_height_mm=tapered.profile.footHeightMm;piece.draft_angle_deg=tapered.profile.draftAngleDeg;
-      if(piece.conformal){if(!raisedTerrain)throw new Error('Terrain surface is unavailable for '+piece.id);const global=tapered.solid.translate(piece.origin),fitted=global.intersect(raisedTerrain);global.delete();raw=fitted.translate(piece.origin.map(v=>-v) as [number,number,number]);fitted.delete();}
-      piece.mesh=validatedMesh(raw,piece.id);
-     }finally{if(raw!==tapered.solid)raw.delete();if(tapered.solid!==prism)tapered.solid.delete();prism.delete();}
+      const prism=solid(M,piece.mesh),tapered=shouldTaperInsert(piece.mesh.indices.length)?safeTaperedSolid(M,prism,piece.class,settings,piece.insert_depth_mm):{solid:prism,profile:fitProfile({...settings,insert_elephant_foot_relief_mm:0,insert_elephant_foot_height_mm:0,insert_draft_angle_deg:0},piece.class,piece.insert_depth_mm,0)};let raw=tapered.solid;
+      try{
+       piece.taper_relief_mm=tapered.profile.footReliefMm;piece.taper_height_mm=tapered.profile.footHeightMm;piece.draft_angle_deg=tapered.profile.draftAngleDeg;
+       if(piece.conformal){if(!raisedTerrain)throw new Error('Terrain surface is unavailable for '+piece.id);const global=tapered.solid.translate(piece.origin),fitted=global.intersect(raisedTerrain);global.delete();raw=fitted.translate(piece.origin.map(v=>-v) as [number,number,number]);fitted.delete();}
+       piece.mesh=validatedMesh(raw,piece.id);
+      }finally{if(raw!==tapered.solid)raw.delete();if(tapered.solid!==prism)tapered.solid.delete();prism.delete();}
+     }catch(error){throw new Error(piece.id+' ('+(pieceIndex+1)+'/'+plan.inserts.length+'): '+(error instanceof Error?error.message:String(error)));}
     }
     plan.inserts=plan.inserts.filter(piece=>piece.mesh.indices.length>0);
     return {terrain:packed(mesh),inserts:plan.inserts.map(i=>({...i,mesh:packed(i.mesh)})),validation:{watertight:true,triangles:mesh.indices.length/3,pieces:plan.inserts.length},revision:p.revision};
-   }finally{result.delete();raisedTerrain?.delete();cutters.forEach(c=>c.delete());}
+   }finally{result.delete();raisedTerrain?.delete();}
   }
   case 'preset-pack':{
    if(!terrain)throw new Error('Build terrain before packing a preset.');

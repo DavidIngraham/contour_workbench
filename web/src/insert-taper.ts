@@ -13,3 +13,5 @@ export function insetCrossSection<T extends CrossSectionLike<T>>(section:T,inset
  }
  return {cross:section,owned:false,insetMm:0};
 }
+export const maxTaperTriangles=10_000;
+export function shouldTaperInsert(indexCount:number){return indexCount/3<=maxTaperTriangles;}

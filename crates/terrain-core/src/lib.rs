@@ -754,6 +754,25 @@ fn solid_between(
 fn polygon_surface(poly: &Polygon<f64>, top: impl Fn([f64; 2]) -> f64, base: f64) -> Mesh {
     polygon_surface_detail(poly, top, base, true)
 }
+fn printable_parts(parts: MultiPolygon<f64>, nozzle_diameter_mm: f64) -> MultiPolygon<f64> {
+    let limit = (nozzle_diameter_mm * 0.15).clamp(0.02, 0.08);
+    let mut last = parts.clone();
+    for epsilon in [0.001, 0.005, 0.02, limit] {
+        let candidate = parts.buffer(-epsilon).buffer((epsilon - 0.001).max(0.));
+        if candidate.0.is_empty() {
+            continue;
+        }
+        let printable = candidate
+            .0
+            .iter()
+            .all(|part| polygon_surface(part, |_| 1., 0.).validate().is_ok());
+        if printable {
+            return candidate;
+        }
+        last = candidate;
+    }
+    last
+}
 fn polygon_between_detail(
     poly: &Polygon<f64>,
     top: impl Fn([f64; 2]) -> f64,
@@ -1338,6 +1357,7 @@ pub struct Piece {
 pub struct Plan {
     pub inserts: Vec<Piece>,
     pub cutters: Vec<Mesh>,
+    pub cutter_group_ends: Vec<usize>,
 }
 fn add_insert_layer(
     out: &mut Plan,
@@ -1347,16 +1367,12 @@ fn add_insert_layer(
     class: &str,
     layer: &MultiPolygon<f64>,
     feature: Option<&Feature>,
+    depth: f64,
     seg: [f64; 2],
     roof: f64,
     serial: &mut usize,
 ) -> Result<(), String> {
     let zone = feature.is_some_and(Feature::is_zone);
-    let depth = feature.and_then(|f| f.insert_depth_mm).unwrap_or(if zone {
-        s.zone_insert_depth_mm
-    } else {
-        s.insert_depth_mm
-    });
     let floor = if zone { s.zone_floor_mm } else { 0.4 };
     // A level zone keeps one elevation across segmentation cells, so splitting a
     // large reservoir for a smaller bed never creates visible steps.
@@ -1378,10 +1394,8 @@ fn add_insert_layer(
                 [x, y + seg[1]],
             ]);
             let pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
-            let parts = layer
-                .intersection(&cell.buffer(-s.insert_gap_mm / 2.))
-                .buffer(-0.001)
-                .buffer(0.001);
+            let raw_parts = layer.intersection(&cell.buffer(-s.insert_gap_mm / 2.));
+            let parts = printable_parts(raw_parts, s.nozzle_diameter_mm);
             if parts.0.is_empty() {
                 continue;
             }
@@ -1456,6 +1470,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
     let mut out = Plan {
         inserts: vec![],
         cutters: vec![],
+        cutter_group_ends: vec![],
     };
     let seg = s
         .insert_segment_size_mm
@@ -1473,6 +1488,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         + 5.;
     let mut serial = 0;
     for class in CLASS_ORDER {
+        let cutter_group_start = out.cutters.len();
         let occupied_before = occupied.clone();
         let mut union = MultiPolygon(vec![]);
         let insert_features: Vec<_> = features
@@ -1515,25 +1531,52 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         }
         if zone_class(class) {
             let mut claimed = MultiPolygon(vec![]);
+            let mut terrain_groups: Vec<(f64, &Feature, MultiPolygon<f64>)> = vec![];
             for f in insert_features {
                 let individual = feature_polygon(f, l, s, 0.)
                     .intersection(&clip)
                     .difference(&occupied_before)
                     .intersection(&layer)
                     .difference(&claimed);
+                let depth = f.insert_depth_mm.unwrap_or(s.zone_insert_depth_mm);
+                if f.surface == ZoneSurface::Level {
+                    add_insert_layer(
+                        &mut out,
+                        g,
+                        s,
+                        l,
+                        class,
+                        &individual,
+                        Some(f),
+                        depth,
+                        seg,
+                        roof,
+                        &mut serial,
+                    )?;
+                } else if let Some((_, _, group)) = terrain_groups
+                    .iter_mut()
+                    .find(|(group_depth, _, _)| (*group_depth - depth).abs() < 1e-9)
+                {
+                    *group = group.union(&individual);
+                } else {
+                    terrain_groups.push((depth, f, individual.clone()));
+                }
+                claimed = claimed.union(&individual);
+            }
+            for (depth, feature, group) in terrain_groups {
                 add_insert_layer(
                     &mut out,
                     g,
                     s,
                     l,
                     class,
-                    &individual,
-                    Some(f),
+                    &group,
+                    Some(feature),
+                    depth,
                     seg,
                     roof,
                     &mut serial,
                 )?;
-                claimed = claimed.union(&individual);
             }
         } else {
             add_insert_layer(
@@ -1544,10 +1587,14 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                 class,
                 &layer,
                 None,
+                s.insert_depth_mm,
                 seg,
                 roof,
                 &mut serial,
             )?;
+        }
+        if out.cutters.len() > cutter_group_start {
+            out.cutter_group_ends.push(out.cutters.len());
         }
         occupied = occupied.union(&layer).union(&carved);
         occupied_inserts = occupied_inserts.union(&layer);

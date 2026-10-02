@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",
-    "test:mobile": "playwright test --config playwright.mobile.config.ts"
+    "test:mobile": "playwright test --config playwright.mobile.config.ts",
+    "test:presets": "playwright test --config playwright.presets.config.ts"
   },
   "dependencies": {
     "fflate": "0.8.3",
