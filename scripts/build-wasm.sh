@@ -8,4 +8,7 @@ if [ -f .tools/env.sh ]; then
 fi
 
 cargo build --release --target wasm32-unknown-unknown -p contour-wasm
-wasm-bindgen \n  target/wasm32-unknown-unknown/release/contour_wasm.wasm \n  --target web \n  --out-dir web/src/wasm
+wasm-bindgen \
+  target/wasm32-unknown-unknown/release/contour_wasm.wasm \
+  --target web \
+  --out-dir web/src/wasm
