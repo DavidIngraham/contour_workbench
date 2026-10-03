@@ -143,6 +143,7 @@ Manifold mesh exports can contain multiple property vertices for one topological
 - Overpass availability and coverage can vary. The registry retries transient failures across two mirrors; permanent request errors are reported immediately. OSM multipolygon holes are retained.
 - Elevation results are cached for 30 days and OSM responses for one day. IndexedDB failures degrade to normal uncached requests.
 - Preview overlays communicate effective placement but final boolean fit is calculated during Generate.
+- Paths, V-carves, zones, insert pockets, and preview overlays retain the configured model-edge clearance. Insert footprints account for pocket clearance so the terrain margin remains intact after the pocket expands.
 - Large inserts retain a configurable terrain floor. Inserts remain continuous unless segmentation is explicitly enabled.
 - Watertight validation is a topology guarantee, not a printer or material guarantee.
 

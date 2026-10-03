@@ -31,6 +31,8 @@ pub struct Settings {
     pub path_width_mm: f64,
     /// Extra path-pocket clearance per side, in millimeters.
     pub path_clearance_mm: f64,
+    /// Minimum intact terrain margin between features and the model edge, in millimeters.
+    pub feature_edge_clearance_mm: f64,
     /// Printer nozzle diameter used for minimum-feature calculations, in millimeters.
     pub nozzle_diameter_mm: f64,
     /// Optional minimum retained terrain-island width, in millimeters.
@@ -70,6 +72,7 @@ impl Default for Settings {
             base_height_mm: 1.,
             path_width_mm: 0.9,
             path_clearance_mm: 0.1,
+            feature_edge_clearance_mm: 1.,
             nozzle_diameter_mm: 0.4,
             minimum_terrain_island_width_mm: None,
             insert_fit_clearance_per_side_mm: 0.15,
@@ -131,6 +134,7 @@ impl Settings {
             self.base_height_mm,
             self.path_width_mm,
             self.path_clearance_mm,
+            self.feature_edge_clearance_mm,
             self.nozzle_diameter_mm,
             self.insert_depth_mm,
             self.zone_insert_depth_mm,
@@ -161,6 +165,9 @@ impl Settings {
             || self.insert_draft_angle_deg > 10.
         {
             return Err("Insert compensation is outside the supported range".into());
+        }
+        if self.feature_edge_clearance_mm > 20. {
+            return Err("Feature edge clearance must not exceed 20 mm".into());
         }
         if self.insert_gap_mm <= self.path_clearance_mm {
             return Err("Insert gap must exceed path clearance".into());
@@ -1237,13 +1244,13 @@ fn terrain_patch(
         .collect();
     Ok(solid_between(points, faces, top, bottom))
 }
-fn feature_boundary(s: &Settings, l: &Layout) -> MultiPolygon<f64> {
-    let b = if s.boundary.len() >= 3 {
+fn feature_boundary(s: &Settings, l: &Layout, additional_clearance_mm: f64) -> MultiPolygon<f64> {
+    let boundary = if s.boundary.len() >= 3 {
         polygon(&s.boundary.iter().map(|p| l.xy(*p)).collect::<Vec<_>>())
     } else {
         rectangle(l.width, l.depth)
     };
-    b.buffer(-s.path_clearance_mm.max(0.15))
+    boundary.buffer(-(s.feature_edge_clearance_mm + additional_clearance_mm.max(0.)))
 }
 // Preview ribbons follow the surface on both sides instead of extending to the model base.
 fn preview_ribbon(poly: &Polygon<f64>, surface: impl Fn([f64; 2]) -> f64) -> Mesh {
@@ -1262,7 +1269,8 @@ pub fn overlays(
     l: &Layout,
 ) -> Result<Vec<Overlay>, String> {
     s.validate()?;
-    let clip = feature_boundary(s, l);
+    let clip = feature_boundary(s, l, 0.);
+    let insert_clip = feature_boundary(s, l, s.insert_fit_clearance_per_side_mm);
     let mut occupied_inserts = MultiPolygon(vec![]);
     let mut out = vec![];
     for class in CLASS_ORDER {
@@ -1273,6 +1281,7 @@ pub fn overlays(
         {
             inserts = inserts.union(&feature_polygon(f, l, s, 0.));
         }
+        inserts = inserts.intersection(&insert_clip);
         let allowed =
             clip.difference(&occupied_inserts.union(&inserts.buffer(s.path_clearance_mm / 2.)));
         for f in features
@@ -1288,7 +1297,7 @@ pub fn overlays(
             let polygons = footprint.intersection(if f.treatment() == Treatment::VCarve {
                 &allowed
             } else {
-                &clip
+                &insert_clip
             });
             for (i, p) in polygons.0.iter().enumerate() {
                 let mesh = if f.treatment() == Treatment::VCarve {
@@ -1454,7 +1463,8 @@ fn add_insert_layer(
 /// Build insert pieces and grouped cutter meshes for final solid generation.
 pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<Plan, String> {
     s.validate()?;
-    let clip = feature_boundary(s, l);
+    let clip = feature_boundary(s, l, 0.);
+    let insert_clip = feature_boundary(s, l, s.insert_fit_clearance_per_side_mm);
     let mut occupied = MultiPolygon(vec![]);
     let mut occupied_inserts = MultiPolygon(vec![]);
     let mut out = Plan {
@@ -1489,7 +1499,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         for f in &insert_features {
             union = union.union(&feature_polygon(f, l, s, 0.));
         }
-        let layer = union.intersection(&clip).difference(&occupied);
+        let layer = union.intersection(&insert_clip).difference(&occupied);
         let protected = occupied_inserts
             .union(&layer)
             .buffer((s.path_clearance_mm / 2. - 0.002).max(0.));
@@ -1533,7 +1543,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             let mut terrain_groups: Vec<(f64, &Feature, MultiPolygon<f64>)> = vec![];
             for f in insert_features {
                 let individual = feature_polygon(f, l, s, 0.)
-                    .intersection(&clip)
+                    .intersection(&insert_clip)
                     .difference(&occupied_before)
                     .intersection(&layer)
                     .difference(&claimed);

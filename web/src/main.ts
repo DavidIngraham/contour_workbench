@@ -516,6 +516,7 @@ function syncForm() {
     ['nozzle-diameter', 'nozzle_diameter_mm'],
     ['path-width', 'path_width_mm'],
     ['clearance', 'path_clearance_mm'],
+    ['edge-clearance', 'feature_edge_clearance_mm'],
     ['fit-clearance', 'insert_fit_clearance_per_side_mm'],
     ['foot-relief', 'insert_elephant_foot_relief_mm'],
     ['foot-height', 'insert_elephant_foot_height_mm'],
@@ -892,6 +893,7 @@ for (const [id, k] of [
   ['nozzle-diameter', 'nozzle_diameter_mm'],
   ['path-width', 'path_width_mm'],
   ['clearance', 'path_clearance_mm'],
+  ['edge-clearance', 'feature_edge_clearance_mm'],
   ['fit-clearance', 'insert_fit_clearance_per_side_mm'],
   ['foot-relief', 'insert_elephant_foot_relief_mm'],
   ['foot-height', 'insert_elephant_foot_height_mm'],
@@ -907,7 +909,7 @@ for (const [id, k] of [
     project.settings[k] = Number(($(id) as HTMLInputElement).value);
     touch();
     fitGuidance();
-    if (id === 'path-width' || id === 'carve-depth') {
+    if (id === 'path-width' || id === 'carve-depth' || id === 'edge-clearance') {
       clearTimeout(overlayTimer);
       overlayTimer = setTimeout(() => void updateOverlays(), 100);
     }

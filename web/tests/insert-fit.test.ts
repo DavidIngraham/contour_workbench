@@ -14,6 +14,7 @@ describe('nozzle-aware insert fit', () => {
     expect(defaults.nozzle_diameter_mm).toBe(0.4);
     expect(extrusionWidthMm(defaults.nozzle_diameter_mm)).toBeCloseTo(0.45);
     expect(defaults.path_width_mm).toBe(0.9);
+    expect(defaults.feature_edge_clearance_mm).toBe(1);
     expect(recommendedInsertWidthMm(0.4)).toBeCloseTo(0.9);
     expect(defaults.minimum_terrain_island_width_mm).toBeNull();
     expect(minimumTerrainIslandWidthMm(defaults)).toBeCloseTo(1.35);

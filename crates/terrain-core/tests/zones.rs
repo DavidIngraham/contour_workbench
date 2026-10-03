@@ -153,3 +153,66 @@ fn conformal_zone_is_emitted_as_a_valid_fitting_prism() {
         .fold(0.0_f64, f64::max);
     assert!(height > s.zone_insert_depth_mm);
 }
+
+fn model_bounds(mesh: &Mesh, origin: [f64; 3]) -> [[f64; 2]; 2] {
+    mesh.positions.chunks_exact(3).fold(
+        [
+            [f64::INFINITY, f64::NEG_INFINITY],
+            [f64::INFINITY, f64::NEG_INFINITY],
+        ],
+        |mut bounds, point| {
+            for axis in 0..2 {
+                let value = point[axis] + origin[axis];
+                bounds[axis][0] = bounds[axis][0].min(value);
+                bounds[axis][1] = bounds[axis][1].max(value);
+            }
+            bounds
+        },
+    )
+}
+
+#[test]
+fn edge_spanning_zone_leaves_an_intact_terrain_margin() {
+    let g = grid();
+    let s = Settings {
+        max_print_size_mm: [10., 10.],
+        feature_edge_clearance_mm: 1.,
+        ..Default::default()
+    };
+    let feature = Feature {
+        id: "edge-water".into(),
+        name: "Edge water".into(),
+        class: "water".into(),
+        lines: vec![],
+        polygons: vec![AreaPolygon {
+            outer: vec![[0., 0.], [0.001, 0.], [0.001, 0.001], [0., 0.001], [0., 0.]],
+            holes: vec![],
+        }],
+        enabled: true,
+        treatment: Treatment::Insert,
+        surface: ZoneSurface::Level,
+        width_m: None,
+        insert_depth_mm: None,
+        tags: serde_json::Value::Null,
+    };
+    let terrain = terrain(&g, &s).unwrap();
+    let plan = plan(&g, &s, &[feature], &terrain.layout).unwrap();
+    assert!(!plan.inserts.is_empty() && !plan.cutters.is_empty());
+    let insert_margin = s.feature_edge_clearance_mm + s.insert_fit_clearance_per_side_mm;
+    for piece in &plan.inserts {
+        let bounds = model_bounds(&piece.mesh, piece.origin);
+        for axis in 0..2 {
+            let size = [terrain.layout.width, terrain.layout.depth][axis];
+            assert!(bounds[axis][0] >= insert_margin - 0.01);
+            assert!(bounds[axis][1] <= size - insert_margin + 0.01);
+        }
+    }
+    for pocket in &plan.cutters {
+        let bounds = model_bounds(pocket, [0.; 3]);
+        for axis in 0..2 {
+            let size = [terrain.layout.width, terrain.layout.depth][axis];
+            assert!(bounds[axis][0] >= s.feature_edge_clearance_mm - 0.01);
+            assert!(bounds[axis][1] <= size - s.feature_edge_clearance_mm + 0.01);
+        }
+    }
+}

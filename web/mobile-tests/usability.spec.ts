@@ -124,6 +124,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await expect(lake.locator('[data-zone-depth]')).toBeVisible();
   await page.getByRole('button', { name: 'Print setup', exact: true }).tap();
   await expect(page.locator('#nozzle-diameter')).toHaveValue('0.4');
+  await expect(page.locator('#edge-clearance')).toHaveValue('1');
   await expect(page.locator('#terrain-island-width')).toHaveValue('');
   await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');
   await expect(page.locator('#download-calibration')).toBeVisible();

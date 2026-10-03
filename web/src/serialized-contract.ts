@@ -21,6 +21,7 @@ export const serializedContract = {
       'base_height_mm',
       'path_width_mm',
       'path_clearance_mm',
+      'feature_edge_clearance_mm',
       'nozzle_diameter_mm',
       'minimum_terrain_island_width_mm',
       'insert_fit_clearance_per_side_mm',

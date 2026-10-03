@@ -15,6 +15,7 @@ export interface Settings {
   base_height_mm: number;
   path_width_mm: number;
   path_clearance_mm: number;
+  feature_edge_clearance_mm: number;
   nozzle_diameter_mm: number;
   minimum_terrain_island_width_mm: number | null;
   insert_fit_clearance_per_side_mm: number;
@@ -38,6 +39,7 @@ export const defaults: Settings = {
   base_height_mm: 1,
   path_width_mm: 0.9,
   path_clearance_mm: 0.1,
+  feature_edge_clearance_mm: 1,
   nozzle_diameter_mm: 0.4,
   minimum_terrain_island_width_mm: null,
   insert_fit_clearance_per_side_mm: 0.15,
