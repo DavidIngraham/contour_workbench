@@ -8,7 +8,13 @@ import { decodeMeshPacket } from './mesh-packet';
 import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
-import { combineMeshes, loadManifold, solidFromMesh, validatedMesh } from './manifold-adapter';
+import {
+  batchMeshes,
+  combineMeshes,
+  loadManifold,
+  solidFromMesh,
+  validatedMesh,
+} from './manifold-adapter';
 import {
   isEngineCancelRequest,
   isEngineRequest,
@@ -406,39 +412,35 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       };
       const M = await loadManifold(progress);
       let result = cachedTerrain(M).translate([0, 0, 0]);
-      const raisedTerrain = plan.inserts.some(piece => piece.conformal)
-        ? cachedTerrain(M).translate([0, 0, 0.35])
-        : undefined;
+      let raisedTerrain: Manifold | undefined;
       try {
         if (plan.cutters.length) {
           const groupEnds = plan.cutter_group_ends?.length
-            ? plan.cutter_group_ends
-            : [plan.cutters.length];
-          let groupStart = 0;
+              ? plan.cutter_group_ends
+              : [plan.cutters.length],
+            batches = batchMeshes(plan.cutters, groupEnds);
           try {
-            for (let groupIndex = 0; groupIndex < groupEnds.length; groupIndex++) {
-              const groupEnd = groupEnds[groupIndex],
-                group = plan.cutters.slice(groupStart, groupEnd);
+            for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
               progress(
-                `Cutting terrain pocket group ${groupIndex + 1} of ${groupEnds.length}…`,
+                `Cutting terrain pocket batch ${batchIndex + 1} of ${batches.length}…`,
                 'terrain-pockets',
-                groupIndex,
-                groupEnds.length,
+                batchIndex,
+                batches.length,
               );
               await checkpoint(request.id);
-              const combined = solidFromMesh(M, combineMeshes(group));
+              const combined = solidFromMesh(M, combineMeshes(batches[batchIndex]));
               try {
                 const next = result.subtract(combined);
                 result.delete();
                 result = next;
               } finally {
                 combined.delete();
+                batches[batchIndex].length = 0;
               }
               if (result.status() !== 'NoError' || result.numTri() === 0)
                 throw new Error(
-                  `Pocket group ${groupIndex + 1} did not produce a valid terrain solid`,
+                  `Pocket batch ${batchIndex + 1} did not produce a valid terrain solid`,
                 );
-              groupStart = groupEnd;
             }
           } catch (error) {
             throw new Error(
@@ -448,6 +450,14 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         }
         if (result.status() !== 'NoError' || result.numTri() === 0)
           throw new Error('Terrain subtraction did not produce a valid solid');
+
+        // Copy the insert inputs, then release every view into the large Rust plan packet before
+        // topology validation creates its own working storage.
+        for (const piece of plan.inserts) piece.mesh = packed(piece.mesh);
+        plan.cutters.length = 0;
+        packet.meshes.length = 0;
+        await checkpoint(request.id);
+
         if (p.annotations?.length) {
           progress('Adding annotations and attached porches…');
           for (const a of p.annotations as Annotation[]) {
@@ -477,7 +487,10 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               );
           }
         }
+        progress('Validating terrain topology…', 'terrain-validation');
         const mesh = validatedMesh(result, 'Terrain');
+        if (plan.inserts.some(piece => piece.conformal))
+          raisedTerrain = cachedTerrain(M).translate([0, 0, 0.35]);
         for (let pieceIndex = 0; pieceIndex < plan.inserts.length; pieceIndex++) {
           const piece = plan.inserts[pieceIndex];
           if (pieceIndex % 10 === 0)
@@ -540,8 +553,8 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         }
         plan.inserts = plan.inserts.filter(piece => piece.mesh.indices.length > 0);
         return {
-          terrain: packed(mesh),
-          inserts: plan.inserts.map(i => ({ ...i, mesh: packed(i.mesh) })),
+          terrain: mesh,
+          inserts: plan.inserts,
           validation: {
             watertight: true,
             triangles: mesh.indices.length / 3,

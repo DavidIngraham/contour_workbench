@@ -36,6 +36,7 @@ import {
 import { extentPolygon, type Shape } from './extent-shapes';
 import { ExtentMap } from './extent-map';
 import { polygonBounds, validatePolygon, type Vertex } from './polygon';
+import { previewBoundary, previewLayout } from './preview-layout';
 import { Viewer } from './viewer';
 import { Engine } from './client';
 import { automaticProduct } from './source-resolution';
@@ -530,6 +531,10 @@ async function openPresetModel(entry: PresetEntry) {
     listFeatures();
     viewer.model.scale.z = 1;
     viewer.setTerrain(terrain.mesh, terrain.layout, true);
+    status('Terrain ready. Adding map features...', false, true);
+    await new Promise<void>(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
     viewer.setOverlays(overlays, project.features);
     annotationEditor.refresh();
     refreshMetrics();
@@ -816,7 +821,12 @@ function projectLabels() {
   $('coordinates').textContent =
     `${Math.abs((b[1] + b[3]) / 2).toFixed(3)}° ${b[1] + b[3] >= 0 ? 'N' : 'S'} · ${Math.abs((b[0] + b[2]) / 2).toFixed(3)}° ${b[0] + b[2] >= 0 ? 'E' : 'W'}`;
 }
-async function rebuild(fit = false) {
+async function rebuild(
+  fit = false,
+  includeOverlays = true,
+  keepBusy = false,
+  propagateError = false,
+) {
   if (!project) return;
   updateBusy(true);
   const requested = revision;
@@ -835,11 +845,13 @@ async function rebuild(fit = false) {
     terrainBuilds = t.terrainBuilds;
     viewer.model.scale.z = 1;
     viewer.setTerrain(t.mesh, t.layout, fit);
-    overlays = await engine.call(
-      'overlays',
-      { features: project.features, settings: project.settings },
-      progress => status(progress.message, false, true),
-    );
+    overlays = includeOverlays
+      ? await engine.call(
+          'overlays',
+          { features: project.features, settings: project.settings },
+          progress => status(progress.message, false, true),
+        )
+      : [];
     viewer.setOverlays(overlays, project.features);
     annotationEditor.refresh();
     $('model-caption').textContent =
@@ -851,8 +863,9 @@ async function rebuild(fit = false) {
     ($('generate') as HTMLButtonElement).disabled = false;
   } catch (e) {
     error(e);
+    if (propagateError) throw e;
   } finally {
-    updateBusy(false);
+    if (!keepBusy) updateBusy(false);
     if (thumbnailDirty) scheduleThumbnail();
   }
 }
@@ -1431,6 +1444,10 @@ $('area-load').onclick = async () => {
     $('area-dialog').classList.add('hidden');
     updateBusy(true);
     abort = new AbortController();
+    const loadingLayout = previewLayout(bounds, prior);
+    const loadingBoundary = previewBoundary(loadingLayout, boundary);
+    viewer.showLoadingMap(loadingLayout, [...loadingBoundary, loadingBoundary[0]]);
+    $('model-caption').textContent = 'SELECTED AREA · LOADING TOPO AND ELEVATION';
     const data = await loadElevation(
       bounds,
       selectedProduct,
@@ -1448,6 +1465,12 @@ $('area-load').onclick = async () => {
       settings: { ...prior, boundary },
     };
     if (creatingProject) activateNewLocalWorkspace();
+    touch();
+    projectLabels();
+    syncForm();
+    listFeatures();
+    await rebuild(true, false, true, true);
+    $('model-caption').textContent = 'TERRAIN READY · LOADING MAP FEATURES';
     let featureWarning = '';
     if (featureChoice !== 'none') {
       try {
@@ -1478,11 +1501,15 @@ $('area-load').onclick = async () => {
           (e instanceof Error ? e.message : String(e));
       }
     }
-    touch();
-    projectLabels();
-    syncForm();
+    if (project.features.length) {
+      touch();
+      await updateOverlays();
+    }
     listFeatures();
-    await rebuild(true);
+    $('model-caption').textContent =
+      project.settings.terrain_max_error_mm > 0
+        ? `DESIGN PREVIEW · ADAPTIVE ≤ ${project.settings.terrain_max_error_mm} MM`
+        : 'DESIGN PREVIEW · SOURCE RESOLUTION';
     setPanel(project.features.length ? 'features' : 'terrain');
     status(
       featureWarning ||
@@ -1570,6 +1597,16 @@ window.addEventListener('keydown', e => {
     if (!$('area-dialog').classList.contains('hidden')) $('area-close').click();
   }
 });
+async function projectThumbnailDataUrl() {
+  const thumbnail = await viewer.createThumbnail();
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error || new Error('Thumbnail encoding failed.'));
+    reader.readAsDataURL(thumbnail);
+  });
+}
+
 async function buildPresetDownload() {
   if (!project || !terrain) throw new Error('Open a project before building a preset.');
   await engine.call('hydrate', { project, terrain });
@@ -1614,6 +1651,7 @@ Object.defineProperty(window, 'contourDiagnostics', {
     landingOpen: !$('landing-dialog').classList.contains('hidden'),
     wizardStep: wizardMode ? wizardStep : 0,
     buildPreset: import.meta.env.DEV ? buildPresetDownload : undefined,
+    thumbnail: import.meta.env.DEV ? projectThumbnailDataUrl : undefined,
   }),
 });
 document.addEventListener('visibilitychange', () => {

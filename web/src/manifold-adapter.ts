@@ -24,8 +24,14 @@ export function loadManifold(progress: (message: string) => void): Promise<Manif
 export function solidFromMesh(module: ManifoldToplevel, meshData: Mesh): Manifold {
   const mesh = new module.Mesh({
     numProp: 3,
-    vertProperties: new Float32Array(meshData.positions),
-    triVerts: new Uint32Array(meshData.indices),
+    vertProperties:
+      meshData.positions instanceof Float32Array
+        ? meshData.positions
+        : new Float32Array(meshData.positions),
+    triVerts:
+      meshData.indices instanceof Uint32Array
+        ? meshData.indices
+        : new Uint32Array(meshData.indices),
   });
   mesh.merge();
   const result = new module.Manifold(mesh);
@@ -53,6 +59,43 @@ export function combineMeshes(meshes: Mesh[]): Mesh {
     vertexOffset += mesh.positions.length / 3;
   }
   return { positions, indices };
+}
+
+/**
+ * Split ordered cutter classes into bounded Boolean batches.
+ *
+ * Subtracting successive batches is equivalent to subtracting their union, while avoiding one
+ * class-wide temporary mesh that can exhaust a mobile browser's renderer process.
+ */
+export function batchMeshes(
+  meshes: Mesh[],
+  groupEnds: number[],
+  maximumTriangles = 150_000,
+  maximumMeshes = 64,
+): Mesh[][] {
+  const batches: Mesh[][] = [];
+  let groupStart = 0;
+  for (const groupEnd of groupEnds) {
+    let batch: Mesh[] = [],
+      triangles = 0;
+    for (let index = groupStart; index < groupEnd; index++) {
+      const mesh = meshes[index],
+        nextTriangles = mesh.indices.length / 3;
+      if (
+        batch.length &&
+        (triangles + nextTriangles > maximumTriangles || batch.length >= maximumMeshes)
+      ) {
+        batches.push(batch);
+        batch = [];
+        triangles = 0;
+      }
+      batch.push(mesh);
+      triangles += nextTriangles;
+    }
+    if (batch.length) batches.push(batch);
+    groupStart = groupEnd;
+  }
+  return batches;
 }
 
 function exportMesh(mesh: Mesh, tolerance = 0.0001): Mesh {
@@ -116,34 +159,67 @@ export function validateMesh(mesh: Mesh) {
   const vertexCount = mesh.positions.length / 3;
   for (const value of mesh.positions)
     if (!Number.isFinite(Number(value))) throw new Error('Non-finite mesh coordinate');
+  if (!Number.isSafeInteger(vertexCount * vertexCount * 2))
+    throw new Error('Export has too many vertices for topology validation.');
 
-  const edges = new Map<string, { count: number; sum: number }>();
+  // Two direction-tagged numeric edge keys use a compact typed array. The previous string-keyed
+  // Map consumed hundreds of megabytes for full-resolution terrain and could reload mobile tabs.
+  const edges = new Float64Array(mesh.indices.length);
+  let edgeOffset = 0;
   for (let index = 0; index < mesh.indices.length; index += 3) {
-    const triangle = [
-      Number(mesh.indices[index]),
-      Number(mesh.indices[index + 1]),
-      Number(mesh.indices[index + 2]),
-    ];
-    if (triangle.some(vertex => !Number.isInteger(vertex) || vertex < 0 || vertex >= vertexCount))
+    const first = Number(mesh.indices[index]),
+      second = Number(mesh.indices[index + 1]),
+      third = Number(mesh.indices[index + 2]);
+    if (
+      !Number.isInteger(first) ||
+      !Number.isInteger(second) ||
+      !Number.isInteger(third) ||
+      first < 0 ||
+      second < 0 ||
+      third < 0 ||
+      first >= vertexCount ||
+      second >= vertexCount ||
+      third >= vertexCount
+    )
       throw new Error('Export contains an invalid vertex index');
-    if (new Set(triangle).size !== 3) throw new Error('Export contains degenerate triangles');
+    if (first === second || second === third || third === first)
+      throw new Error('Export contains degenerate triangles');
     for (let edgeIndex = 0; edgeIndex < 3; edgeIndex++) {
-      const from = triangle[edgeIndex];
-      const to = triangle[(edgeIndex + 1) % 3];
-      const key = `${Math.min(from, to)},${Math.max(from, to)}`;
-      const edge = edges.get(key) || { count: 0, sum: 0 };
-      edge.count++;
-      edge.sum += from < to ? 1 : -1;
-      edges.set(key, edge);
+      const from = edgeIndex === 0 ? first : edgeIndex === 1 ? second : third,
+        to = edgeIndex === 0 ? second : edgeIndex === 1 ? third : first,
+        minimum = Math.min(from, to),
+        maximum = Math.max(from, to),
+        undirected = minimum * vertexCount + maximum;
+      edges[edgeOffset++] = undirected * 2 + (from < to ? 0 : 1);
     }
   }
-  const invalid = [...edges.entries()].filter(([, edge]) => edge.count !== 2 || edge.sum !== 0);
-  if (!edges.size || invalid.length)
+  edges.sort();
+
+  let groups = 0,
+    invalid = 0;
+  const examples: string[] = [];
+  for (let start = 0; start < edges.length;) {
+    const key = Math.floor(edges[start] / 2);
+    let end = start,
+      direction = 0;
+    while (end < edges.length && Math.floor(edges[end] / 2) === key) {
+      direction += edges[end] % 2 === 0 ? 1 : -1;
+      end++;
+    }
+    groups++;
+    const count = end - start;
+    if (count !== 2 || direction !== 0) {
+      invalid++;
+      if (examples.length < 5)
+        examples.push(
+          `${Math.floor(key / vertexCount)},${key % vertexCount}=${count}/${direction}`,
+        );
+    }
+    start = end;
+  }
+  if (!groups || invalid)
     throw new Error(
-      `Generated mesh is not watertight (${invalid.length} of ${edges.size} edges; ${invalid
-        .slice(0, 5)
-        .map(([key, edge]) => `${key}=${edge.count}/${edge.sum}`)
-        .join(', ')})`,
+      `Generated mesh is not watertight (${invalid} of ${groups} edges; ${examples.join(', ')})`,
     );
 }
 
@@ -163,9 +239,9 @@ export interface ManifoldMeshTopology {
  * identical positions, and welding it can create edges shared by more than two faces.
  */
 export function compactManifoldMesh(raw: ManifoldMeshTopology): Mesh {
-  const numProp = Number(raw.numProp) || 3;
-  const numVert = raw.vertProperties.length / numProp;
-  const parent = Array.from({ length: numVert }, (_, index) => index);
+  const numProp = Number(raw.numProp) || 3,
+    numVert = raw.vertProperties.length / numProp,
+    parent = Uint32Array.from({ length: numVert }, (_, index) => index);
   const root = (index: number) => {
     let current = index;
     while (parent[current] !== current) current = parent[current];
@@ -177,17 +253,17 @@ export function compactManifoldMesh(raw: ManifoldMeshTopology): Mesh {
     return current;
   };
   const unite = (first: number, second: number) => {
-    const firstRoot = root(first);
-    const secondRoot = root(second);
+    const firstRoot = root(first),
+      secondRoot = root(second);
     if (firstRoot !== secondRoot) parent[firstRoot] = secondRoot;
   };
 
-  const from = raw.mergeFromVert;
-  const to = raw.mergeToVert;
+  const from = raw.mergeFromVert,
+    to = raw.mergeToVert;
   if (from && to)
     for (let index = 0; index < Math.min(from.length, to.length); index++) {
-      const first = Number(from[index]);
-      const second = Number(to[index]);
+      const first = Number(from[index]),
+        second = Number(to[index]);
       if (
         Number.isInteger(first) &&
         Number.isInteger(second) &&
@@ -199,20 +275,22 @@ export function compactManifoldMesh(raw: ManifoldMeshTopology): Mesh {
         unite(first, second);
     }
 
-  const positions: number[] = [];
-  const compact = new Map<number, number>();
-  const indices = Array.from(raw.triVerts, sourceIndex => {
-    const source = root(Number(sourceIndex));
-    let target = compact.get(source);
-    if (target === undefined) {
-      target = compact.size;
-      compact.set(source, target);
+  const positions = new Float32Array(numVert * 3),
+    indices = new Uint32Array(raw.triVerts.length),
+    compact = new Int32Array(numVert).fill(-1);
+  let compactCount = 0;
+  for (let index = 0; index < raw.triVerts.length; index++) {
+    const source = root(Number(raw.triVerts[index]));
+    let target = compact[source];
+    if (target < 0) {
+      target = compactCount++;
+      compact[source] = target;
       for (let axis = 0; axis < 3; axis++)
-        positions.push(Number(raw.vertProperties[source * numProp + axis]));
+        positions[target * 3 + axis] = Number(raw.vertProperties[source * numProp + axis]);
     }
-    return target;
-  });
-  return { positions, indices };
+    indices[index] = target;
+  }
+  return { positions: positions.slice(0, compactCount * 3), indices };
 }
 
 /** Export a Manifold solid, preserving supplied topology before attempting geometric repair. */

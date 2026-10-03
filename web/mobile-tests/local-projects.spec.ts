@@ -13,6 +13,11 @@ test('preset changes become a durable recent project with a thumbnail', async ({
 
   await page.locator('#show-projects').tap();
   await expect(page.locator('#recent-section')).toBeHidden();
+  const presetThumbnail = page.locator('[data-preset="post-canyon"] img');
+  expect(await presetThumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(640);
+  expect(await presetThumbnail.evaluate((image: HTMLImageElement) => image.naturalHeight)).toBe(
+    360,
+  );
 
   await page.locator('[data-preset="post-canyon"]').tap();
   await page.waitForFunction(
@@ -31,6 +36,7 @@ test('preset changes become a durable recent project with a thumbnail', async ({
   const thumbnail = page.locator('[data-local-project] img');
   await expect(thumbnail).toBeVisible();
   expect(await thumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(640);
+  expect(await thumbnail.evaluate((image: HTMLImageElement) => image.naturalHeight)).toBe(360);
 
   await page.reload();
   await page.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);

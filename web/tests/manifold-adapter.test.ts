@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compactManifoldMesh, validateMesh } from '../src/manifold-adapter';
+import { batchMeshes, compactManifoldMesh, validateMesh } from '../src/manifold-adapter';
 
 const tetrahedron = {
   positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -18,8 +18,22 @@ describe('Manifold mesh topology', () => {
       mergeToVert: new Uint32Array([6, 0, 2]),
     });
 
-    expect(mesh.positions).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
-    expect(mesh.indices).toEqual([0, 1, 2, 0, 2, 3]);
+    expect(Array.from(mesh.positions)).toEqual([0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0]);
+    expect(Array.from(mesh.indices)).toEqual([0, 1, 2, 0, 2, 3]);
+  });
+
+  it('keeps cutter batches within limits and never mixes ordered class groups', () => {
+    const mesh = (triangles: number) => ({
+        positions: [],
+        indices: new Array(triangles * 3).fill(0),
+      }),
+      batches = batchMeshes([mesh(2), mesh(2), mesh(1), mesh(2)], [3, 4], 3, 2);
+
+    expect(batches.map(batch => batch.map(item => item.indices.length / 3))).toEqual([
+      [2],
+      [2, 1],
+      [2],
+    ]);
   });
 
   it('keeps coincident closed shells topologically separate', () => {

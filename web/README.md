@@ -20,6 +20,8 @@ Run these commands from the repository root. The production site is `web/dist`; 
 
 The bundled Post Canyon example opens automatically with 246,078 elevation samples and the original five-vertex Post Canyon boundary rounded with a default 500 m corner radius. Choose an area on the slippy map: draw a freeform or smooth spline polygon, or select Square, Rectangle, or Circle. Presets have dimensions in meters, a draggable center, and edge handles for resizing. Click the nearby rotation arrow for 15° steps, or drag it for any angle. Spline control points remain editable. Rotate outlines clockwise and round freeform or preset corners with a corner radius in meters (locally limited by short edges). Circle size uses diameter. Shape controls are retained in saved projects. For freeform drawing, click Draw / redraw, place vertices, then Finish polygon. Drag vertices to edit, or undo the last point. Use loaded elevation to crop the current landscape without downloading again, or load new elevation for the outline. Concave simple polygons are supported; self-crossing outlines and holes are rejected. The exact outline clips terrain, overlays, and printable parts and is saved with the project. Load elevation, and pull trails, roads, waterways, lakes, reservoirs, rivers, and glaciers directly from OpenStreetMap. Local geographic GeoTIFF and GeoJSON imports are also supported. The Rust classifier follows the original project classification rules, including named local trails and closed/future exclusions.
 
+When a new area starts loading, the viewport first shows the regional topo map and selected polygon. Terrain replaces that flat footprint as soon as elevation meshing finishes; OpenStreetMap trails and zones are loaded and draped afterward. Preset packs perform the same terrain-then-features reveal using their prebuilt meshes.
+
 Full source resolution is the default. Adaptive detail is opt-in and constrains sampled vertical error in model millimeters. Polygon zones preserve multipolygon islands and source DEM samples across their interiors. Each feature and class has a visibility checkbox and an Insert/V-carve selector. Hide/unhide preserves the selected treatment. Treatment and visibility changes refresh overlays while reusing terrain. Class selectors apply to all members; individual overrides display a Mixed class selection. Width and V-carve depth changes rebuild overlays only. Base thickness directly shifts cached surface vertices and creates no worker jobs. Bed size, elevation exaggeration, detail, and boundary changes rebuild terrain. Insert segmentation defaults to the print bed; pockets remain continuous across optional insert divisions.
 
 
@@ -37,6 +39,7 @@ Generate constructs the printable terrain and fitted inserts. Review supports ex
 - Geographic WGS84/NAD83 rasters only. Model XY uses a local latitude-scaled projection; NAD83 is treated as WGS84. Intended for small landscapes, not surveying. Bounds are limited to two degrees per side, latitude ±85°, and two million samples. No antimeridian areas.
 - Live rasters use a native-spacing grid aligned to the first tile and include a sample halo around the exact polygon. Misaligned tiles require interpolation. No coarse TIFF overview is selected.
 - Preview overlays show effective placement and class priority, but final fit and pocket subtraction are computed only by Generate.
+- Pocket cutting uses bounded class-preserving Boolean batches. Final topology validation uses packed numeric edge storage and releases the source plan before validation, reducing the peak memory that can cause mobile browsers to reload a tab.
 - Printable solids are validated before optional simplification. Coordinate welding starts at 0.0000001 mm and retries up to 0.0001 mm; if needed, bounded simplification retries up to 0.005 mm remove collapsed fragments; this may reduce redundant triangles even with full-resolution terrain selected. Validation checks coordinate-welded, closed, consistently oriented topology. It is not a printer or material guarantee. Inspect the generated asset and slicer results.
 - Local projects and source-data caches use IndexedDB. Browser storage quotas and private-browsing policies still apply, so export a project file for archival backups. Address search and a complete native insert-export CLI remain future work; the native CLI currently exports terrain only.
 
@@ -86,6 +89,7 @@ After generation, the Download button offers three outputs: a ZIP of separate ST
 Opening an example is read-only until the first meaningful edit. At that point it receives a new project identifier and appears under Recent projects. New designs and imported project files receive identifiers when they enter the editor. Project metadata, editable state, terrain samples, and thumbnails are stored separately so ordinary control edits do not rewrite the elevation raster.
 
 Thumbnails use the same standard camera pose as Reset view: the highest terrain point sits near the back of the model and the camera looks across it at an oblique angle. They are rendered offscreen after edits settle, so thumbnail capture does not move the live viewport. Use Export project for a portable backup because browser site data can be cleared by the user or browser.
+
 ## Landing catalog and preset packs
 
 `public/examples/catalog.json` drives the landing cards. Each entry points to a screenshot and a compressed `.cwpack` containing the full editable project, a prebuilt terrain mesh, and prebuilt overlay meshes. Overlay IDs are validated against project feature IDs when the bundle opens, so selection and visibility remain connected to the feature tree.
@@ -93,10 +97,14 @@ Thumbnails use the same standard camera pose as Reset view: the highest terrain 
 To add a model, start the Vite development server, save its `.contour.json` project, then run:
 
 ```sh
-node scripts/build-preset.mjs path/to/model.contour.json public/examples/presets/model.cwpack public/examples/images/model.png
+node scripts/build-preset.mjs path/to/model.contour.json public/examples/presets/model.cwpack public/examples/images/model.webp
 ```
 
-Add the resulting paths and card copy to `public/examples/catalog.json`. The third argument is optional and captures the loaded viewport.
+Add the resulting paths and card copy to `public/examples/catalog.json`. The third argument is optional and uses the same 640 × 360 offscreen renderer and standard camera pose as local-project thumbnails. After camera or presentation changes, regenerate every catalog image against a running development server with:
+
+```sh
+npm run render:preset-thumbnails
+```
 
 To apply a corner radius while preserving a preset's editable footprint, run:
 

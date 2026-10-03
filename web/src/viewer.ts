@@ -171,6 +171,15 @@ export class Viewer {
     });
     g.clear();
   }
+  private clearTopo() {
+    if (!this.topo) return;
+    this.scene.remove(this.topo);
+    this.topo.geometry.dispose();
+    const material = this.topo.material as THREE.MeshBasicMaterial;
+    material.map?.dispose();
+    material.dispose();
+    this.topo = undefined;
+  }
   private terrainMaterial() {
     const m = new THREE.MeshStandardMaterial({
       color: 0x819981,
@@ -213,6 +222,7 @@ export class Viewer {
     this.carveCanvas.getContext('2d')!.clearRect(0, 0, 2048, 2048);
     this.carveTexture.needsUpdate = true;
     this.clear(this.land);
+    this.boundary([]);
     this.model.position.set(-layout.width / 2, -layout.depth / 2, 0);
     const surface = new THREE.Mesh(this.geometry(mesh), this.terrainMaterial());
     surface.castShadow = true;
@@ -221,6 +231,22 @@ export class Viewer {
     this.surface = surface;
     void this.loadTopo();
     if (fit) this.fit();
+  }
+  /** Show the selected footprint on its topo map while elevation geometry is still loading. */
+  showLoadingMap(layout: Layout, boundary: [number, number][]) {
+    this.dirty = true;
+    this.review = false;
+    this.layout = layout;
+    this.surface = undefined;
+    this.clear(this.land);
+    this.clear(this.features);
+    this.overlays.clear();
+    this.model.position.set(-layout.width / 2, -layout.depth / 2, 0);
+    this.clearTopo();
+    this.topoKey = '';
+    this.boundary(boundary, 0.2);
+    void this.loadTopo();
+    this.top();
   }
   // Preview ribbons retain their original 0.35 mm protrusion; tiny class offsets avoid crossing flicker.
   setOverlays(overlays: Overlay[], features: Feature[]) {
@@ -553,13 +579,7 @@ export class Viewer {
     try {
       const data = await topoSurface(this.layout);
       if (request !== this.topoRequest) return;
-      if (this.topo) {
-        this.scene.remove(this.topo);
-        this.topo.geometry.dispose();
-        const m = this.topo.material as THREE.MeshBasicMaterial;
-        m.map?.dispose();
-        m.dispose();
-      }
+      this.clearTopo();
       const g = new THREE.BufferGeometry();
       g.setAttribute(
         'position',
@@ -598,14 +618,14 @@ export class Viewer {
     );
     this.controls.update();
   }
-  boundary(points: [number, number][]) {
+  boundary(points: [number, number][], elevationMm = 70) {
     this.dirty = true;
     if (this.boundaryLine) {
       this.frame.remove(this.boundaryLine);
       this.boundaryLine.geometry.dispose();
     }
     if (!points.length) return;
-    const data = points.map(p => new THREE.Vector3(p[0], p[1], 70));
+    const data = points.map(p => new THREE.Vector3(p[0], p[1], elevationMm));
     const line = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints(data),
       new THREE.LineBasicMaterial({ color: 0xe88945, depthTest: false }),

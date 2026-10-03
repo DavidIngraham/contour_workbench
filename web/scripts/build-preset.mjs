@@ -1,5 +1,5 @@
 import { chromium } from '@playwright/test';
-import { readFile, mkdir } from 'node:fs/promises';
+import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 const [projectArg, bundleArg, imageArg] = process.argv.slice(2);
@@ -48,7 +48,10 @@ try {
   if (imageArg) {
     const imagePath = resolve(imageArg);
     await mkdir(dirname(imagePath), { recursive: true });
-    await page.locator('#viewport').screenshot({ path: imagePath });
+    const dataUrl = await page.evaluate(() => window.contourDiagnostics.thumbnail()),
+      comma = dataUrl.indexOf(',');
+    if (comma < 0) throw new Error('The shared thumbnail renderer returned invalid data.');
+    await writeFile(imagePath, Buffer.from(dataUrl.slice(comma + 1), 'base64'));
   }
   console.log(`Built ${bundlePath} with ${project.features.length} linked features.`);
 } finally {

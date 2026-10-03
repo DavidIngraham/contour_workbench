@@ -89,8 +89,8 @@ GeoTIFF, Manifold, and 3MF modules are dynamically imported at their first use. 
 - The persistent Rust `TerrainSession`.
 - The current terrain mesh and settings.
 - A cached base Manifold solid.
-- Manifold boolean operations and explicit object deletion through `manifold-adapter.ts`.
-- Watertight export validation and bounded repair attempts.
+- Manifold Boolean operations, bounded cutter batches, and explicit object deletion through `manifold-adapter.ts`.
+- Watertight export validation using packed typed-array edge keys, followed by bounded repair attempts.
 - Cooperative cancellation checkpoints between Boolean groups, annotations, and insert operations, with forced worker replacement if native WASM work does not yield promptly.
 - STL bundles, calibration geometry, preset packs, and generation results.
 
@@ -102,24 +102,26 @@ The worker retains its terrain buffer. Responses that cross the worker boundary 
 
 Manifold performs final solid unions, differences, intersections, taper layers, and annotation booleans. The project pins `manifold-3d` 3.5.4, and dependency upgrades must pass both preset generation tests before changing the pin.
 
-Manifold mesh exports can contain multiple property vertices for one topological vertex. `manifold-adapter.ts` resolves the export's merge-vector union relation, compacts the referenced vertices, and validates the resulting index topology. This native topology is preferred over coordinate welding because distinct vertices may be nearly coincident; welding them can create edges shared by more than two faces. Bounded coordinate welding remains a fallback for malformed exports. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
+Manifold mesh exports can contain multiple property vertices for one topological vertex. `manifold-adapter.ts` resolves the merge-vector union relation, compacts referenced vertices into typed arrays, and validates directed edges through a sorted numeric buffer. This avoids the string-key maps and boxed number arrays that previously produced large transient allocations on full-resolution terrain. Native topology is preferred over coordinate welding because distinct vertices may be nearly coincident; bounded coordinate welding remains a fallback for malformed exports.
+
+Pocket cutters preserve class priority but are subdivided into bounded Boolean batches. The Rust plan packet is released before final terrain validation, and the extra conformal-terrain solid is created only when insert fitting begins. These lifetime rules reduce peak memory while preserving class order and Boolean meaning. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
 
 ## Data flows
 
 ### New project
 
 1. The user draws or edits a geographic boundary. Rounded corners are tessellated against the final print scale with a 0.05 mm maximum chord error and a bounded vertex budget.
-2. Source policy estimates raster sample count and chooses 10 m, 30 m, or 90 m data for Auto.
-3. The browser checks IndexedDB for the exact product and bounds before resolving or downloading tiles.
-4. The provider registry loads USGS data directly where available. Copernicus supplies direct URLs or download links; local GeoTIFF import remains available when source CORS policy blocks a request.
-5. The UI asks Overpass for supported paths and zones. Transient failures retry through a bounded mirror list, and successful responses are cached for one day.
-6. Rust normalizes classifications and builds terrain and preview overlays.
-7. Three.js displays the effective design while feature controls remain editable.
+2. The viewer immediately derives the same print-bed layout used by Rust, shows the USGS topo map (OpenTopoMap internationally), and draws the selected boundary while source data loads.
+3. Source policy estimates raster sample count and chooses 10 m, 30 m, or 90 m data for Auto. The browser checks IndexedDB before resolving or downloading tiles.
+4. As soon as elevation is available, Rust builds terrain and the viewer replaces the flat map footprint with the fitted terrain mesh.
+5. The UI then requests supported paths and zones from Overpass. Transient failures retry through a bounded mirror list, and successful responses are cached for one day.
+6. Rust normalizes classifications and builds preview overlays. Three.js adds them without rebuilding or hiding the terrain.
+7. Feature controls remain editable throughout the completed design preview.
 
 ### Preset project
 
 1. The landing catalog loads a compressed `.cwpack`.
-2. The app displays its prebuilt terrain and overlays immediately.
+2. The app displays its prebuilt terrain immediately, then adds the linked overlays on the following rendered frame.
 3. Overlay identifiers are checked against project feature identifiers.
 4. The worker hydrates a Rust session in the background for subsequent edits and generation.
 5. Opening a preset remains ephemeral. Its first edit forks it into a new local project identifier and starts autosave.
@@ -131,6 +133,7 @@ Manifold mesh exports can contain multiple property vertices for one topological
 3. After the scene settles, Three.js renders a 640 × 360 WebP thumbnail from the standard presentation pose. The landing page resolves thumbnail blobs to temporary object URLs.
 4. Returning users can open, rename, duplicate, export, or delete recent projects from the landing page. Opening restores the complete saved project and terrain without fetching source services.
 5. IndexedDB failures fall back to memory for the current visit. The app requests persistent browser storage after the first local save when the browser exposes that capability.
+
 ### Printable generation
 
 1. Rust builds insert pieces and ordered cutter groups.
