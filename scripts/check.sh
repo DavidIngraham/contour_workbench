@@ -13,9 +13,10 @@ cargo test --workspace
 
 cd web
 npm ci
-npm run check
 cd ..
 
 bash scripts/build-wasm.sh
+
 cd web
+npm run check
 npx vite build
