@@ -61,43 +61,6 @@ export function combineMeshes(meshes: Mesh[]): Mesh {
   return { positions, indices };
 }
 
-/**
- * Split ordered cutter classes into bounded Boolean batches.
- *
- * Subtracting successive batches is equivalent to subtracting their union, while avoiding one
- * class-wide temporary mesh that can exhaust a mobile browser's renderer process.
- */
-export function batchMeshes(
-  meshes: Mesh[],
-  groupEnds: number[],
-  maximumTriangles = 150_000,
-  maximumMeshes = 64,
-): Mesh[][] {
-  const batches: Mesh[][] = [];
-  let groupStart = 0;
-  for (const groupEnd of groupEnds) {
-    let batch: Mesh[] = [],
-      triangles = 0;
-    for (let index = groupStart; index < groupEnd; index++) {
-      const mesh = meshes[index],
-        nextTriangles = mesh.indices.length / 3;
-      if (
-        batch.length &&
-        (triangles + nextTriangles > maximumTriangles || batch.length >= maximumMeshes)
-      ) {
-        batches.push(batch);
-        batch = [];
-        triangles = 0;
-      }
-      batch.push(mesh);
-      triangles += nextTriangles;
-    }
-    if (batch.length) batches.push(batch);
-    groupStart = groupEnd;
-  }
-  return batches;
-}
-
 function exportMesh(mesh: Mesh, tolerance = 0.0001): Mesh {
   const positions: number[] = [];
   const remap: number[] = [];
@@ -291,6 +254,46 @@ export function compactManifoldMesh(raw: ManifoldMeshTopology): Mesh {
     indices[index] = target;
   }
   return { positions: positions.slice(0, compactCount * 3), indices };
+}
+
+/**
+ * Export a large solid that Manifold already reports as valid.
+ *
+ * Manifold guarantees a closed, consistently oriented result. Rechecking every undirected edge
+ * requires a second array with three entries per triangle, which can exceed Safari's renderer
+ * memory limit for full-resolution terrain. We still verify all coordinates and triangle indices.
+ */
+export function trustedManifoldMesh(input: Manifold, label: string): Mesh {
+  const status = input.status();
+  if (status !== 'NoError' || input.numTri() === 0)
+    throw new Error(`${label}: solid geometry is invalid (${status})`);
+  const mesh = compactManifoldMesh(input.getMesh());
+  if (mesh.positions.length % 3 || mesh.indices.length % 3)
+    throw new Error(`${label}: invalid mesh array cardinality`);
+  const vertexCount = mesh.positions.length / 3;
+  for (const value of mesh.positions)
+    if (!Number.isFinite(Number(value))) throw new Error(`${label}: non-finite mesh coordinate`);
+  for (let index = 0; index < mesh.indices.length; index += 3) {
+    const first = Number(mesh.indices[index]),
+      second = Number(mesh.indices[index + 1]),
+      third = Number(mesh.indices[index + 2]);
+    if (
+      !Number.isInteger(first) ||
+      !Number.isInteger(second) ||
+      !Number.isInteger(third) ||
+      first < 0 ||
+      second < 0 ||
+      third < 0 ||
+      first >= vertexCount ||
+      second >= vertexCount ||
+      third >= vertexCount ||
+      first === second ||
+      second === third ||
+      third === first
+    )
+      throw new Error(`${label}: invalid triangle index`);
+  }
+  return mesh;
 }
 
 /** Export a Manifold solid, preserving supplied topology before attempting geometric repair. */

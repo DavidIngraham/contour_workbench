@@ -232,6 +232,21 @@ export class Viewer {
     void this.loadTopo();
     if (fit) this.fit();
   }
+  /**
+   * Release the heavy design-preview geometry while a large printable mesh is generated.
+   *
+   * The topo surface remains visible, while CPU normal/index buffers and GPU buffers become
+   * reclaimable. This substantially lowers the shared WebContent-process peak on mobile Safari.
+   */
+  releaseDesignGeometry() {
+    this.dirty = true;
+    this.surface = undefined;
+    this.clear(this.land);
+    this.clear(this.features);
+    this.overlays.clear();
+    this.renderer.renderLists.dispose();
+  }
+
   /** Show the selected footprint on its topo map while elevation geometry is still loading. */
   showLoadingMap(layout: Layout, boundary: [number, number][]) {
     this.dirty = true;

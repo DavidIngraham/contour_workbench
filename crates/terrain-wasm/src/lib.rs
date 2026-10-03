@@ -8,6 +8,7 @@
 
 use contour_core::*;
 use serde::Serialize;
+use std::{collections::VecDeque, ops::Range};
 use wasm_bindgen::prelude::*;
 
 const PACKET_MAGIC: u32 = u32::from_le_bytes(*b"CWB1");
@@ -93,14 +94,83 @@ struct PieceMetadata<'a> {
 #[derive(Serialize)]
 struct PlanMetadata<'a> {
     inserts: Vec<PieceMetadata<'a>>,
-    cutter_group_ends: &'a [usize],
+    cutter_batches: usize,
+    insert_batches: usize,
     removed_terrain_islands: usize,
+}
+
+#[derive(Serialize)]
+struct MeshBatchMetadata {
+    batch_index: usize,
+    batch_total: usize,
+    start_index: usize,
+    done: bool,
+}
+
+struct PendingPlan {
+    plan: Plan,
+    cutter_batches: VecDeque<Range<usize>>,
+    insert_batches: VecDeque<Range<usize>>,
+    completed_cutter_batches: usize,
+    total_cutter_batches: usize,
+    completed_insert_batches: usize,
+    total_insert_batches: usize,
+}
+
+fn batch_ranges(
+    length: usize,
+    group_ends: &[usize],
+    triangle_count: impl Fn(usize) -> usize,
+    maximum_triangles: usize,
+    maximum_meshes: usize,
+) -> VecDeque<Range<usize>> {
+    let maximum_triangles = maximum_triangles.max(1);
+    let maximum_meshes = maximum_meshes.max(1);
+    let mut ranges = VecDeque::new();
+    let mut group_start = 0;
+    let mut ends = group_ends.to_vec();
+    if ends.last().copied().unwrap_or(0) < length {
+        ends.push(length);
+    }
+    for group_end in ends {
+        let group_end = group_end.min(length);
+        if group_end <= group_start {
+            continue;
+        }
+        let mut batch_start = group_start;
+        let mut triangles = 0;
+        for index in group_start..group_end {
+            let next_triangles = triangle_count(index);
+            if index > batch_start
+                && (triangles + next_triangles > maximum_triangles
+                    || index - batch_start >= maximum_meshes)
+            {
+                ranges.push_back(batch_start..index);
+                batch_start = index;
+                triangles = 0;
+            }
+            triangles += next_triangles;
+        }
+        if batch_start < group_end {
+            ranges.push_back(batch_start..group_end);
+        }
+        group_start = group_end;
+    }
+    ranges
+}
+
+fn take_mesh(mesh: &mut Mesh) -> Mesh {
+    Mesh {
+        positions: std::mem::take(&mut mesh.positions),
+        indices: std::mem::take(&mut mesh.indices),
+    }
 }
 
 /// Stateful browser geometry session that owns one validated elevation grid.
 #[wasm_bindgen]
 pub struct TerrainSession {
     grid: Grid,
+    pending_plan: Option<PendingPlan>,
 }
 
 #[wasm_bindgen]
@@ -110,7 +180,10 @@ impl TerrainSession {
     pub fn new(grid: &str) -> Result<TerrainSession, JsValue> {
         let grid: Grid = serde_json::from_str(grid).map_err(err)?;
         grid.validate().map_err(err)?;
-        Ok(Self { grid })
+        Ok(Self {
+            grid,
+            pending_plan: None,
+        })
     }
 
     /// Build terrain and return one packed mesh plus layout metadata.
@@ -148,17 +221,34 @@ impl TerrainSession {
         encode_packet(&metadata, &meshes)
     }
 
-    /// Build insert and cutter geometry for the browser solid-boolean stage.
-    pub fn build_plan(
-        &self,
+    /// Prepare a geometry plan while keeping its meshes inside WASM for bounded transfer.
+    pub fn prepare_plan(
+        &mut self,
         settings: &str,
         features: &str,
         layout: &str,
-    ) -> Result<Vec<u8>, JsValue> {
+        maximum_triangles: usize,
+        maximum_meshes: usize,
+    ) -> Result<String, JsValue> {
+        self.pending_plan = None;
         let settings: Settings = serde_json::from_str(settings).map_err(err)?;
         let features: Vec<Feature> = serde_json::from_str(features).map_err(err)?;
         let layout: Layout = serde_json::from_str(layout).map_err(err)?;
         let plan = plan(&self.grid, &settings, &features, &layout).map_err(err)?;
+        let cutter_batches = batch_ranges(
+            plan.cutters.len(),
+            &plan.cutter_group_ends,
+            |index| plan.cutters[index].indices.len() / 3,
+            maximum_triangles,
+            maximum_meshes,
+        );
+        let insert_batches = batch_ranges(
+            plan.inserts.len(),
+            &[plan.inserts.len()],
+            |index| plan.inserts[index].mesh.indices.len() / 3,
+            maximum_triangles,
+            maximum_meshes,
+        );
         let metadata = PlanMetadata {
             inserts: plan
                 .inserts
@@ -171,12 +261,93 @@ impl TerrainSession {
                     conformal: piece.conformal,
                 })
                 .collect(),
-            cutter_group_ends: &plan.cutter_group_ends,
+            cutter_batches: cutter_batches.len(),
+            insert_batches: insert_batches.len(),
             removed_terrain_islands: plan.removed_terrain_islands,
         };
-        let mut meshes: Vec<_> = plan.inserts.iter().map(|piece| &piece.mesh).collect();
-        meshes.extend(plan.cutters.iter());
+        let encoded = serde_json::to_string(&metadata).map_err(err)?;
+        let total_cutter_batches = cutter_batches.len();
+        let total_insert_batches = insert_batches.len();
+        self.pending_plan = Some(PendingPlan {
+            plan,
+            cutter_batches,
+            insert_batches,
+            completed_cutter_batches: 0,
+            total_cutter_batches,
+            completed_insert_batches: 0,
+            total_insert_batches,
+        });
+        Ok(encoded)
+    }
+
+    /// Transfer and release the next cutter batch from a prepared plan.
+    pub fn take_plan_cutter_batch(&mut self) -> Result<Vec<u8>, JsValue> {
+        let pending = self
+            .pending_plan
+            .as_mut()
+            .ok_or_else(|| err("No prepared geometry plan"))?;
+        let Some(range) = pending.cutter_batches.pop_front() else {
+            let metadata = MeshBatchMetadata {
+                batch_index: pending.completed_cutter_batches,
+                batch_total: pending.total_cutter_batches,
+                start_index: pending.plan.cutters.len(),
+                done: true,
+            };
+            return encode_packet(&metadata, &[]);
+        };
+        let start_index = range.start;
+        let mut batch = Vec::with_capacity(range.len());
+        for index in range {
+            batch.push(take_mesh(&mut pending.plan.cutters[index]));
+        }
+        pending.completed_cutter_batches += 1;
+        let metadata = MeshBatchMetadata {
+            batch_index: pending.completed_cutter_batches,
+            batch_total: pending.total_cutter_batches,
+            start_index,
+            done: pending.cutter_batches.is_empty(),
+        };
+        let meshes: Vec<_> = batch.iter().collect();
         encode_packet(&metadata, &meshes)
+    }
+
+    /// Transfer and release the next insert batch after all cutters are consumed.
+    pub fn take_plan_insert_batch(&mut self) -> Result<Vec<u8>, JsValue> {
+        let pending = self
+            .pending_plan
+            .as_mut()
+            .ok_or_else(|| err("No prepared geometry plan"))?;
+        if !pending.cutter_batches.is_empty() {
+            return Err(err("Consume every cutter batch before taking inserts"));
+        }
+        let Some(range) = pending.insert_batches.pop_front() else {
+            let metadata = MeshBatchMetadata {
+                batch_index: pending.completed_insert_batches,
+                batch_total: pending.total_insert_batches,
+                start_index: pending.plan.inserts.len(),
+                done: true,
+            };
+            return encode_packet(&metadata, &[]);
+        };
+        let start_index = range.start;
+        let mut batch = Vec::with_capacity(range.len());
+        for index in range {
+            batch.push(take_mesh(&mut pending.plan.inserts[index].mesh));
+        }
+        pending.completed_insert_batches += 1;
+        let metadata = MeshBatchMetadata {
+            batch_index: pending.completed_insert_batches,
+            batch_total: pending.total_insert_batches,
+            start_index,
+            done: pending.insert_batches.is_empty(),
+        };
+        let meshes: Vec<_> = batch.iter().collect();
+        encode_packet(&metadata, &meshes)
+    }
+
+    /// Release any prepared geometry plan after cancellation or failure.
+    pub fn clear_plan(&mut self) {
+        self.pending_plan = None;
     }
 }
 
@@ -205,6 +376,26 @@ pub fn osm_query(bounds: &str, winter: bool) -> Result<String, JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cutter_batches_respect_group_and_memory_limits() {
+        let mesh = |triangles: usize| Mesh {
+            positions: vec![0.; triangles * 9],
+            indices: (0..triangles * 3).map(|index| index as u32).collect(),
+        };
+        let cutters = [mesh(2), mesh(2), mesh(1), mesh(4)];
+        let ranges = batch_ranges(
+            cutters.len(),
+            &[3, 4],
+            |index| cutters[index].indices.len() / 3,
+            3,
+            2,
+        );
+        assert_eq!(
+            ranges.into_iter().collect::<Vec<_>>(),
+            vec![0..1, 1..3, 3..4]
+        );
+    }
 
     #[test]
     fn packet_is_aligned_and_contains_mesh_counts() {

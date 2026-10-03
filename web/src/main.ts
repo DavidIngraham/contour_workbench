@@ -159,6 +159,7 @@ let abort = new AbortController();
 let overlayTimer: ReturnType<typeof setTimeout>;
 let overlayRunning = false;
 let overlayAgain = false;
+let previewSuspended = false;
 let boundaryPoints: [number, number][] = [];
 let terrainBuilds = 0;
 let selectedBounds: Bounds | undefined;
@@ -885,7 +886,7 @@ async function updateOverlays() {
     });
     if (requested === revision) {
       overlays = result;
-      viewer.setOverlays(overlays, project.features);
+      if (!previewSuspended) viewer.setOverlays(overlays, project.features);
       annotationEditor.refresh();
       if (!busy) status('');
     } else overlayAgain = true;
@@ -928,6 +929,12 @@ $('generate').onclick = async () => {
   if (busy || !terrain) return;
   updateBusy(true);
   const requested = revision;
+  const releasePreview = terrain.mesh.indices.length / 3 > 1_000_000;
+  let completed = false;
+  if (releasePreview) {
+    previewSuspended = true;
+    viewer.releaseDesignGeometry();
+  }
   try {
     const result = await engine.call(
       'generate',
@@ -952,6 +959,7 @@ $('generate').onclick = async () => {
       .map(p => `<div class="review-piece"><span>${esc(p.id)}</span></div>`)
       .join('');
     $('mode-review').click();
+    completed = true;
     status(
       result.validation.removed_terrain_islands
         ? `Your model is ready. Removed ${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} while preserving the insert gaps.`
@@ -960,6 +968,11 @@ $('generate').onclick = async () => {
   } catch (e) {
     error(e);
   } finally {
+    previewSuspended = false;
+    if (releasePreview && !completed && mode === 'design') {
+      viewer.setTerrain(terrain.mesh, terrain.layout);
+      viewer.setOverlays(overlays, project.features);
+    }
     updateBusy(false);
   }
 };

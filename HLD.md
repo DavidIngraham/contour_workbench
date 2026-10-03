@@ -57,7 +57,7 @@ Geometry crosses the boundary in a versioned `CWB1` binary packet:
 5. Padding to a four-byte boundary.
 6. Per-mesh `f32` XYZ positions followed by `u32` triangle indices.
 
-The TypeScript decoder returns typed-array views over the packet when alignment allows. This avoids large JSON number arrays and repeated elevation-grid parsing.
+The TypeScript decoder returns typed-array views over the packet when alignment allows. This avoids large JSON number arrays and repeated elevation-grid parsing. Printable plans stay in the Rust session: the worker pulls one bounded cutter packet at a time, then processes inserts in bounded packets after every cut. Processed cutters are released inside WASM, so a large plan is never duplicated across the WASM/JavaScript boundary.
 
 ### Browser application
 
@@ -88,13 +88,12 @@ GeoTIFF, Manifold, and 3MF modules are dynamically imported at their first use. 
 
 - The persistent Rust `TerrainSession`.
 - The current terrain mesh and settings.
-- A cached base Manifold solid.
-- Manifold Boolean operations, bounded cutter batches, and explicit object deletion through `manifold-adapter.ts`.
-- Watertight export validation using packed typed-array edge keys, followed by bounded repair attempts.
+- Manifold Boolean operations, Rust-streamed cutter batches, and explicit object deletion through `manifold-adapter.ts`.
+- Full edge validation and bounded repair for independent parts. Large terrain exported directly from a successful Manifold solid receives finite-coordinate and triangle-index validation without allocating a second three-edges-per-triangle table.
 - Cooperative cancellation checkpoints between Boolean groups, annotations, and insert operations, with forced worker replacement if native WASM work does not yield promptly.
 - STL bundles, calibration geometry, preset packs, and generation results.
 
-Changing visibility, treatment, width, or carve depth rebuilds overlays or the final plan without rebuilding terrain. Base-thickness edits shift cached terrain vertices and invalidate only the Manifold solid. A new grid or terrain build invalidates the Rust session and cached solid.
+Changing visibility, treatment, width, or carve depth rebuilds overlays or the final plan without rebuilding terrain. Base-thickness edits shift cached terrain vertices without rebuilding source terrain. A new grid or terrain build replaces the Rust session.
 
 The worker retains its terrain buffer. Responses that cross the worker boundary receive a copy, because transferring the retained buffer would detach it and corrupt later generation. Worker requests and responses are exhaustively typed by operation; adding an operation requires updating the shared map rather than passing an untyped string and payload.
 
@@ -104,7 +103,7 @@ Manifold performs final solid unions, differences, intersections, taper layers, 
 
 Manifold mesh exports can contain multiple property vertices for one topological vertex. `manifold-adapter.ts` resolves the merge-vector union relation, compacts referenced vertices into typed arrays, and validates directed edges through a sorted numeric buffer. This avoids the string-key maps and boxed number arrays that previously produced large transient allocations on full-resolution terrain. Native topology is preferred over coordinate welding because distinct vertices may be nearly coincident; bounded coordinate welding remains a fallback for malformed exports.
 
-Pocket cutters preserve class priority but are subdivided into bounded Boolean batches. The Rust plan packet is released before final terrain validation, and the extra conformal-terrain solid is created only when insert fitting begins. These lifetime rules reduce peak memory while preserving class order and Boolean meaning. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
+Pocket cutters preserve class priority but are subdivided inside Rust and transferred as bounded binary packets. Each cutter mesh is removed from the pending Rust plan as its packet is produced. The working terrain solid is deleted immediately after export; only then is the extra conformal-terrain solid created for insert fitting. For terrain above one million preview triangles, Three.js releases design geometry and keeps the topo surface visible during generation. These lifetime rules reduce the shared WebContent-process peak while preserving class order and Boolean meaning. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
 
 ## Data flows
 
@@ -136,11 +135,12 @@ Pocket cutters preserve class priority but are subdivided into bounded Boolean b
 
 ### Printable generation
 
-1. Rust builds insert pieces and ordered cutter groups.
-2. The worker imports or reuses the base Manifold terrain.
-3. It applies grouped pockets and V-carves, conformal intersections, insert taper, annotations, and porches.
-4. Each output mesh is welded and checked for finite, nondegenerate, closed, consistently oriented topology.
-5. The UI enters Review mode with a validated terrain and linked insert pieces.
+1. Rust builds insert pieces and ordered cutter groups, retaining the pending plan inside the terrain session.
+2. The worker constructs one Manifold terrain solid and pulls cutter packets in bounded class-preserving batches.
+3. It applies pockets, V-carves, annotations, and porches, exports the terrain, and releases that working solid.
+4. Rust streams bounded insert packets; conformal intersections and insert taper run against a separately scoped shifted terrain solid.
+5. Independent pieces receive full edge validation. The terrain relies on Manifold's closed-solid status plus finite-coordinate and triangle-index validation.
+6. The UI enters Review mode with the terrain and linked insert pieces.
 
 ### Download
 

@@ -9,10 +9,10 @@ import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
 import {
-  batchMeshes,
   combineMeshes,
   loadManifold,
   solidFromMesh,
+  trustedManifoldMesh,
   validatedMesh,
 } from './manifold-adapter';
 import {
@@ -35,7 +35,6 @@ import type {
 
 const ready = init();
 let rust: core.TerrainSession | undefined;
-let baseTerrainSolid: Manifold | undefined;
 let grid: Grid,
   settings: Settings,
   terrain: Terrain,
@@ -46,19 +45,21 @@ type OverlayPacketMetadata = Omit<Overlay, 'mesh'>;
 type PiecePacketMetadata = Omit<Piece, 'mesh'>;
 interface PlanPacketMetadata {
   inserts: PiecePacketMetadata[];
-  cutter_group_ends: number[];
+  cutter_batches: number;
+  insert_batches: number;
   removed_terrain_islands: number;
 }
-function clearBaseTerrainSolid() {
-  baseTerrainSolid?.delete();
-  baseTerrainSolid = undefined;
+interface MeshBatchPacketMetadata {
+  batch_index: number;
+  batch_total: number;
+  start_index: number;
+  done: boolean;
 }
 function setGrid(next: Grid) {
   const nextRust = new core.TerrainSession(JSON.stringify(next));
   rust?.free();
   rust = nextRust;
   grid = next;
-  clearBaseTerrainSolid();
 }
 function packed(m: Mesh): Mesh {
   return { positions: new Float32Array(m.positions), indices: new Uint32Array(m.indices) };
@@ -86,11 +87,6 @@ function stl(m: Mesh) {
   }
   return strToU8(out + 'endsolid contour_workbench\n');
 }
-function cachedTerrain(module: ManifoldToplevel) {
-  if (!baseTerrainSolid) baseTerrainSolid = solidFromMesh(module, terrain.mesh);
-  return baseTerrainSolid;
-}
-
 function taperedSolid(
   M: ManifoldToplevel,
   prism: Manifold,
@@ -319,7 +315,6 @@ function syncBase(next: Settings) {
     for (let i = 2; i < terrain.mesh.positions.length; i += 3)
       if (terrain.mesh.positions[i] > 0) terrain.mesh.positions[i] += delta;
     terrain.layout.base_height = next.base_height_mm;
-    clearBaseTerrainSolid();
   }
 }
 type Progress = (message: string, phase?: string, completed?: number, total?: number) => void;
@@ -386,77 +381,70 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       syncBase(p.settings);
       features = p.features;
       settings = p.settings;
-      progress('Building tapered inserts and continuous pockets…');
-      const packet = decodeMeshPacket<PlanPacketMetadata>(
-          rust!.build_plan(
-            JSON.stringify(settings),
-            JSON.stringify(features),
-            JSON.stringify(terrain.layout),
-          ),
+      progress('Building tapered inserts and continuous pockets\u2026');
+      const metadata = JSON.parse(
+        rust!.prepare_plan(
+          JSON.stringify(settings),
+          JSON.stringify(features),
+          JSON.stringify(terrain.layout),
+          150_000,
+          64,
         ),
-        insertCount = packet.metadata.inserts.length;
-      if (packet.meshes.length < insertCount)
-        throw new Error('Model geometry packet is inconsistent.');
+      ) as PlanPacketMetadata;
       const plan: {
         inserts: Piece[];
-        cutters: Mesh[];
-        cutter_group_ends: number[];
         removed_terrain_islands: number;
       } = {
-        ...packet.metadata,
-        inserts: packet.metadata.inserts.map((piece, index) => ({
+        inserts: metadata.inserts.map(piece => ({
           ...piece,
-          mesh: packet.meshes[index],
+          mesh: { positions: new Float32Array(), indices: new Uint32Array() },
         })),
-        cutters: packet.meshes.slice(insertCount),
+        removed_terrain_islands: metadata.removed_terrain_islands,
       };
       const M = await loadManifold(progress);
-      let result = cachedTerrain(M).translate([0, 0, 0]);
+      let result = solidFromMesh(M, terrain.mesh);
+      let resultDeleted = false;
       let raisedTerrain: Manifold | undefined;
       try {
-        if (plan.cutters.length) {
-          const groupEnds = plan.cutter_group_ends?.length
-              ? plan.cutter_group_ends
-              : [plan.cutters.length],
-            batches = batchMeshes(plan.cutters, groupEnds);
-          try {
-            for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-              progress(
-                `Cutting terrain pocket batch ${batchIndex + 1} of ${batches.length}…`,
-                'terrain-pockets',
-                batchIndex,
-                batches.length,
-              );
-              await checkpoint(request.id);
-              const combined = solidFromMesh(M, combineMeshes(batches[batchIndex]));
-              try {
-                const next = result.subtract(combined);
-                result.delete();
-                result = next;
-              } finally {
-                combined.delete();
-                batches[batchIndex].length = 0;
-              }
-              if (result.status() !== 'NoError' || result.numTri() === 0)
-                throw new Error(
-                  `Pocket batch ${batchIndex + 1} did not produce a valid terrain solid`,
-                );
-            }
-          } catch (error) {
-            throw new Error(
-              'Terrain pockets: ' + (error instanceof Error ? error.message : String(error)),
+        try {
+          for (;;) {
+            const batch = decodeMeshPacket<MeshBatchPacketMetadata>(rust!.take_plan_cutter_batch());
+            if (!batch.meshes.length) break;
+            progress(
+              'Cutting terrain pocket batch ' +
+                batch.metadata.batch_index +
+                ' of ' +
+                batch.metadata.batch_total +
+                '\u2026',
+              'terrain-pockets',
+              batch.metadata.batch_index - 1,
+              batch.metadata.batch_total,
             );
+            await checkpoint(request.id);
+            const combined = solidFromMesh(M, combineMeshes(batch.meshes));
+            batch.meshes.length = 0;
+            try {
+              const next = result.subtract(combined);
+              result.delete();
+              result = next;
+            } finally {
+              combined.delete();
+            }
+            if (result.status() !== 'NoError' || result.numTri() === 0)
+              throw new Error(
+                'Pocket batch ' +
+                  batch.metadata.batch_index +
+                  ' did not produce a valid terrain solid',
+              );
+            if (batch.metadata.done) break;
           }
+        } catch (error) {
+          throw new Error(
+            'Terrain pockets: ' + (error instanceof Error ? error.message : String(error)),
+          );
         }
         if (result.status() !== 'NoError' || result.numTri() === 0)
           throw new Error('Terrain subtraction did not produce a valid solid');
-
-        // Copy the insert inputs, then release every view into the large Rust plan packet before
-        // topology validation creates its own working storage.
-        for (const piece of plan.inserts) piece.mesh = packed(piece.mesh);
-        plan.cutters.length = 0;
-        packet.meshes.length = 0;
-        await checkpoint(request.id);
 
         if (p.annotations?.length) {
           progress('Adding annotations and attached porches…');
@@ -487,70 +475,98 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               );
           }
         }
-        progress('Validating terrain topology…', 'terrain-validation');
-        const mesh = validatedMesh(result, 'Terrain');
-        if (plan.inserts.some(piece => piece.conformal))
-          raisedTerrain = cachedTerrain(M).translate([0, 0, 0.35]);
-        for (let pieceIndex = 0; pieceIndex < plan.inserts.length; pieceIndex++) {
-          const piece = plan.inserts[pieceIndex];
-          if (pieceIndex % 10 === 0)
-            progress(
-              'Preparing insert ' + (pieceIndex + 1) + ' of ' + plan.inserts.length + '…',
-              'inserts',
-              pieceIndex,
-              plan.inserts.length,
-            );
+        progress('Validating terrain topology\u2026', 'terrain-validation');
+        const mesh = trustedManifoldMesh(result, 'Terrain');
+        result.delete();
+        resultDeleted = true;
+        if (plan.inserts.some(piece => piece.conformal)) {
+          const originalTerrain = solidFromMesh(M, terrain.mesh);
           try {
-            await checkpoint(request.id);
-            const prism = solidFromMesh(M, piece.mesh),
-              tapered = shouldTaperInsert(piece.mesh.indices.length)
-                ? safeTaperedSolid(M, prism, piece.class, settings, piece.insert_depth_mm)
-                : {
-                    solid: prism,
-                    profile: fitProfile(
-                      {
-                        ...settings,
-                        insert_elephant_foot_relief_mm: 0,
-                        insert_elephant_foot_height_mm: 0,
-                        insert_draft_angle_deg: 0,
-                      },
-                      piece.class,
-                      piece.insert_depth_mm,
-                      0,
-                    ),
-                  };
-            let raw = tapered.solid;
-            try {
-              piece.taper_relief_mm = tapered.profile.footReliefMm;
-              piece.taper_height_mm = tapered.profile.footHeightMm;
-              piece.draft_angle_deg = tapered.profile.draftAngleDeg;
-              if (piece.conformal) {
-                if (!raisedTerrain)
-                  throw new Error('Terrain surface is unavailable for ' + piece.id);
-                const global = tapered.solid.translate(piece.origin),
-                  fitted = global.intersect(raisedTerrain);
-                global.delete();
-                raw = fitted.translate(piece.origin.map(v => -v) as [number, number, number]);
-                fitted.delete();
-              }
-              piece.mesh = validatedMesh(raw, piece.id);
-            } finally {
-              if (raw !== tapered.solid) raw.delete();
-              if (tapered.solid !== prism) tapered.solid.delete();
-              prism.delete();
-            }
-          } catch (error) {
-            throw new Error(
-              piece.id +
-                ' (' +
-                (pieceIndex + 1) +
-                '/' +
-                plan.inserts.length +
-                '): ' +
-                (error instanceof Error ? error.message : String(error)),
-            );
+            raisedTerrain = originalTerrain.translate([0, 0, 0.35]);
+          } finally {
+            originalTerrain.delete();
           }
         }
+        let preparedPieces = 0;
+        for (;;) {
+          const insertBatch = decodeMeshPacket<MeshBatchPacketMetadata>(
+            rust!.take_plan_insert_batch(),
+          );
+          if (!insertBatch.meshes.length) {
+            if (insertBatch.metadata.done) break;
+            throw new Error('Model insert packet is empty.');
+          }
+          if (insertBatch.metadata.start_index !== preparedPieces)
+            throw new Error('Model insert batches are out of order.');
+          for (let batchIndex = 0; batchIndex < insertBatch.meshes.length; batchIndex++) {
+            const pieceIndex = insertBatch.metadata.start_index + batchIndex,
+              piece = plan.inserts[pieceIndex];
+            if (!piece) throw new Error('Model insert packet is inconsistent.');
+            piece.mesh = insertBatch.meshes[batchIndex];
+            if (pieceIndex % 10 === 0)
+              progress(
+                'Preparing insert ' + (pieceIndex + 1) + ' of ' + plan.inserts.length + '\u2026',
+                'inserts',
+                pieceIndex,
+                plan.inserts.length,
+              );
+            try {
+              await checkpoint(request.id);
+              const prism = solidFromMesh(M, piece.mesh),
+                tapered = shouldTaperInsert(piece.mesh.indices.length)
+                  ? safeTaperedSolid(M, prism, piece.class, settings, piece.insert_depth_mm)
+                  : {
+                      solid: prism,
+                      profile: fitProfile(
+                        {
+                          ...settings,
+                          insert_elephant_foot_relief_mm: 0,
+                          insert_elephant_foot_height_mm: 0,
+                          insert_draft_angle_deg: 0,
+                        },
+                        piece.class,
+                        piece.insert_depth_mm,
+                        0,
+                      ),
+                    };
+              let raw = tapered.solid;
+              try {
+                piece.taper_relief_mm = tapered.profile.footReliefMm;
+                piece.taper_height_mm = tapered.profile.footHeightMm;
+                piece.draft_angle_deg = tapered.profile.draftAngleDeg;
+                if (piece.conformal) {
+                  if (!raisedTerrain)
+                    throw new Error('Terrain surface is unavailable for ' + piece.id);
+                  const global = tapered.solid.translate(piece.origin),
+                    fitted = global.intersect(raisedTerrain);
+                  global.delete();
+                  raw = fitted.translate(piece.origin.map(v => -v) as [number, number, number]);
+                  fitted.delete();
+                }
+                piece.mesh = validatedMesh(raw, piece.id);
+              } finally {
+                if (raw !== tapered.solid) raw.delete();
+                if (tapered.solid !== prism) tapered.solid.delete();
+                prism.delete();
+              }
+            } catch (error) {
+              throw new Error(
+                piece.id +
+                  ' (' +
+                  (pieceIndex + 1) +
+                  '/' +
+                  plan.inserts.length +
+                  '): ' +
+                  (error instanceof Error ? error.message : String(error)),
+              );
+            }
+          }
+          preparedPieces += insertBatch.meshes.length;
+          insertBatch.meshes.length = 0;
+          if (insertBatch.metadata.done) break;
+        }
+        if (preparedPieces !== plan.inserts.length)
+          throw new Error('Model insert packet is inconsistent.');
         plan.inserts = plan.inserts.filter(piece => piece.mesh.indices.length > 0);
         return {
           terrain: mesh,
@@ -564,8 +580,9 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
           revision: p.revision,
         };
       } finally {
-        result.delete();
+        if (!resultDeleted) result.delete();
         raisedTerrain?.delete();
+        rust?.clear_plan();
       }
     }
     case 'preset-pack': {

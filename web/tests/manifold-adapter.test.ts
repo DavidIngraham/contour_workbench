@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { batchMeshes, compactManifoldMesh, validateMesh } from '../src/manifold-adapter';
+import type { Manifold } from 'manifold-3d';
+import { compactManifoldMesh, trustedManifoldMesh, validateMesh } from '../src/manifold-adapter';
 
 const tetrahedron = {
   positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
@@ -22,18 +23,20 @@ describe('Manifold mesh topology', () => {
     expect(Array.from(mesh.indices)).toEqual([0, 1, 2, 0, 2, 3]);
   });
 
-  it('keeps cutter batches within limits and never mixes ordered class groups', () => {
-    const mesh = (triangles: number) => ({
-        positions: [],
-        indices: new Array(triangles * 3).fill(0),
+  it('trusts a valid Manifold export without allocating an edge table', () => {
+    const solid = {
+      status: () => 'NoError',
+      numTri: () => tetrahedron.indices.length / 3,
+      getMesh: () => ({
+        numProp: 3,
+        vertProperties: new Float32Array(tetrahedron.positions),
+        triVerts: new Uint32Array(tetrahedron.indices),
       }),
-      batches = batchMeshes([mesh(2), mesh(2), mesh(1), mesh(2)], [3, 4], 3, 2);
+    } as unknown as Manifold;
 
-    expect(batches.map(batch => batch.map(item => item.indices.length / 3))).toEqual([
-      [2],
-      [2, 1],
-      [2],
-    ]);
+    const exported = trustedManifoldMesh(solid, 'Terrain');
+    expect(exported.indices).toHaveLength(tetrahedron.indices.length);
+    expect(() => validateMesh(exported)).not.toThrow();
   });
 
   it('keeps coincident closed shells topologically separate', () => {
