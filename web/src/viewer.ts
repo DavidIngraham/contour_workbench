@@ -405,17 +405,103 @@ export class Viewer {
     if (material?.userData.shader)
       material.userData.shader.uniforms.showContours.value = value ? 1 : 0;
   }
+  /** Choose an oblique presentation view with the terrain high point on the far side. */
+  private presentationPose() {
+    const size = Math.max(this.layout?.width || 220, this.layout?.depth || 200),
+      target = new THREE.Vector3(0, 0, 12);
+    let high = new THREE.Vector3(),
+      highestZ = Number.NEGATIVE_INFINITY;
+    const positions = this.surface?.geometry.getAttribute('position');
+    if (positions)
+      for (let index = 0; index < positions.count; index++) {
+        const z = positions.getZ(index);
+        if (z > highestZ) {
+          highestZ = z;
+          high.set(
+            positions.getX(index) + this.model.position.x,
+            positions.getY(index) + this.model.position.y,
+            z,
+          );
+        }
+      }
+    if (Number.isFinite(highestZ)) target.z = Math.max(4, Math.min(highestZ * 0.32, size * 0.16));
+    const distanceFromCenter = Math.hypot(high.x, high.y);
+    let cameraDirection: THREE.Vector2;
+    if (distanceFromCenter > size * 0.025)
+      cameraDirection = new THREE.Vector2(-high.x, -high.y).normalize();
+    else
+      cameraDirection = new THREE.Vector2(
+        this.layout?.rotated ? -0.9 : 1.65,
+        this.layout?.rotated ? 1.65 : 0.9,
+      ).normalize();
+    const horizontalDistance = size * 1.9,
+      position = new THREE.Vector3(
+        target.x + cameraDirection.x * horizontalDistance,
+        target.y + cameraDirection.y * horizontalDistance,
+        target.z + size * 1.25,
+      );
+    return { position, target };
+  }
+
+  /** Render a consistent model-only landing thumbnail without moving the live camera. */
+  async createThumbnail(width = 640, height = 360): Promise<Blob> {
+    if (!this.surface || !this.layout) throw new Error('Terrain is not ready for a thumbnail.');
+    const target = new THREE.WebGLRenderTarget(width, height, {
+      depthBuffer: true,
+      stencilBuffer: false,
+    });
+    target.samples = 4;
+    target.texture.colorSpace = THREE.SRGBColorSpace;
+    const camera = this.camera.clone(),
+      pose = this.presentationPose(),
+      previousTarget = this.renderer.getRenderTarget(),
+      topoVisible = this.topo?.visible,
+      frameVisible = this.frame.visible;
+    camera.aspect = width / height;
+    camera.position.copy(pose.position);
+    camera.lookAt(pose.target);
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld();
+    if (this.topo) this.topo.visible = false;
+    this.frame.visible = false;
+    const pixels = new Uint8Array(width * height * 4);
+    try {
+      this.renderer.setRenderTarget(target);
+      this.renderer.clear();
+      this.renderer.render(this.scene, camera);
+      this.renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+    } finally {
+      this.renderer.setRenderTarget(previousTarget);
+      if (this.topo) this.topo.visible = Boolean(topoVisible);
+      this.frame.visible = frameVisible;
+      target.dispose();
+      this.dirty = true;
+    }
+    const rowBytes = width * 4,
+      flipped = new Uint8ClampedArray(pixels.length);
+    for (let row = 0; row < height; row++)
+      flipped.set(
+        pixels.subarray((height - row - 1) * rowBytes, (height - row) * rowBytes),
+        row * rowBytes,
+      );
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d')!.putImageData(new ImageData(flipped, width, height), 0, 0);
+    const encode = (type: string, quality?: number) =>
+      new Promise<Blob | null>(resolve => canvas.toBlob(resolve, type, quality));
+    return (
+      (await encode('image/webp', 0.82)) ||
+      (await encode('image/png')) ||
+      new Blob([], { type: 'image/png' })
+    );
+  }
+
   fit() {
     this.dirty = true;
-    const size = Math.max(this.layout?.width || 220, this.layout?.depth || 200);
-    this.controls.target.set(0, 0, 12); // Look southwest from the lower northeast side of Post Canyon, independent of print-bed rotation.
-    const east = size * 1.65,
-      north = size * 0.9;
-    this.camera.position.set(
-      this.layout?.rotated ? -north : east,
-      this.layout?.rotated ? east : north,
-      12 + size * 1.3,
-    );
+    const pose = this.presentationPose();
+    this.controls.target.copy(pose.target);
+    this.camera.position.copy(pose.position);
     this.controls.update();
   }
   private updateNorth() {

@@ -33,7 +33,7 @@ import {
   X,
   CheckCheck,
 } from 'lucide';
-import { type Shape } from './extent-shapes';
+import { extentPolygon, type Shape } from './extent-shapes';
 import { ExtentMap } from './extent-map';
 import { polygonBounds, validatePolygon, type Vertex } from './polygon';
 import { Viewer } from './viewer';
@@ -46,6 +46,20 @@ import {
 } from './insert-fit';
 import { loadPresetCatalog, loadPreset, presetUrl, type PresetEntry } from './presets';
 import { loadElevation, loadLocalRaster, loadOsm, checkBounds } from './providers';
+import {
+  deleteLocalProject,
+  duplicateLocalProject,
+  listLocalProjects,
+  loadLocalProject,
+  newLocalProjectIdentity,
+  readProjectThumbnail,
+  renameLocalProject,
+  requestPersistentProjectStorage,
+  saveLocalProject,
+  writeProjectThumbnail,
+  type LocalProjectIdentity,
+  type LocalProjectSummary,
+} from './project-store';
 import {
   defaults,
   type Project,
@@ -119,8 +133,9 @@ document.addEventListener('click', e => {
     mobileSettings(false);
 });
 matchMedia('(max-width:760px)').addEventListener('change', () => mobileSettings(false));
+$('show-projects').setAttribute('aria-label', 'Projects');
 $('open-project').setAttribute('aria-label', 'Open project');
-$('save-project').setAttribute('aria-label', 'Save project');
+$('save-project').setAttribute('aria-label', 'Export project');
 
 let viewer: Viewer;
 try {
@@ -153,6 +168,15 @@ let winterRestore = new Map<string, { enabled: boolean; treatment: Treatment }>(
 let presetEntries: PresetEntry[] = [];
 let wizardMode = false;
 let wizardStep = 1;
+let localIdentity: LocalProjectIdentity | undefined;
+let presetOriginId: string | undefined;
+let savedTerrainGrid: Grid | undefined;
+let autosaveTimer: ReturnType<typeof setTimeout> | undefined;
+let autosaveQueue: Promise<void> = Promise.resolve();
+let thumbnailTimer: ReturnType<typeof setTimeout> | undefined;
+let thumbnailDirty = false;
+let persistenceRequested = false;
+let landingThumbnailUrls: string[] = [];
 const newProjectBounds: Bounds = [-121.668, 45.681, -121.655, 45.69];
 const annotationEditor = new AnnotationEditor(
   viewer,
@@ -178,9 +202,104 @@ function updateBusy(v: boolean) {
 function error(e: unknown) {
   status(e instanceof Error ? e.message : String(e), true);
 }
+function activateNewLocalWorkspace(originPresetId?: string) {
+  localIdentity = newLocalProjectIdentity(originPresetId);
+  presetOriginId = undefined;
+  savedTerrainGrid = undefined;
+  thumbnailDirty = true;
+}
+function activateStoredWorkspace(summary: LocalProjectSummary) {
+  localIdentity = {
+    id: summary.id,
+    created_at_ms: summary.created_at_ms,
+    origin_preset_id: summary.origin_preset_id,
+  };
+  presetOriginId = undefined;
+  savedTerrainGrid = project.grid;
+  thumbnailDirty = false;
+}
+function activatePresetWorkspace(id: string) {
+  localIdentity = undefined;
+  presetOriginId = id;
+  savedTerrainGrid = undefined;
+  thumbnailDirty = false;
+}
+function ensureLocalIdentity() {
+  if (!localIdentity) activateNewLocalWorkspace(presetOriginId);
+  return localIdentity!;
+}
+async function persistCurrentProject() {
+  if (!project || !localIdentity) return;
+  const identity = localIdentity,
+    snapshot = project,
+    writeTerrain = savedTerrainGrid !== snapshot.grid;
+  try {
+    const durable = await saveLocalProject(snapshot, {
+      ...identity,
+      write_terrain: writeTerrain,
+    });
+    if (localIdentity?.id === identity.id && project === snapshot) {
+      savedTerrainGrid = snapshot.grid;
+      $('save-status').textContent = durable ? 'Saved locally' : 'Saved for this tab';
+    }
+    if (durable && !persistenceRequested) {
+      persistenceRequested = true;
+      void requestPersistentProjectStorage();
+    }
+  } catch (e) {
+    if (localIdentity?.id === identity.id)
+      $('save-status').textContent = 'Local save failed · export a backup';
+    console.error(e);
+  }
+}
+function queueAutosave() {
+  autosaveQueue = autosaveQueue.catch(() => undefined).then(persistCurrentProject);
+  return autosaveQueue;
+}
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    autosaveTimer = undefined;
+    void queueAutosave();
+  }, 900);
+}
+async function flushAutosave() {
+  if (autosaveTimer) {
+    clearTimeout(autosaveTimer);
+    autosaveTimer = undefined;
+    await queueAutosave();
+  }
+  await autosaveQueue;
+}
+async function captureThumbnail(force = false) {
+  clearTimeout(thumbnailTimer);
+  thumbnailTimer = undefined;
+  if (!localIdentity || !terrain || busy || (!thumbnailDirty && !force)) return;
+  const id = localIdentity.id;
+  try {
+    await new Promise<void>(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+    const thumbnail = await viewer.createThumbnail();
+    if (thumbnail.size && localIdentity?.id === id) {
+      await writeProjectThumbnail(id, thumbnail);
+      thumbnailDirty = false;
+    }
+  } catch (e) {
+    console.warn('Project thumbnail could not be generated.', e);
+  }
+}
+function scheduleThumbnail() {
+  clearTimeout(thumbnailTimer);
+  thumbnailTimer = setTimeout(() => void captureThumbnail(), 2200);
+}
 function touch() {
   revision++;
-  $('save-status').textContent = 'Unsaved changes';
+  ensureLocalIdentity();
+  thumbnailDirty = true;
+  $('save-status').textContent = 'Saving locally…';
+  scheduleAutosave();
+  scheduleThumbnail();
   ($('download') as HTMLButtonElement).disabled = true;
   ($('mode-review') as HTMLButtonElement).disabled = true;
   if (asset)
@@ -218,7 +337,50 @@ function hideLanding() {
   document.querySelector<HTMLElement>('.workspace')!.inert = false;
   document.querySelector<HTMLElement>('header')!.inert = false;
 }
-function renderLanding() {
+function recentTime(timestamp: number) {
+  const elapsed = Date.now() - timestamp,
+    day = 24 * 60 * 60 * 1000;
+  if (elapsed < 60_000) return 'Edited just now';
+  if (elapsed < 60 * 60 * 1000)
+    return `Edited ${Math.max(1, Math.floor(elapsed / 60_000))} min ago`;
+  if (elapsed < day) return `Edited ${Math.max(1, Math.floor(elapsed / (60 * 60 * 1000)))} hr ago`;
+  if (elapsed < day * 7) {
+    const days = Math.floor(elapsed / day);
+    return `Edited ${days} day${days === 1 ? '' : 's'} ago`;
+  }
+  return `Edited ${new Date(timestamp).toLocaleDateString()}`;
+}
+async function renderLanding() {
+  landingThumbnailUrls.forEach(URL.revokeObjectURL);
+  landingThumbnailUrls = [];
+  let recent: LocalProjectSummary[] = [];
+  try {
+    recent = await listLocalProjects();
+  } catch (e) {
+    console.warn('Recent projects could not be listed.', e);
+  }
+  const thumbnails = await Promise.all(
+    recent.map(async item => {
+      try {
+        const blob = await readProjectThumbnail(item.id);
+        if (!blob) return '';
+        const url = URL.createObjectURL(blob);
+        landingThumbnailUrls.push(url);
+        return url;
+      } catch {
+        return '';
+      }
+    }),
+  );
+  $('recent-section').classList.toggle('hidden', !recent.length);
+  $('recent-grid').innerHTML = recent
+    .map((item, index) => {
+      const image = thumbnails[index]
+        ? `<img src="${esc(thumbnails[index])}" alt="Preview of ${esc(item.name)}"/>`
+        : `<span class="project-placeholder">${icon('mountain')}</span>`;
+      return `<article class="preset-card local-project-card" data-local-project="${esc(item.id)}"><button class="local-project-open" data-local-open="${esc(item.id)}" aria-label="Open ${esc(item.name)}">${image}<span class="preset-copy"><strong>${esc(item.name)}</strong><small>${esc(item.source_name)}</small><span>${recentTime(item.updated_at_ms)}</span><span class="preset-badges"><b>${item.feature_count.toLocaleString()} features</b>${localIdentity?.id === item.id ? '<b>Open</b>' : ''}</span></span></button><div class="local-project-actions"><button data-local-rename="${esc(item.id)}">Rename</button><button data-local-copy="${esc(item.id)}">Duplicate</button><button data-local-export="${esc(item.id)}">Export</button><button data-local-delete="${esc(item.id)}">Delete</button></div></article>`;
+    })
+    .join('');
   $('preset-grid').innerHTML =
     presetEntries
       .map(
@@ -237,18 +399,124 @@ function renderLanding() {
           if (entry) void openPresetModel(entry);
         }),
     );
-  $('preset-new').onclick = () => {
+  $('recent-grid')
+    .querySelectorAll<HTMLButtonElement>('[data-local-open]')
+    .forEach(button => (button.onclick = () => void openLocalWorkspace(button.dataset.localOpen!)));
+  $('recent-grid')
+    .querySelectorAll<HTMLButtonElement>('[data-local-rename]')
+    .forEach(
+      button =>
+        (button.onclick = async () => {
+          const item = recent.find(value => value.id === button.dataset.localRename);
+          if (!item) return;
+          const name = prompt('Project name', item.name)?.trim();
+          if (!name || name === item.name) return;
+          await renameLocalProject(item.id, name);
+          if (localIdentity?.id === item.id) {
+            project.name = name;
+            projectLabels();
+          }
+          await renderLanding();
+        }),
+    );
+  $('recent-grid')
+    .querySelectorAll<HTMLButtonElement>('[data-local-copy]')
+    .forEach(
+      button =>
+        (button.onclick = async () => {
+          await duplicateLocalProject(button.dataset.localCopy!);
+          await renderLanding();
+        }),
+    );
+  $('recent-grid')
+    .querySelectorAll<HTMLButtonElement>('[data-local-export]')
+    .forEach(
+      button =>
+        (button.onclick = async () => {
+          const loaded = await loadLocalProject(button.dataset.localExport!);
+          if (!loaded) return;
+          downloadFile(
+            JSON.stringify(loaded.project),
+            projectFileStem(loaded.project.name) + '.contour.json',
+            'application/json',
+          );
+        }),
+    );
+  $('recent-grid')
+    .querySelectorAll<HTMLButtonElement>('[data-local-delete]')
+    .forEach(
+      button =>
+        (button.onclick = async () => {
+          const item = recent.find(value => value.id === button.dataset.localDelete);
+          if (!item || !confirm(`Delete “${item.name}” from this device?`)) return;
+          await deleteLocalProject(item.id);
+          if (localIdentity?.id === item.id) {
+            localIdentity = undefined;
+            presetOriginId = undefined;
+            savedTerrainGrid = undefined;
+          }
+          await renderLanding();
+        }),
+    );
+  $('preset-new').onclick = async () => {
+    await flushAutosave();
     hideLanding();
     openArea(true);
   };
 }
+async function openLanding() {
+  if (busy) {
+    abort.abort();
+    engine.cancel();
+    updateBusy(false);
+  }
+  await flushAutosave();
+  if (thumbnailDirty) await captureThumbnail();
+  await renderLanding();
+  showLanding();
+}
+async function openLocalWorkspace(id: string) {
+  await flushAutosave();
+  updateBusy(true);
+  status('Opening local project…', false, true);
+  try {
+    const loaded = await loadLocalProject(id);
+    if (!loaded) throw new Error('This local project is no longer available.');
+    project = { ...loaded.project, settings: { ...defaults, ...loaded.project.settings } };
+    activateStoredWorkspace(loaded.summary);
+    asset = undefined;
+    revision = 0;
+    terrainBuilds = 0;
+    selected = null;
+    winterRestore.clear();
+    mode = 'design';
+    hideLanding();
+    $('area-dialog').classList.add('hidden');
+    projectLabels();
+    syncForm();
+    listFeatures();
+    viewer.model.scale.z = 1;
+    await rebuild(true);
+    setPanel('terrain');
+    $('save-status').textContent = 'Saved locally';
+    status('');
+  } catch (e) {
+    error(e);
+    showLanding();
+  } finally {
+    updateBusy(false);
+  }
+}
+
 async function openPresetModel(entry: PresetEntry) {
+  await flushAutosave();
   updateBusy(true);
   $('preset-grid').classList.add('loading');
   status(`Opening ${entry.name}…`, false, true);
   try {
     const bundle = await loadPreset(entry);
     project = { ...bundle.project, settings: { ...defaults, ...bundle.project.settings } };
+    activatePresetWorkspace(entry.id);
     terrain = bundle.terrain;
     overlays = bundle.overlays;
     asset = undefined;
@@ -269,7 +537,7 @@ async function openPresetModel(entry: PresetEntry) {
     ($('generate') as HTMLButtonElement).disabled = false;
     ($('download') as HTMLButtonElement).disabled = true;
     ($('mode-review') as HTMLButtonElement).disabled = true;
-    $('save-status').textContent = 'Preset loaded';
+    $('save-status').textContent = 'Example · edit to save';
     setPanel('terrain');
     hideLanding();
     status('');
@@ -585,6 +853,7 @@ async function rebuild(fit = false) {
     error(e);
   } finally {
     updateBusy(false);
+    if (thumbnailDirty) scheduleThumbnail();
   }
 }
 async function updateOverlays() {
@@ -614,7 +883,7 @@ async function updateOverlays() {
     if (overlayAgain) {
       overlayAgain = false;
       void updateOverlays();
-    }
+    } else if (thumbnailDirty) scheduleThumbnail();
   }
 }
 function design() {
@@ -753,8 +1022,9 @@ $('save-project').onclick = () => {
     projectFileStem(project.name) + '.contour.json',
     'application/json',
   );
-  $('save-status').textContent = 'Project saved';
+  status('Editable project exported.');
 };
+$('show-projects').onclick = () => void openLanding();
 $('open-project').onclick = () => ($('file-project') as HTMLInputElement).click();
 $('landing-open').onclick = () => ($('file-project') as HTMLInputElement).click();
 $('file-project').onchange = async () => {
@@ -764,7 +1034,9 @@ $('file-project').onchange = async () => {
     const data = JSON.parse(await f.text());
     if (data.schema_version !== 2 || !data.grid || !Array.isArray(data.features))
       throw new Error('This is not a Contour Workbench project.');
+    await flushAutosave();
     project = { ...data, settings: { ...defaults, ...data.settings } };
+    activateNewLocalWorkspace();
     hideLanding();
     $('area-dialog').classList.add('hidden');
     touch();
@@ -880,6 +1152,11 @@ for (const [id, i] of [
 ] as const)
   $(id).onchange = () => {
     project.settings.max_print_size_mm[i] = Number(($(id) as HTMLInputElement).value);
+    if (project.extent_editor)
+      project.settings.boundary = extentPolygon(
+        project.extent_editor,
+        project.settings.max_print_size_mm,
+      );
     touch();
     void rebuild();
   };
@@ -1033,7 +1310,12 @@ function openArea(asWizard = false) {
             angle_deg: 0,
             corner_radius_m: 0,
           };
-    extentMap.open(b, boundary, editor);
+    extentMap.open(
+      b,
+      boundary,
+      editor,
+      asWizard ? defaults.max_print_size_mm : project.settings.max_print_size_mm,
+    );
     const state = extentMap.state();
     ($('extent-shape') as HTMLSelectElement).value = state.shape;
     for (const [id, value] of [
@@ -1108,11 +1390,13 @@ $('change-area').onclick = () => openArea(false);
 $('load-area').onclick = () => openArea(false);
 $('area-close').onclick = () => {
   $('area-dialog').classList.add('hidden');
-  if (wizardMode && !project) showLanding();
+  if (wizardMode) void openLanding();
   wizardMode = false;
 };
 $('area-load').onclick = async () => {
+  const creatingProject = wizardMode;
   try {
+    if (creatingProject) await flushAutosave();
     const boundary = extentMap.value();
     validatePolygon(boundary);
     const bounds = polygonBounds(boundary);
@@ -1163,6 +1447,7 @@ $('area-load').onclick = async () => {
       features: [],
       settings: { ...prior, boundary },
     };
+    if (creatingProject) activateNewLocalWorkspace();
     let featureWarning = '';
     if (featureChoice !== 'none') {
       try {
@@ -1331,6 +1616,10 @@ Object.defineProperty(window, 'contourDiagnostics', {
     buildPreset: import.meta.env.DEV ? buildPresetDownload : undefined,
   }),
 });
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') void flushAutosave();
+});
+
 async function start() {
   updateBusy(false);
   status('');
@@ -1338,16 +1627,21 @@ async function start() {
   try {
     const catalog = await loadPresetCatalog();
     presetEntries = catalog.models;
-    renderLanding();
+    await renderLanding();
     const requested = new URLSearchParams(location.search).get('preset');
     if (requested) {
       const entry = presetEntries.find(item => item.id === requested);
-      if (entry) await openPresetModel(entry);
+      if (entry) {
+        await openPresetModel(entry);
+        const cleanUrl = new URL(location.href);
+        cleanUrl.searchParams.delete('preset');
+        history.replaceState(null, '', cleanUrl);
+      }
     }
   } catch (e) {
     error(e);
     presetEntries = [];
-    renderLanding();
+    await renderLanding();
   }
 }
 void start();

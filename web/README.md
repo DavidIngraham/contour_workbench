@@ -27,7 +27,7 @@ Water, glacier, and ski-run areas appear as configurable zone features. Water de
 
 Winter mode extends the Overpass query with `piste:type=downhill` and `aerialway=*`. Mapped piste areas are used directly; centerline pistes use the configurable ground width. Ski runs and glaciers preview as white inserts, chair lifts default to dark V-carves, and ordinary trails are hidden while the preset is active. Turning winter mode off restores the prior feature choices. Snowfields are intentionally excluded because their OSM coverage and tagging are inconsistent.
 
-Generate constructs the printable terrain and fitted inserts. Review supports exploded inserts and sectioning. Download produces a ZIP containing terrain and insert STLs in millimeters, assembly origins, settings, source attribution, validation, and the editable project. Save/Open project persists elevation and feature selections without requiring the services again.
+Generate constructs the printable terrain and fitted inserts. Review supports exploded inserts and sectioning. Download produces a ZIP containing terrain and insert STLs in millimeters, assembly origins, settings, source attribution, validation, and the editable project. The first edit to an example creates a local project automatically. New and imported designs are saved locally as they change. The landing page lists recent projects with generated scene thumbnails and actions to open, rename, duplicate, export, or delete them. Export/Open project files remain available for portable backups and preserve elevation and feature selections without requiring the services again.
 
 ## Sources and current limits
 
@@ -38,7 +38,7 @@ Generate constructs the printable terrain and fitted inserts. Review supports ex
 - Live rasters use a native-spacing grid aligned to the first tile and include a sample halo around the exact polygon. Misaligned tiles require interpolation. No coarse TIFF overview is selected.
 - Preview overlays show effective placement and class priority, but final fit and pocket subtraction are computed only by Generate.
 - Printable solids are validated before optional simplification. Coordinate welding starts at 0.0000001 mm and retries up to 0.0001 mm; if needed, bounded simplification retries up to 0.005 mm remove collapsed fragments; this may reduce redundant triangles even with full-resolution terrain selected. Validation checks coordinate-welded, closed, consistently oriented topology. It is not a printer or material guarantee. Inspect the generated asset and slicer results.
-- Projects are downloadable files; persistent IndexedDB raster caching, address search, and a complete native insert-export CLI remain future work. The native CLI currently exports terrain only.
+- Local projects and source-data caches use IndexedDB. Browser storage quotas and private-browsing policies still apply, so export a project file for archival backups. Address search and a complete native insert-export CLI remain future work; the native CLI currently exports terrain only.
 
 ## Verify
 
@@ -72,7 +72,7 @@ Porches snap to a straight boundary segment long enough for the content, with a 
 
 ## Mobile usability
 
-Phones use a full-width model with a dismissible Settings panel, larger touch targets, and a scrollable polygon dialog. Run npm run test:mobile from web for nine Chromium touch-emulation checks at 320 px, 390 px, and landscape sizes. The tests cover layout overflow, settings access, feature visibility and treatment, polygon selection, annotation controls, and model generation. They also run before Pages deployment. These are emulated browser checks, not physical-device or Safari testing.
+Phones use a full-width model with a dismissible Settings panel, larger touch targets, and a scrollable polygon dialog. Run npm run test:mobile from web for the Chromium touch-emulation suite at 320 px, 390 px, and landscape sizes. The tests cover layout overflow, settings access, feature visibility and treatment, polygon selection, annotation controls, and model generation. They also run before Pages deployment. These are emulated browser checks, not physical-device or Safari testing.
 
 ## Insert fit calibration
 
@@ -81,6 +81,11 @@ The Print setup panel defaults to a 0.4 mm nozzle and exposes nozzle-aware pocke
 After generation, the Download button offers three outputs: a ZIP of separate STL files and project records, a portable assembled 3MF, or a Bambu Studio 3MF. The Bambu variant places terrain on the first plate, shelf-packs inserts onto later plates using the configured print-bed dimensions, and includes nozzle-derived process defaults without selecting a specific printer or filament profile.
 
 
+## Local projects and thumbnails
+
+Opening an example is read-only until the first meaningful edit. At that point it receives a new project identifier and appears under Recent projects. New designs and imported project files receive identifiers when they enter the editor. Project metadata, editable state, terrain samples, and thumbnails are stored separately so ordinary control edits do not rewrite the elevation raster.
+
+Thumbnails use the same standard camera pose as Reset view: the highest terrain point sits near the back of the model and the camera looks across it at an oblique angle. They are rendered offscreen after edits settle, so thumbnail capture does not move the live viewport. Use Export project for a portable backup because browser site data can be cleared by the user or browser.
 ## Landing catalog and preset packs
 
 `public/examples/catalog.json` drives the landing cards. Each entry points to a screenshot and a compressed `.cwpack` containing the full editable project, a prebuilt terrain mesh, and prebuilt overlay meshes. Overlay IDs are validated against project feature IDs when the bundle opens, so selection and visibility remain connected to the feature tree.
@@ -99,4 +104,4 @@ To apply a corner radius while preserving a preset's editable footprint, run:
 node scripts/set-corner-radius.mjs input.contour.json output.contour.json 1000
 ```
 
-The radius is in meters. The editable polygon remains intact and the rounded boundary is stored as the terrain extent.
+The radius is in meters. The editable polygon remains intact and the rounded boundary is stored as the terrain extent. Arc sampling adapts to the configured print-bed scale with a 0.05 mm maximum chord error, up to the serialized boundary's vertex limit.

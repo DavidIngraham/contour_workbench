@@ -72,10 +72,13 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 - `three-mf.ts` and `three-mf-validation.ts`: portable/Bambu packages plus mesh, OPC-part, XML, identifier, and build-reference validation.
 - `project-files.ts`: filesystem-safe project names, browser downloads, and upload limits.
 - `engine-contract.ts` and `client.ts`: a discriminated request/result map, structured progress, and request cancellation for the geometry worker.
-- `persistent-cache.ts`: IndexedDB storage with an in-memory fallback and expiration policy.
+- `persistent-cache.ts`: IndexedDB source-data caching with an in-memory fallback and expiration policy.
+- `project-store.ts`: durable local project metadata, state, terrain, and generated thumbnails.
 - `serialized-contract.ts`: compile-time TypeScript parity with the Rust serialization manifest.
 
-A saved schema-version-2 project contains the elevation grid, provenance, features, annotations, editable extent state, and print settings. It does not depend on a service remaining available after save.
+A saved schema-version-2 project contains the elevation grid, provenance, features, annotations, editable extent state, and print settings. It does not depend on a service remaining available after save. Editable file export uses this same schema; local projects split the state and elevation records so frequent edits do not rewrite the large raster.
+
+The viewer computes a standard presentation pose from the highest surface vertex. It places that point toward the back of the scene and frames the terrain from an oblique elevation. Thumbnail rendering uses the same pose in an offscreen render target, without moving the user's active camera.
 
 GeoTIFF, Manifold, and 3MF modules are dynamically imported at their first use. The landing and preset-editing path therefore avoids parsing those heavy implementations until a user downloads terrain, generates printable geometry, or exports 3MF.
 
@@ -105,7 +108,7 @@ Manifold mesh exports can contain multiple property vertices for one topological
 
 ### New project
 
-1. The user draws or edits a geographic boundary.
+1. The user draws or edits a geographic boundary. Rounded corners are tessellated against the final print scale with a 0.05 mm maximum chord error and a bounded vertex budget.
 2. Source policy estimates raster sample count and chooses 10 m, 30 m, or 90 m data for Auto.
 3. The browser checks IndexedDB for the exact product and bounds before resolving or downloading tiles.
 4. The provider registry loads USGS data directly where available. Copernicus supplies direct URLs or download links; local GeoTIFF import remains available when source CORS policy blocks a request.
@@ -119,7 +122,15 @@ Manifold mesh exports can contain multiple property vertices for one topological
 2. The app displays its prebuilt terrain and overlays immediately.
 3. Overlay identifiers are checked against project feature identifiers.
 4. The worker hydrates a Rust session in the background for subsequent edits and generation.
+5. Opening a preset remains ephemeral. Its first edit forks it into a new local project identifier and starts autosave.
 
+### Local project sessions
+
+1. The first meaningful edit to a preset, or creation/import of a new design, assigns a UUID. Merely viewing a preset creates no local record.
+2. A short debounce writes project state and metadata to IndexedDB. The elevation grid has a separate record and is rewritten only when its identity changes.
+3. After the scene settles, Three.js renders a 640 × 360 WebP thumbnail from the standard presentation pose. The landing page resolves thumbnail blobs to temporary object URLs.
+4. Returning users can open, rename, duplicate, export, or delete recent projects from the landing page. Opening restores the complete saved project and terrain without fetching source services.
+5. IndexedDB failures fall back to memory for the current visit. The app requests persistent browser storage after the first local save when the browser exposes that capability.
 ### Printable generation
 
 1. Rust builds insert pieces and ordered cutter groups.
@@ -151,7 +162,7 @@ Manifold mesh exports can contain multiple property vertices for one topological
 
 `scripts/check.sh` installs web dependencies once, then runs Rust formatting, strict Clippy, Rust tests, Prettier verification, TypeScript checking, Vitest, the WASM build, and the production Vite build. `scripts/build-wasm.sh` owns binding generation so CI and local checks do not repeat dependency installation or TypeScript checking.
 
-Playwright mobile tests cover the landing flow, responsive settings, feature controls, shape settings and persistence, annotations, 3MF download choices, and repeated generation. Preset tests build Post Canyon, Mt. Hood Meadows, and the switchback calibration coupon, catching geometry-lifetime and watertightness regressions.
+Playwright mobile tests cover the landing flow, durable local projects and thumbnails, responsive settings, feature controls, shape settings and persistence, annotations, 3MF download choices, and repeated generation. Preset tests build Post Canyon, Mt. Hood Meadows, and the switchback calibration coupon, catching geometry-lifetime and watertightness regressions.
 
 `.github/workflows/validate.yml` runs the complete validation suite for pull requests without deployment. `.github/workflows/contour-pages.yml` repeats the release gate on pushes to `main`, uploads `web/dist`, and deploys it through GitHub Pages. Both workflows can also be run manually.
 
