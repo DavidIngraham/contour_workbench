@@ -4,6 +4,10 @@ Contour Workbench turns elevation and map features into printable terrain models
 
 [Open Contour Workbench](https://davidingraham.github.io/contour_workbench/)
 
+| Post Canyon | Mt. Hood Meadows |
+|:--:|:--:|
+| [![Post Canyon terrain model with trail inserts](web/public/examples/images/post-canyon.webp)](https://davidingraham.github.io/contour_workbench/) | [![Mt. Hood Meadows terrain model with winter features](web/public/examples/images/mt-hood-meadows.webp)](https://davidingraham.github.io/contour_workbench/) |
+
 ## Highlights
 
 - Full source resolution by default, with optional gradient-driven simplification.
