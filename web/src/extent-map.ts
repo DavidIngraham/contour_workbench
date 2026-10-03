@@ -5,8 +5,7 @@ import { polygonBounds, validatePolygon, type Vertex } from './polygon';
 import {
   regularShape,
   rotatePolygon,
-  roundPolygon,
-  splinePolygon,
+  extentPolygon,
   localFrame,
   type Shape,
   type ExtentEditorState,
@@ -24,6 +23,7 @@ export class ExtentMap {
   private heightM = 1500;
   private angle = 0;
   private radiusM = 0;
+  private maxPrintSizeMm: [number, number] = [248, 198];
   private center: Vertex = [-121.64, 45.68];
   constructor(
     private host: HTMLElement,
@@ -50,8 +50,14 @@ export class ExtentMap {
       }
     });
   }
-  open(bounds: Bounds, points: Vertex[], state?: ExtentEditorState) {
+  open(
+    bounds: Bounds,
+    points: Vertex[],
+    state?: ExtentEditorState,
+    maxPrintSizeMm: [number, number] = [248, 198],
+  ) {
     this.points = structuredClone(points);
+    this.maxPrintSizeMm = [...maxPrintSizeMm];
     this.shape = 'freeform';
     this.angle = 0;
     this.radiusM = 0;
@@ -160,12 +166,7 @@ export class ExtentMap {
     };
   }
   value() {
-    const rotated = rotatePolygon(this.points, this.shape === 'circle' ? 0 : this.angle);
-    const rounded =
-      this.shape === 'circle' || this.shape === 'spline'
-        ? rotated
-        : roundPolygon(rotated, this.radiusM);
-    return this.shape === 'spline' ? splinePolygon(rounded) : rounded;
+    return extentPolygon(this.state(), this.maxPrintSizeMm);
   }
   bounds() {
     return polygonBounds(this.value());
