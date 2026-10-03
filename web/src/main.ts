@@ -1011,6 +1011,7 @@ function openArea(asWizard = false) {
   );
   ($('area-name') as HTMLInputElement).value = asWizard ? 'My landscape' : project.name;
   ($('wizard-source') as HTMLSelectElement).value = 'auto';
+  $('area-dialog').dataset.ready = 'false';
   $('area-dialog').classList.remove('hidden');
   setWizardStep(1);
   if (!extentMap)
@@ -1044,6 +1045,7 @@ function openArea(asWizard = false) {
       ($(id) as HTMLInputElement).value = String(value);
     shapeControls(false);
     updateAreaButtons();
+    $('area-dialog').dataset.ready = 'true';
   });
 }
 function shapeControls(apply = true) {

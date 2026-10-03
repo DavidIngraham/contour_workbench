@@ -160,6 +160,7 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await page.locator('#mobile-settings').tap();
   await page.locator('#change-area').tap();
   await expect(page.locator('#area-dialog')).toBeVisible();
+  await expect(page.locator('#area-dialog')).toHaveAttribute('data-ready', 'true');
   await page.locator('#extent-shape').selectOption('rectangle');
   await page.locator('#extent-width').fill('600');
   await page.locator('#extent-height').fill('400');
@@ -170,6 +171,7 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
   await page.locator('#mobile-settings').tap();
   await page.locator('#change-area').tap();
+  await expect(page.locator('#area-dialog')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('#extent-shape')).toHaveValue('rectangle');
   await expect(page.locator('#extent-angle')).toHaveValue('35');
   await expect(page.locator('#extent-radius')).toHaveValue('50');
