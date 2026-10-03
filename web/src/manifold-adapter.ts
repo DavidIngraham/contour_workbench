@@ -1,5 +1,5 @@
 /** Typed ownership boundary around the lazily loaded Manifold WASM module. */
-import type { Manifold, ManifoldToplevel, Mesh as ManifoldMesh } from 'manifold-3d';
+import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import type { Mesh } from './types';
 
 let modulePromise: Promise<ManifoldToplevel> | undefined;
@@ -109,28 +109,23 @@ function exportMesh(mesh: Mesh, tolerance = 0.0001): Mesh {
   return { positions, indices: faces.filter((face): face is number[] => face !== null).flat() };
 }
 
-/** Assert that a mesh is finite, nondegenerate, closed, and consistently oriented. */
+/** Assert that a mesh is finite, indexed correctly, closed, and consistently oriented. */
 export function validateMesh(mesh: Mesh) {
-  const canonical = new Map<string, number>();
-  const remap: number[] = [];
-  for (let index = 0; index < mesh.positions.length; index += 3) {
-    const point = [
-      Number(mesh.positions[index]),
-      Number(mesh.positions[index + 1]),
-      Number(mesh.positions[index + 2]),
-    ];
-    if (point.some(value => !Number.isFinite(value))) throw new Error('Non-finite mesh coordinate');
-    const key = point.map(value => value.toFixed(8)).join(',');
-    if (!canonical.has(key)) canonical.set(key, canonical.size);
-    remap.push(canonical.get(key)!);
-  }
+  if (mesh.positions.length % 3 || mesh.indices.length % 3)
+    throw new Error('Invalid mesh array cardinality');
+  const vertexCount = mesh.positions.length / 3;
+  for (const value of mesh.positions)
+    if (!Number.isFinite(Number(value))) throw new Error('Non-finite mesh coordinate');
+
   const edges = new Map<string, { count: number; sum: number }>();
   for (let index = 0; index < mesh.indices.length; index += 3) {
     const triangle = [
-      remap[Number(mesh.indices[index])],
-      remap[Number(mesh.indices[index + 1])],
-      remap[Number(mesh.indices[index + 2])],
+      Number(mesh.indices[index]),
+      Number(mesh.indices[index + 1]),
+      Number(mesh.indices[index + 2]),
     ];
+    if (triangle.some(vertex => !Number.isInteger(vertex) || vertex < 0 || vertex >= vertexCount))
+      throw new Error('Export contains an invalid vertex index');
     if (new Set(triangle).size !== 3) throw new Error('Export contains degenerate triangles');
     for (let edgeIndex = 0; edgeIndex < 3; edgeIndex++) {
       const from = triangle[edgeIndex];
@@ -143,7 +138,7 @@ export function validateMesh(mesh: Mesh) {
     }
   }
   const invalid = [...edges.entries()].filter(([, edge]) => edge.count !== 2 || edge.sum !== 0);
-  if (invalid.length)
+  if (!edges.size || invalid.length)
     throw new Error(
       `Generated mesh is not watertight (${invalid.length} of ${edges.size} edges; ${invalid
         .slice(0, 5)
@@ -152,44 +147,87 @@ export function validateMesh(mesh: Mesh) {
     );
 }
 
-function resolveMergeVectors(raw: ManifoldMesh): Mesh {
+/** Topological fields used from a Manifold MeshGL export. */
+export interface ManifoldMeshTopology {
+  numProp: number;
+  vertProperties: ArrayLike<number>;
+  triVerts: ArrayLike<number>;
+  mergeFromVert?: ArrayLike<number>;
+  mergeToVert?: ArrayLike<number>;
+}
+
+/**
+ * Resolve Manifold's merge-vector union relation and discard unused property vertices.
+ *
+ * Coordinate proximity is deliberately ignored: distinct topology may occupy nearly
+ * identical positions, and welding it can create edges shared by more than two faces.
+ */
+export function compactManifoldMesh(raw: ManifoldMeshTopology): Mesh {
   const numProp = Number(raw.numProp) || 3;
   const numVert = raw.vertProperties.length / numProp;
-  const positions = new Array<number>(numVert * 3);
   const parent = Array.from({ length: numVert }, (_, index) => index);
-  for (let index = 0; index < numVert; index++)
-    for (let axis = 0; axis < 3; axis++)
-      positions[index * 3 + axis] = raw.vertProperties[index * numProp + axis];
+  const root = (index: number) => {
+    let current = index;
+    while (parent[current] !== current) current = parent[current];
+    while (parent[index] !== index) {
+      const previous = parent[index];
+      parent[index] = current;
+      index = previous;
+    }
+    return current;
+  };
+  const unite = (first: number, second: number) => {
+    const firstRoot = root(first);
+    const secondRoot = root(second);
+    if (firstRoot !== secondRoot) parent[firstRoot] = secondRoot;
+  };
+
   const from = raw.mergeFromVert;
   const to = raw.mergeToVert;
   if (from && to)
-    for (let index = 0; index < Math.min(from.length, to.length); index++)
-      if (from[index] < numVert && to[index] < numVert) parent[from[index]] = to[index];
-  const root = (index: number) => {
-    let next = index;
-    let guard = 0;
-    while (parent[next] !== next && guard++ < numVert) next = parent[next];
-    let current = index;
-    while (parent[current] !== current) {
-      const previous = parent[current];
-      parent[current] = next;
-      current = previous;
+    for (let index = 0; index < Math.min(from.length, to.length); index++) {
+      const first = Number(from[index]);
+      const second = Number(to[index]);
+      if (
+        Number.isInteger(first) &&
+        Number.isInteger(second) &&
+        first >= 0 &&
+        second >= 0 &&
+        first < numVert &&
+        second < numVert
+      )
+        unite(first, second);
     }
-    return next;
-  };
-  return {
-    positions,
-    indices: Array.from(raw.triVerts, index => root(Number(index))),
-  };
+
+  const positions: number[] = [];
+  const compact = new Map<number, number>();
+  const indices = Array.from(raw.triVerts, sourceIndex => {
+    const source = root(Number(sourceIndex));
+    let target = compact.get(source);
+    if (target === undefined) {
+      target = compact.size;
+      compact.set(source, target);
+      for (let axis = 0; axis < 3; axis++)
+        positions.push(Number(raw.vertProperties[source * numProp + axis]));
+    }
+    return target;
+  });
+  return { positions, indices };
 }
 
-/** Export a Manifold solid, resolving merge vectors and trying bounded simplification/weld tolerances. */
+/** Export a Manifold solid, preserving supplied topology before attempting geometric repair. */
 export function validatedMesh(input: Manifold, label: string): Mesh {
   let last: unknown;
   for (const tolerance of [0, 0.0001, 0.001, 0.005]) {
     const clean = tolerance ? input.simplify(tolerance) : input;
     try {
-      const source = resolveMergeVectors(clean.getMesh());
+      const source = compactManifoldMesh(clean.getMesh());
+      try {
+        validateMesh(source);
+        return source;
+      } catch (error) {
+        last = error;
+      }
       for (const weldTolerance of [0.0000001, 0.000001, 0.00001, 0.0001]) {
         try {
           const mesh = exportMesh(source, weldTolerance);

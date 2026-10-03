@@ -97,9 +97,9 @@ The worker retains its terrain buffer. Responses that cross the worker boundary 
 
 ### Manifold compatibility
 
-Manifold performs final solid unions, differences, intersections, taper layers, and annotation booleans. The project pins `manifold-3d` 3.4.1. Version 3.5.4 produced a small number of multiply shared edges in the Mt. Hood Meadows result under the project's strict validator, so upgrades require both preset generation tests before changing the pin.
+Manifold performs final solid unions, differences, intersections, taper layers, and annotation booleans. The project pins `manifold-3d` 3.5.4, and dependency upgrades must pass both preset generation tests before changing the pin.
 
-Manifold mesh exports include merge vectors. The worker resolves that topology before coordinate welding and watertightness checks. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
+Manifold mesh exports can contain multiple property vertices for one topological vertex. `manifold-adapter.ts` resolves the export's merge-vector union relation, compacts the referenced vertices, and validates the resulting index topology. This native topology is preferred over coordinate welding because distinct vertices may be nearly coincident; welding them can create edges shared by more than two faces. Bounded coordinate welding remains a fallback for malformed exports. Temporary Manifold and CrossSection objects must be deleted in every success and failure path.
 
 ## Data flows
 
