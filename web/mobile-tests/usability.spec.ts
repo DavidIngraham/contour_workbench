@@ -228,3 +228,97 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#generate')).toBeVisible();
 });
+
+test('Overpass failure keeps terrain usable and offers a successful retry', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone');
+  let recover = false;
+  let attempts = 0;
+  await page.route('**/api/interpreter', async route => {
+    attempts++;
+    if (!recover) {
+      // Keep the request in flight long enough to verify that retry progress is visible.
+      await new Promise(resolve => setTimeout(resolve, 250));
+      await route.fulfill({ status: 504, body: 'Gateway Timeout' });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        elements: [
+          {
+            type: 'way',
+            id: 9001,
+            tags: { highway: 'path', name: 'Recovered trail' },
+            geometry: [
+              { lon: 0.003, lat: 0.006 },
+              { lon: 0.007, lat: 0.006 },
+            ],
+          },
+        ],
+      }),
+    });
+  });
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: /^Features/, exact: false }).tap();
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#status')).toContainText('OpenStreetMap attempt 1 of 4');
+  await expect(page.locator('#fetch-osm')).toHaveText('Retry trails and water', {
+    timeout: 15_000,
+  });
+  expect(attempts).toBe(4);
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.triangles)).toBeGreaterThan(
+    0,
+  );
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.busy)).toBe(false);
+  await expect(page.locator('#generate')).toBeEnabled();
+  await expect(page.locator('#status')).toContainText('Terrain is ready');
+
+  recover = true;
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toHaveText('Pull from OpenStreetMap');
+  await expect(page.locator('#status')).toContainText('Loaded 1 OSM feature');
+  await expect(page.locator('#feature-list')).toContainText('Recovered trail');
+});
+
+test('leaving a project cancels Overpass work and suppresses its stale response', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone');
+  await page.route('**/api/interpreter', async route => {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    try {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          elements: [
+            {
+              type: 'way',
+              id: 9002,
+              tags: { highway: 'path', name: 'Stale trail' },
+              geometry: [
+                { lon: 0.003, lat: 0.006 },
+                { lon: 0.007, lat: 0.006 },
+              ],
+            },
+          ],
+        }),
+      });
+    } catch {
+      // The navigation intentionally aborts this request.
+    }
+  });
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: /^Features/, exact: false }).tap();
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toContainText('Loading trails and water');
+  await page.locator('#mobile-close').tap();
+  await page.locator('#show-projects').tap();
+  await expect(page.locator('#landing-dialog')).toBeVisible();
+  await page.waitForTimeout(800);
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.osmLoading)).toBe(false);
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.features)).toBe(2);
+});

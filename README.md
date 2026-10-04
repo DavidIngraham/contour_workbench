@@ -6,8 +6,8 @@ Contour Workbench turns elevation and map features into printable terrain models
 
 [![Contour Workbench interface with the Post Canyon terrain and trail scene loaded](web/public/examples/images/post-canyon-workbench.webp)](https://davidingraham.github.io/contour_workbench/)
 
-| Post Canyon | Mt. Hood Meadows |
-|:--:|:--:|
+|                                                                    Post Canyon                                                                     |                                                                       Mt. Hood Meadows                                                                        |
+| :------------------------------------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------------------------------------------: |
 | [![Post Canyon terrain model with trail inserts](web/public/examples/images/post-canyon.webp)](https://davidingraham.github.io/contour_workbench/) | [![Mt. Hood Meadows terrain model with winter features](web/public/examples/images/mt-hood-meadows.webp)](https://davidingraham.github.io/contour_workbench/) |
 
 ## Highlights
@@ -15,7 +15,7 @@ Contour Workbench turns elevation and map features into printable terrain models
 - Full source resolution by default, with optional gradient-driven simplification and an automatic final-build memory preflight.
 - Freeform, spline, square, rectangle, and circle extents with editable dimensions and corner radii.
 - USGS 3DEP, geographic GeoTIFF imports, and Copernicus download links.
-- Direct OpenStreetMap queries with mirror failover and local response caching.
+- Direct OpenStreetMap queries with bounded mirror rotation, request timeouts, cancellation, and local response caching.
 - Per-feature visibility and Insert/V-carve treatment controls.
 - Separate tapered inserts or aligned multicolor print-together parts, with a signed relative-height control: positive is proud, zero is flush, and negative is inset. Large inlays retain a structural terrain substrate.
 - Direct feature-aware terrain pockets with canonical insert interfaces, plus nozzle-aware clearance, taper, elephant-foot relief, and a calibration coupon.

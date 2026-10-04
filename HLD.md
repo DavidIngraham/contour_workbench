@@ -117,7 +117,7 @@ The working terrain solid is deleted immediately after export; only then is the 
 2. The viewer immediately derives the same print-bed layout used by Rust, shows the USGS topo map (OpenTopoMap internationally), and draws the selected boundary while source data loads.
 3. Source policy estimates raster sample count and chooses 10 m, 30 m, or 90 m data for Auto. The browser checks IndexedDB before resolving or downloading tiles.
 4. As soon as elevation is available, Rust builds terrain and the viewer replaces the flat map footprint with the fitted terrain mesh.
-5. The UI then requests supported paths and zones from Overpass. Transient failures retry through a bounded mirror list, and successful responses are cached for one day.
+5. As soon as terrain is ready, the UI restores editing controls and requests supported paths and zones from Overpass in the background. Each attempt has its own abort deadline; transient HTTP/network/runtime-timeout failures rotate through configured mirrors with capped jittered backoff and Retry-After support. A hard attempt/time budget settles the task, successful responses are deduplicated and cached for one day, and project switches cancel stale work. Exhaustion leaves terrain intact and exposes an explicit retry action.
 6. Rust normalizes classifications and builds preview overlays. Three.js adds them without rebuilding or hiding the terrain.
 7. Feature controls remain editable throughout the completed design preview.
 
@@ -166,7 +166,7 @@ Validated feature-aware insert pockets no longer require full-terrain Manifold s
 - Geographic bounds are limited to two degrees per side, latitude ±85 degrees, and two million elevation samples.
 - Only geographic WGS84/NAD83 GeoTIFFs are accepted.
 - Auto targets at most one million samples: USGS 10 m for small US areas, 30 m for larger areas, and Copernicus 90 m for giant areas.
-- Overpass availability and coverage can vary. The registry retries transient failures across two mirrors; permanent request errors are reported immediately. OSM multipolygon holes are retained.
+- Overpass availability and coverage can vary. The registry retries only transient failures across three configurable public mirrors, with per-attempt and total deadlines; permanent request errors are reported immediately. Feature failure never blocks terrain editing. The current query remains a single bounded-area request, so unusually dense areas can exhaust all public mirrors and require a later retry. OSM multipolygon holes are retained.
 - Elevation results are cached for 30 days and OSM responses for one day. IndexedDB failures degrade to normal uncached requests.
 - Preview overlays communicate the effective signed insert relative height, but final boolean fit is calculated during Generate. A zero value uses render-only polygon/depth bias, while a negative value uses a render-only surface opening and boundary wall; neither display treatment changes exported coordinates.
 - Paths, V-carves, zones, insert pockets, and preview overlays retain the configured model-edge clearance. Insert footprints account for pocket clearance so the terrain margin remains intact after the pocket expands.

@@ -86,53 +86,214 @@ export async function resolveElevationUrls(
   return provider.resolve(context);
 }
 
-/** Public Overpass mirrors attempted in order when a service is unavailable. */
+/** Public global Overpass mirrors attempted in rotation when a service is unavailable. */
 export const overpassEndpoints = [
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ] as const;
 
-function retryableStatus(status: number) {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
+const transientStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
+
+/** Progress emitted for one bounded Overpass request or backoff. */
+export interface OverpassProgress {
+  attempt: number;
+  maxAttempts: number;
+  endpoint: string;
+  phase: 'request' | 'backoff';
+  message: string;
 }
 
-/** Execute an Overpass query with bounded failover for network and transient service errors. */
+/** Injectable retry controls used by tests and specialized deployments. */
+export interface OverpassRetryOptions {
+  attemptTimeoutMs?: number;
+  totalTimeoutMs?: number;
+  maxAttempts?: number;
+  baseBackoffMs?: number;
+  maxBackoffMs?: number;
+  random?: () => number;
+  sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  onProgress?: (progress: OverpassProgress) => void;
+}
+
+class OverpassAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    readonly retryAfterMs = 0,
+  ) {
+    super(message);
+  }
+}
+
+function abortReason(signal: AbortSignal) {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException('OpenStreetMap request canceled.', 'AbortError');
+}
+
+function retryAfterMs(response: Response) {
+  const value = response.headers.get('retry-after');
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
+}
+
+function timeoutRemark(remark: string) {
+  return /(?:timed?\s*out|timeout)|runtime error[^\n]*(?:time|quota|memory)/i.test(remark);
+}
+
+function deduplicateElements(elements: unknown[]) {
+  const seen = new Set<string>();
+  return elements.filter(element => {
+    if (!element || typeof element !== 'object') return true;
+    const candidate = element as { type?: unknown; id?: unknown };
+    if (typeof candidate.type !== 'string' || !['string', 'number'].includes(typeof candidate.id))
+      return true;
+    const key = candidate.type + ':' + String(candidate.id);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function defaultSleep(delayMs: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if (signal.aborted) return reject(abortReason(signal));
+    const timer = setTimeout(done, delayMs);
+    function done() {
+      signal.removeEventListener('abort', canceled);
+      resolve();
+    }
+    function canceled() {
+      clearTimeout(timer);
+      reject(abortReason(signal));
+    }
+    signal.addEventListener('abort', canceled, { once: true });
+  });
+}
+
+/** Execute an Overpass query with per-attempt timeouts, mirror rotation, and a hard total cap. */
 export async function queryOverpass(
   query: string,
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
   endpoints: readonly string[] = overpassEndpoints,
+  options: OverpassRetryOptions = {},
 ): Promise<unknown> {
+  if (!endpoints.length) throw new Error('No OpenStreetMap service endpoints are configured.');
+  const attemptTimeoutMs = options.attemptTimeoutMs ?? 25_000;
+  const totalTimeoutMs = options.totalTimeoutMs ?? 75_000;
+  const maxAttempts = Math.max(1, options.maxAttempts ?? 4);
+  const baseBackoffMs = options.baseBackoffMs ?? 300;
+  const maxBackoffMs = options.maxBackoffMs ?? 4_000;
+  const random = options.random ?? Math.random;
+  const sleep = options.sleep ?? defaultSleep;
   const failures: string[] = [];
-  for (const endpoint of endpoints) {
+  const startedAt = Date.now();
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (signal.aborted) throw abortReason(signal);
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= totalTimeoutMs) break;
+    const endpoint = endpoints[(attempt - 1) % endpoints.length];
+    const host = new URL(endpoint).host;
+    options.onProgress?.({
+      attempt,
+      maxAttempts,
+      endpoint,
+      phase: 'request',
+      message: `OpenStreetMap attempt ${attempt} of ${maxAttempts} via ${host}…`,
+    });
+
+    const attemptController = new AbortController();
+    let timedOut = false;
+    let requestedRetryAfterMs = 0;
+    const parentCanceled = () => attemptController.abort(abortReason(signal));
+    signal.addEventListener('abort', parentCanceled, { once: true });
+    const remainingMs = totalTimeoutMs - elapsed;
+    const timeout = setTimeout(
+      () => {
+        timedOut = true;
+        attemptController.abort(
+          new DOMException('OpenStreetMap attempt timed out.', 'TimeoutError'),
+        );
+      },
+      Math.max(1, Math.min(attemptTimeoutMs, remainingMs)),
+    );
+
     try {
       const response = await fetcher(endpoint, {
         method: 'POST',
         body: new URLSearchParams({ data: query }),
-        signal,
+        signal: attemptController.signal,
       });
       if (!response.ok) {
-        if (!retryableStatus(response.status))
-          throw new Error(`OpenStreetMap request was rejected (${response.status}).`);
-        failures.push(`${new URL(endpoint).host}: ${response.status}`);
-        continue;
+        const retryable = transientStatuses.has(response.status);
+        throw new OverpassAttemptError(
+          `OpenStreetMap request was rejected (${response.status}).`,
+          retryable,
+          retryAfterMs(response),
+        );
       }
-      const data = (await response.json()) as { remark?: string; elements?: unknown[] };
+      const text = await response.text();
+      let data: { remark?: string; elements?: unknown[] };
+      try {
+        data = JSON.parse(text) as typeof data;
+      } catch {
+        throw new OverpassAttemptError(
+          timeoutRemark(text)
+            ? 'OpenStreetMap reported a runtime timeout.'
+            : 'OpenStreetMap returned an invalid response.',
+          timeoutRemark(text),
+        );
+      }
       if (data.remark) {
-        failures.push(`${new URL(endpoint).host}: incomplete response`);
-        continue;
+        if (!timeoutRemark(data.remark))
+          throw new OverpassAttemptError(`OpenStreetMap rejected the query: ${data.remark}`, false);
+        throw new OverpassAttemptError('OpenStreetMap reported a runtime timeout.', true);
       }
-      if (!Array.isArray(data.elements)) throw new Error('Invalid OSM response');
-      return data;
+      if (!Array.isArray(data.elements))
+        throw new OverpassAttemptError('OpenStreetMap returned an invalid response.', false);
+      return { ...data, elements: deduplicateElements(data.elements) };
     } catch (error) {
-      if (signal.aborted) throw error;
-      if (error instanceof Error && /rejected|Invalid OSM/.test(error.message)) throw error;
-      failures.push(
-        `${new URL(endpoint).host}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      if (signal.aborted) throw abortReason(signal);
+      if (timedOut) failures.push(`${host}: timed out`);
+      else if (error instanceof OverpassAttemptError) {
+        if (!error.retryable) throw error;
+        failures.push(`${host}: ${error.message}`);
+        requestedRetryAfterMs = error.retryAfterMs;
+      } else {
+        failures.push(`${host}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', parentCanceled);
     }
+
+    if (attempt >= maxAttempts) break;
+    const remainingAfterAttempt = totalTimeoutMs - (Date.now() - startedAt);
+    if (remainingAfterAttempt <= 0) break;
+    const exponential = Math.min(maxBackoffMs, baseBackoffMs * 2 ** (attempt - 1));
+    const jittered = exponential * (0.75 + random() * 0.5);
+    const delayMs = Math.min(
+      remainingAfterAttempt,
+      maxBackoffMs,
+      Math.max(jittered, requestedRetryAfterMs),
+    );
+    options.onProgress?.({
+      attempt,
+      maxAttempts,
+      endpoint,
+      phase: 'backoff',
+      message: `OpenStreetMap service is busy; retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s…`,
+    });
+    await sleep(delayMs, signal);
   }
+
   throw new Error(
-    `OpenStreetMap services are busy. Try again later; your features are unchanged. (${failures.join('; ')})`,
+    `OpenStreetMap did not respond after ${failures.length} attempts. Terrain is ready; use Retry trails and water. (${failures.join('; ')})`,
   );
 }

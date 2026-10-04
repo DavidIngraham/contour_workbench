@@ -2,7 +2,7 @@
 import { automaticProduct, sourceSampleCount } from './source-resolution';
 import { selectUsgsTiles } from './usgs-catalog';
 import { persistentCacheKey, readPersistentCache, writePersistentCache } from './persistent-cache';
-import { queryOverpass, resolveElevationUrls } from './provider-registry';
+import { queryOverpass, resolveElevationUrls, type OverpassProgress } from './provider-registry';
 import type { Bounds, Grid, Product, Source } from './types';
 
 type GeoTiffModule = typeof import('geotiff');
@@ -232,11 +232,15 @@ export async function loadLocalRaster(buffer: ArrayBuffer, bounds: Bounds) {
   };
 }
 /* Run an Overpass query with persistent caching and mirror failover. */
-export async function loadOsm(query: string, signal: AbortSignal) {
+export async function loadOsm(
+  query: string,
+  signal: AbortSignal,
+  onProgress?: (progress: OverpassProgress) => void,
+) {
   const key = persistentCacheKey('overpass-v1', query);
   const cached = await readPersistentCache<unknown>(key, osmCacheAgeMs);
   if (cached) return cached;
-  const data = await queryOverpass(query, signal);
-  await writePersistentCache(key, data);
+  const data = await queryOverpass(query, signal, fetch, undefined, { onProgress });
+  if (!signal.aborted) await writePersistentCache(key, data);
   return data;
 }
