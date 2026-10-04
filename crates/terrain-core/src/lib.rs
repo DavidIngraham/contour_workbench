@@ -9,8 +9,8 @@ pub use model::{Layout, Mesh, Overlay, Piece, Plan};
 #[cfg(test)]
 mod contract_tests;
 use geo::{
-    BooleanOps, Buffer, Centroid, Contains, Coord, Intersects, LineString, MultiPolygon, Point,
-    Polygon, TriangulateEarcut, Validation,
+    BooleanOps, BoundingRect, Buffer, Centroid, Contains, Coord, Intersects, LineString,
+    MultiPolygon, Point, Polygon, TriangulateEarcut, Validation,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1390,6 +1390,113 @@ struct PocketSurface {
     height_mm: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PocketTerrainStrategy {
+    Direct,
+    BoundedCutters,
+}
+
+fn classify_pocket_topology(pockets: &[PocketSurface]) -> PocketTerrainStrategy {
+    struct BoundedPocket {
+        index: usize,
+        min_x: f64,
+        max_x: f64,
+        min_y: f64,
+        max_y: f64,
+    }
+
+    let mut bounded = pockets
+        .iter()
+        .enumerate()
+        .filter_map(|(index, pocket)| {
+            let bounds = pocket.polygon.bounding_rect()?;
+            Some(BoundedPocket {
+                index,
+                min_x: bounds.min().x,
+                max_x: bounds.max().x,
+                min_y: bounds.min().y,
+                max_y: bounds.max().y,
+            })
+        })
+        .collect::<Vec<_>>();
+    bounded.sort_by(|left, right| {
+        left.min_x
+            .total_cmp(&right.min_x)
+            .then_with(|| left.index.cmp(&right.index))
+    });
+
+    // Same-height overlaps are unioned before direct meshing. Different-height
+    // overlaps or shared boundaries require interface junction topology that the
+    // direct mesher cannot yet guarantee. An x-sorted bounding-box sweep keeps
+    // this preflight cheap for presets with hundreds of independent pockets.
+    const EPSILON: f64 = 1e-9;
+    for (position, left) in bounded.iter().enumerate() {
+        for right in &bounded[position + 1..] {
+            if right.min_x > left.max_x + EPSILON {
+                break;
+            }
+            if right.min_y > left.max_y + EPSILON || left.min_y > right.max_y + EPSILON {
+                continue;
+            }
+            let left_pocket = &pockets[left.index];
+            let right_pocket = &pockets[right.index];
+            if (left_pocket.height_mm - right_pocket.height_mm).abs() < EPSILON {
+                continue;
+            }
+            if left_pocket.polygon.intersects(&right_pocket.polygon) {
+                return PocketTerrainStrategy::BoundedCutters;
+            }
+        }
+    }
+    PocketTerrainStrategy::Direct
+}
+
+#[cfg(test)]
+mod pocket_topology_tests {
+    use super::*;
+
+    fn pocket(points: &[[f64; 2]], height_mm: f64) -> PocketSurface {
+        PocketSurface {
+            polygon: polygon(points),
+            height_mm,
+        }
+    }
+
+    #[test]
+    fn safe_disjoint_and_same_height_topology_uses_direct_mesh() {
+        let pockets = vec![
+            pocket(&[[0., 0.], [2., 0.], [2., 2.], [0., 2.]], 1.),
+            pocket(&[[1., 0.], [3., 0.], [3., 2.], [1., 2.]], 1.),
+            pocket(&[[4., 0.], [6., 0.], [6., 2.], [4., 2.]], 2.),
+        ];
+        assert_eq!(
+            classify_pocket_topology(&pockets),
+            PocketTerrainStrategy::Direct
+        );
+    }
+
+    #[test]
+    fn multi_height_overlap_or_shared_junction_uses_bounded_cutters() {
+        let overlapping = vec![
+            pocket(&[[0., 0.], [2., 0.], [2., 2.], [0., 2.]], 1.),
+            pocket(&[[1., 1.], [3., 1.], [3., 3.], [1., 3.]], 2.),
+        ];
+        assert_eq!(
+            classify_pocket_topology(&overlapping),
+            PocketTerrainStrategy::BoundedCutters
+        );
+
+        let touching = vec![
+            pocket(&[[0., 0.], [2., 0.], [2., 2.], [0., 2.]], 1.),
+            pocket(&[[2., 2.], [4., 2.], [4., 4.], [2., 4.]], 2.),
+        ];
+        assert_eq!(
+            classify_pocket_topology(&touching),
+            PocketTerrainStrategy::BoundedCutters
+        );
+    }
+}
+
 fn normalized_pocket_surfaces(mut pockets: Vec<PocketSurface>) -> Vec<PocketSurface> {
     pockets.sort_by(|a, b| a.height_mm.total_cmp(&b.height_mm));
     let mut claimed = MultiPolygon(vec![]);
@@ -2041,20 +2148,25 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
     if pocket_surfaces.is_empty() {
         out.terrain = base_terrain.mesh;
     } else {
-        match feature_aware_terrain(&base_terrain, g, s, l, &pocket_surfaces) {
-            Ok(terrain) => out.terrain = terrain,
-            Err(_) => {
-                // Multi-height regions can meet in a non-manifold vertical junction.
-                // Preserve correctness with the established bounded Boolean path.
-                out.terrain = base_terrain.mesh;
-                for pocket in pocket_surfaces {
-                    let cutter =
-                        polygon_surface_detail(&pocket.polygon, |_| roof, pocket.height_mm, false);
-                    cutter
-                        .validate()
-                        .map_err(|error| format!("Fallback pocket: {error}"))?;
-                    out.cutters.push(cutter);
-                }
+        let direct_terrain =
+            if classify_pocket_topology(&pocket_surfaces) == PocketTerrainStrategy::Direct {
+                feature_aware_terrain(&base_terrain, g, s, l, &pocket_surfaces).ok()
+            } else {
+                None
+            };
+        if let Some(terrain) = direct_terrain {
+            out.terrain = terrain;
+        } else {
+            // Multi-height regions can meet in a non-manifold vertical junction.
+            // Preserve correctness with the established bounded Boolean path.
+            out.terrain = base_terrain.mesh;
+            for pocket in pocket_surfaces {
+                let cutter =
+                    polygon_surface_detail(&pocket.polygon, |_| roof, pocket.height_mm, false);
+                cutter
+                    .validate()
+                    .map_err(|error| format!("Fallback pocket: {error}"))?;
+                out.cutters.push(cutter);
             }
         }
     }
