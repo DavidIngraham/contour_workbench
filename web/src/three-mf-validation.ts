@@ -35,6 +35,28 @@ function validXml(name: string, xml: string) {
     );
 }
 
+function validLayerHeightProfiles(name: string, profile: string, expectedObjectIds: number[]) {
+  const lines = profile.trim().split(/\r?\n/);
+  const seen = new Set<number>();
+  let valid = lines.length === expectedObjectIds.length;
+  for (const line of lines) {
+    const match = line.match(/^object_id=(\d+)\|(.+)$/);
+    const objectId = Number(match?.[1]);
+    const values = match?.[2].split(';').map(Number) || [];
+    valid &&= expectedObjectIds.includes(objectId) && !seen.has(objectId);
+    valid &&=
+      values.length >= 4 &&
+      values.length % 2 === 0 &&
+      values.every(value => Number.isFinite(value)) &&
+      values.every((value, index) => index % 2 === 0 || value >= 0.04);
+    for (let index = 2; index < values.length; index += 2)
+      valid &&= values[index] >= values[index - 2];
+    seen.add(objectId);
+  }
+  valid &&= expectedObjectIds.every(objectId => seen.has(objectId));
+  if (!valid) throw new Error(`${name} has an invalid adaptive layer height profile.`);
+}
+
 /** Validate required OPC parts, XML syntax, namespaces, object IDs, and build references. */
 export function validateThreeMfFiles(
   files: Record<string, Uint8Array>,
@@ -68,14 +90,63 @@ export function validateThreeMfFiles(
   );
   if (
     !buildReferences.length ||
-    [...buildReferences, ...componentReferences].some(id => !known.has(id))
+    buildReferences.some(id => !known.has(id)) ||
+    (kind !== 'bambu' && componentReferences.some(id => !known.has(id)))
   )
     throw new Error('3MF build or component references an unknown object.');
 
   if (kind === 'bambu') {
+    if (
+      !model.includes('xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"') ||
+      !model.includes(
+        'xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"',
+      ) ||
+      !model.includes('requiredextensions="p"') ||
+      !model.includes('<metadata name="BambuStudio:3mfVersion">1</metadata>')
+    )
+      throw new Error('Bambu 3MF model is missing Bambu Studio project metadata.');
+
+    const modelRelationships = decode(files, '3D/_rels/3dmodel.model.rels');
+    validXml('3D/_rels/3dmodel.model.rels', modelRelationships);
+    const componentPaths = [
+      ...model.matchAll(/<component\b[^>]*\bp:path="\/(3D\/Objects\/[^"]+\.model)"/g),
+    ].map(match => match[1]);
+    if (!componentPaths.length || new Set(componentPaths).size !== objectIds.length)
+      throw new Error('Bambu 3MF model has missing or duplicated child model references.');
+    for (const path of componentPaths) {
+      const childModel = decode(files, path);
+      validXml(path, childModel);
+      if (!childModel.includes('<mesh>') || !childModel.includes('<build/>'))
+        throw new Error(`${path} is not a Bambu child mesh model.`);
+      if (!modelRelationships.includes(`Target="/${path}"`))
+        throw new Error(`Bambu relationships do not reference ${path}.`);
+    }
+
     const modelSettings = decode(files, 'Metadata/model_settings.config');
     validXml('Metadata/model_settings.config', modelSettings);
+    if (modelSettings.includes('<assemble_item'))
+      throw new Error('Bambu model settings duplicate build placement transforms.');
     JSON.parse(decode(files, 'Metadata/project_settings.config'));
+    validLayerHeightProfiles(
+      'Bambu 3MF',
+      decode(files, 'Metadata/layer_heights_profile.txt'),
+      objectIds.map((_, index) => index + 1),
+    );
+  }
+  if (kind === 'prusa') {
+    if (
+      !model.includes('xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"') ||
+      !model.includes('<metadata name="slic3rpe:Version3mf">1</metadata>')
+    )
+      throw new Error('Prusa 3MF model is missing PrusaSlicer project metadata.');
+    const printConfig = decode(files, 'Metadata/Slic3r_PE.config');
+    if (!printConfig.includes('; variable_layer_height = 1'))
+      throw new Error('Prusa 3MF does not enable variable layer height.');
+    validLayerHeightProfiles(
+      'Prusa 3MF',
+      decode(files, 'Metadata/Slic3r_PE_layer_heights_profile.txt'),
+      [1],
+    );
   }
   JSON.parse(decode(files, 'Metadata/project.contour.json'));
   JSON.parse(decode(files, 'Metadata/contour_workbench.json'));

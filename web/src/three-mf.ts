@@ -6,6 +6,21 @@ import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
 
+const coreNamespace = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
+const productionNamespace = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
+const bambuNamespace = 'http://schemas.bambulab.com/package/2021';
+const modelRelationship = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
+const bambuBuildUuid = '2c7c17d8-22b5-4d84-8835-1976022ea369';
+const bambuDefaultPlateStrideMm = 256;
+
+function bambuUuid(id: number, suffix: string) {
+  return String(id).padStart(8, '0') + suffix;
+}
+
+function bambuPartUuid(id: number, suffix: string) {
+  return `${String(id).padStart(4, '0')}0000${suffix}`;
+}
+
 interface Bounds3 {
   min: [number, number, number];
   max: [number, number, number];
@@ -130,7 +145,173 @@ function packedPlacement(objects: ObjectRecord[], bed: [number, number]): Placem
     x += b.width + margin;
     rowDepth = Math.max(rowDepth, b.depth);
   }
-  return result;
+  return result.map(item => {
+    const plateIndex = item.plate - 1;
+    const column = plateIndex % 2;
+    const row = Math.floor(plateIndex / 2);
+    return {
+      ...item,
+      translation: [
+        item.translation[0] + column * Math.max(bambuDefaultPlateStrideMm, bed[0]),
+        item.translation[1] - row * Math.max(bambuDefaultPlateStrideMm, bed[1]),
+        item.translation[2],
+      ],
+    };
+  });
+}
+
+interface AdaptiveFace {
+  minZ: number;
+  maxZ: number;
+  nCos: number;
+  nSin: number;
+}
+
+interface LayerHeightPoint {
+  z: number;
+  height: number;
+}
+
+function prusaAdaptiveLayerProfile(placements: Placement[], nozzle: number): LayerHeightPoint[] {
+  const minLayerHeight = Math.max(0.04, nozzle * 0.175);
+  const maxLayerHeight = Math.max(minLayerHeight, nozzle * 0.75);
+  const layerHeight = Math.max(minLayerHeight, Math.min(maxLayerHeight, nozzle * 0.5));
+  const firstLayerHeight = Math.max(0.2, layerHeight);
+  const faces: AdaptiveFace[] = [];
+  let objectMinZ = Number.POSITIVE_INFINITY;
+  let objectMaxZ = Number.NEGATIVE_INFINITY;
+
+  for (const { object, translation } of placements) {
+    const { positions, indices } = object.mesh;
+    for (let index = 0; index < indices.length; index += 3) {
+      const ia = indices[index] * 3;
+      const ib = indices[index + 1] * 3;
+      const ic = indices[index + 2] * 3;
+      const ax = Number(positions[ia]) + translation[0];
+      const ay = Number(positions[ia + 1]) + translation[1];
+      const az = Number(positions[ia + 2]) + translation[2];
+      const bx = Number(positions[ib]) + translation[0];
+      const by = Number(positions[ib + 1]) + translation[1];
+      const bz = Number(positions[ib + 2]) + translation[2];
+      const cx = Number(positions[ic]) + translation[0];
+      const cy = Number(positions[ic + 1]) + translation[1];
+      const cz = Number(positions[ic + 2]) + translation[2];
+      objectMinZ = Math.min(objectMinZ, az, bz, cz);
+      objectMaxZ = Math.max(objectMaxZ, az, bz, cz);
+      const abx = bx - ax;
+      const aby = by - ay;
+      const abz = bz - az;
+      const acx = cx - ax;
+      const acy = cy - ay;
+      const acz = cz - az;
+      const nx = aby * acz - abz * acy;
+      const ny = abz * acx - abx * acz;
+      const nz = abx * acy - aby * acx;
+      const length = Math.hypot(nx, ny, nz);
+      if (length > 1e-9)
+        faces.push({
+          minZ: Math.min(az, bz, cz),
+          maxZ: Math.max(az, bz, cz),
+          nCos: Math.abs(nz) / length,
+          nSin: Math.hypot(nx, ny) / length,
+        });
+    }
+  }
+
+  if (!faces.length || !Number.isFinite(objectMinZ) || objectMaxZ <= objectMinZ)
+    return [
+      { z: 0, height: firstLayerHeight },
+      { z: firstLayerHeight, height: firstLayerHeight },
+    ];
+  for (const face of faces) {
+    face.minZ -= objectMinZ;
+    face.maxZ -= objectMinZ;
+  }
+  faces.sort((left, right) => left.minZ - right.minZ || left.maxZ - right.maxZ);
+
+  const objectHeight = objectMaxZ - objectMinZ;
+  const profile: LayerHeightPoint[] = [
+    { z: 0, height: firstLayerHeight },
+    { z: firstLayerHeight, height: firstLayerHeight },
+  ];
+  let printZ = firstLayerHeight;
+  let currentFacet = 0;
+  while (printZ + 1e-6 < objectHeight) {
+    let height = maxLayerHeight;
+    let orderedId = currentFacet;
+    let firstHit = false;
+    for (; orderedId < faces.length; orderedId++) {
+      const face = faces[orderedId];
+      if (face.minZ >= printZ) break;
+      if (face.maxZ > printZ) {
+        if (!firstHit) {
+          firstHit = true;
+          currentFacet = orderedId;
+        }
+        if (face.maxZ < printZ + 1e-6) continue;
+        const slopeHeight = Math.min(
+          layerHeight / 0.184,
+          face.nCos > 1e-5
+            ? 1.44 * layerHeight * Math.sqrt(face.nSin / face.nCos)
+            : Number.POSITIVE_INFINITY,
+        );
+        height = Math.min(height, Math.max(minLayerHeight, slopeHeight));
+      }
+    }
+    if (height > minLayerHeight) {
+      for (; orderedId < faces.length; orderedId++) {
+        const face = faces[orderedId];
+        if (face.minZ >= printZ + height) break;
+        if (face.maxZ < printZ + 1e-6) continue;
+        const slopeHeight = Math.min(
+          layerHeight / 0.184,
+          face.nCos > 1e-5
+            ? 1.44 * layerHeight * Math.sqrt(face.nSin / face.nCos)
+            : Number.POSITIVE_INFINITY,
+        );
+        const reducedHeight = Math.max(minLayerHeight, slopeHeight);
+        const zDifference = face.minZ - printZ;
+        if (reducedHeight < zDifference) height = zDifference;
+        else height = Math.min(height, reducedHeight);
+      }
+      height = Math.max(minLayerHeight, height);
+    }
+    const remainingHeight = objectHeight - printZ;
+    if (remainingHeight < minLayerHeight) {
+      profile.push({ z: objectHeight, height: minLayerHeight });
+      printZ = objectHeight;
+      break;
+    }
+    height = Math.min(maxLayerHeight, height, remainingHeight);
+    if (height <= 1e-6) break;
+    profile.push({ z: printZ, height });
+    printZ += height;
+  }
+  if (Math.abs((profile.at(-1)?.z ?? 0) - objectHeight) > 1e-6) {
+    const finalHeight = Math.max(
+      minLayerHeight,
+      Math.min(maxLayerHeight, objectHeight - profile.at(-1)!.z),
+    );
+    profile.push({ z: objectHeight, height: finalHeight });
+  }
+  return profile;
+}
+
+function layerHeightProfileLine(objectId: number, placements: Placement[], nozzle: number) {
+  const values = prusaAdaptiveLayerProfile(placements, nozzle)
+    .flatMap(point => [point.z.toFixed(6), point.height.toFixed(6)])
+    .join(';');
+  return `object_id=${objectId}|${values}\n`;
+}
+
+function prusaLayerHeightProfile(placements: Placement[], nozzle: number) {
+  return layerHeightProfileLine(1, placements, nozzle);
+}
+
+function bambuLayerHeightProfiles(placements: Placement[], nozzle: number) {
+  return placements
+    .map((placement, index) => layerHeightProfileLine(index + 1, [placement], nozzle))
+    .join('');
 }
 
 function prusaModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
@@ -165,7 +346,7 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
     )
     .join('');
   return (
-    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Title">' +
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><metadata name="Title">' +
     xmlEscape(project.name) +
     '</metadata><resources><basematerials id="1"><base name="' +
     xmlEscape(materials[0].name) +
@@ -212,6 +393,39 @@ function coreModel(
   return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="1"><base name="${xmlEscape(projectMaterialGroups(project)[0].name)}" displaycolor="${projectMaterialGroups(project)[0].color.toUpperCase()}FF"/><base name="${xmlEscape(projectMaterialGroups(project)[1].name)}" displaycolor="${projectMaterialGroups(project)[1].color.toUpperCase()}FF"/></basematerials>${objectXml}</resources><build>${build}</build></model>`;
 }
 
+function bambuRootModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+  const title = xmlEscape(project.name);
+  const resourceXml = objects
+    .map(
+      object =>
+        `<object id="${object.id * 2}" name="${xmlEscape(object.name)}" p:UUID="${bambuUuid(object.id, '-61cb-4c03-9d28-80fed5dfa1dc')}" type="model"><components><component p:path="/3D/Objects/object_${object.id}.model" objectid="${object.id * 2 - 1}" p:UUID="${bambuPartUuid(object.id, '-b206-40ff-9872-83e8017abed1')}" transform="${transform([0, 0, 0])}"/></components></object>`,
+    )
+    .join('');
+  const buildXml = placements
+    .map(
+      ({ object, translation }) =>
+        `<item objectid="${object.id * 2}" p:UUID="${bambuUuid(object.id * 2, '-b1ec-4553-aec9-835e5b724bb4')}" transform="${transform(translation)}" printable="1"/>`,
+    )
+    .join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">Contour Workbench</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">Bambu Studio multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
+}
+
+function bambuChildModel(object: ObjectRecord) {
+  const childId = object.id * 2 - 1;
+  const objectUuid = bambuPartUuid(object.id, '-81cb-4c03-9d28-80fed5dfa1dc');
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="BambuStudio:3mfVersion">1</metadata><resources><object id="${childId}" name="${xmlEscape(object.name)}" p:UUID="${objectUuid}" type="model">${meshXml(object.mesh)}</object></resources><build/></model>`;
+}
+
+function bambuModelRelationships(objects: ObjectRecord[]) {
+  const entries = objects
+    .map(
+      (object, index) =>
+        `<Relationship Target="/3D/Objects/object_${object.id}.model" Id="rel-${index + 1}" Type="${modelRelationship}"/>`,
+    )
+    .join('');
+  return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries}</Relationships>`;
+}
+
 function modelSettings(project: Project, objects: ObjectRecord[], placements: Placement[]) {
   const materials = projectMaterialGroups(project);
   const byPlate = new Map<number, Placement[]>();
@@ -220,22 +434,16 @@ function modelSettings(project: Project, objects: ObjectRecord[], placements: Pl
   const objectXml = objects
     .map(object => {
       const faces = Math.floor(object.mesh.indices.length / 3);
-      return `<object id="${object.id}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="${materials[object.kind === 'terrain' ? 0 : 1].extruder}"/><metadata face_count="${faces}"/><part id="${object.id}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
+      return `<object id="${object.id * 2}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="${materials[object.kind === 'terrain' ? 0 : 1].extruder}"/><metadata face_count="${faces}"/><part id="${object.id * 2 - 1}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
     })
     .join('');
   const plateXml = [...byPlate.entries()]
     .map(
       ([plate, items]) =>
-        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${plate === 1 ? 'Terrain' : 'Inserts ' + (plate - 1)}"/><metadata key="locked" value="false"/>${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
+        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${plate === 1 ? 'Terrain' : 'Inserts ' + (plate - 1)}"/><metadata key="locked" value="false"/>${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
     )
     .join('');
-  const assembly = placements
-    .map(
-      item =>
-        `<assemble_item object_id="${item.object.id}" instance_id="0" transform="${transform(item.translation)}" offset="0 0 0"/>`,
-    )
-    .join('');
-  return `<?xml version="1.0" encoding="UTF-8"?><config>${objectXml}${plateXml}<assemble>${assembly}</assemble></config>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><config>${objectXml}${plateXml}<assemble/></config>`;
 }
 
 /** Derive portable Bambu process hints from nozzle diameter. */
@@ -244,20 +452,46 @@ export function bambuProcessSettings(project: Project) {
   const layer = Math.max(0.08, Math.min(0.32, nozzle * 0.5)).toFixed(2);
   return {
     layer_height: layer,
+    enable_prime_tower: '0',
     initial_layer_print_height: Math.max(0.2, Number(layer)).toFixed(2),
     wall_loops: '3',
     top_shell_layers: '4',
     bottom_shell_layers: '4',
-    sparse_infill_density: '15%',
-    sparse_infill_pattern: 'grid',
+    sparse_infill_density: '5%',
+    sparse_infill_pattern: 'gyroid',
     brim_type: 'auto_brim',
     brim_width: '5',
-    elefant_foot_compensation: '0',
   };
 }
 
+/** Derive PrusaSlicer process hints and enable its variable-layer-height capability. */
+export function prusaProcessSettings(project: Project) {
+  const nozzle = project.settings.nozzle_diameter_mm;
+  const layer = Math.max(0.08, Math.min(0.32, nozzle * 0.5)).toFixed(2);
+  return {
+    layer_height: layer,
+    first_layer_height: Math.max(0.2, Number(layer)).toFixed(2),
+    perimeters: '3',
+    top_solid_layers: '4',
+    bottom_solid_layers: '4',
+    fill_density: '5%',
+    fill_pattern: 'gyroid',
+    brim_width: '5',
+    variable_layer_height: '1',
+    wipe_tower: '0',
+  };
+}
+
+function prusaPrintConfig(project: Project) {
+  return (
+    Object.entries(prusaProcessSettings(project))
+      .map(([key, value]) => `; ${key} = ${value}`)
+      .join('\n') + '\n'
+  );
+}
+
 function contentTypes(kind: ThreeMfKind) {
-  return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="json" ContentType="application/json"/>${kind === 'bambu' ? '<Default Extension="config" ContentType="application/octet-stream"/>' : ''}</Types>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="json" ContentType="application/json"/>${kind === 'bambu' || kind === 'prusa' ? '<Default Extension="config" ContentType="application/octet-stream"/><Default Extension="txt" ContentType="text/plain"/>' : ''}</Types>`;
 }
 
 const relationships = `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
@@ -278,7 +512,11 @@ export function buildThreeMf(
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
-    '3D/3dmodel.model': strToU8(coreModel(project, objects, placements, kind)),
+    '3D/3dmodel.model': strToU8(
+      kind === 'bambu'
+        ? bambuRootModel(project, objects, placements)
+        : coreModel(project, objects, placements, kind),
+    ),
     'Metadata/project.contour.json': projectFile || strToU8(JSON.stringify(project)),
     'Metadata/contour_workbench.json': strToU8(
       JSON.stringify(
@@ -309,10 +547,21 @@ export function buildThreeMf(
     ),
   };
   if (kind === 'bambu') {
+    files['3D/_rels/3dmodel.model.rels'] = strToU8(bambuModelRelationships(objects));
+    for (const object of objects)
+      files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(object));
     files['Metadata/project_settings.config'] = strToU8(
       JSON.stringify(bambuProcessSettings(project), null, 2),
     );
     files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
+    files['Metadata/layer_heights_profile.txt'] = strToU8(
+      bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
+    );
+  } else if (kind === 'prusa') {
+    files['Metadata/Slic3r_PE.config'] = strToU8(prusaPrintConfig(project));
+    files['Metadata/Slic3r_PE_layer_heights_profile.txt'] = strToU8(
+      prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm),
+    );
   }
   validateThreeMfFiles(files, kind);
   return zipSync(files, { level: 6 });

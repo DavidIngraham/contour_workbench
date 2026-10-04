@@ -89,11 +89,51 @@ describe('3MF export', () => {
     const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
     expect(settings).toEqual(bambuProcessSettings(project));
     expect(settings.layer_height).toBe('0.20');
-    expect(settings.elefant_foot_compensation).toBe('0');
+    expect(settings.elefant_foot_compensation).toBeUndefined();
+    expect(settings.enable_prime_tower).toBe('0');
+    expect(settings.sparse_infill_density).toBe('5%');
+    expect(settings.sparse_infill_pattern).toBe('gyroid');
+    const adaptiveProfiles = strFromU8(files['Metadata/layer_heights_profile.txt'])
+      .trim()
+      .split('\n');
+    expect(adaptiveProfiles).toHaveLength(3);
+    expect(adaptiveProfiles[0]).toMatch(/^object_id=1\|/);
+    expect(adaptiveProfiles[1]).toMatch(/^object_id=2\|/);
+    expect(adaptiveProfiles[2]).toMatch(/^object_id=3\|/);
+    expect(files['[Content_Types].xml']).toBeDefined();
+    expect(strFromU8(files['[Content_Types].xml'])).toContain('Extension="txt"');
+
+    const model = strFromU8(files['3D/3dmodel.model']);
+    expect(model).toContain('BambuStudio:3mfVersion');
+    expect(model).toContain('requiredextensions="p"');
+    expect(model.match(/<component /g)).toHaveLength(3);
+    expect(model).toContain('<object id="2"');
+    expect(model).toContain('<object id="4"');
+    expect(model).toContain('<object id="6"');
+    expect(model.match(/<item /g)).toHaveLength(3);
+    expect(model).not.toContain('<mesh>');
+    expect(model).toContain('259.000000 3.000000 0.000000');
+    const childPaths = Object.keys(files).filter(path =>
+      /^3D\/Objects\/object_\d+\.model$/.test(path),
+    );
+    expect(childPaths).toHaveLength(3);
+    expect(model).toContain('object_2.model" objectid="3"');
+    expect(strFromU8(files['3D/Objects/object_2.model'])).toContain('<object id="3"');
+    const relationships = strFromU8(files['3D/_rels/3dmodel.model.rels']);
+    for (const path of childPaths) {
+      expect(relationships).toContain(`Target="/${path}"`);
+      expect(strFromU8(files[path])).toContain('<mesh>');
+      expect(strFromU8(files[path])).toContain('<build/>');
+    }
+
     const modelSettings = strFromU8(files['Metadata/model_settings.config']);
+    expect(modelSettings).toContain('object_id" value="2"');
+    expect(modelSettings).toContain('object_id" value="4"');
+    expect(modelSettings).toContain('object_id" value="6"');
     expect(modelSettings.match(/<plate>/g)).toHaveLength(2);
     expect(modelSettings).toContain('plater_name" value="Terrain');
     expect(modelSettings).toContain('plater_name" value="Inserts 1');
+    expect(modelSettings).not.toContain('<assemble_item');
     const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
     expect(manifest.format).toBe('bambu');
     expect(manifest.plates.map((plate: { plate: number }) => plate.plate)).toEqual([1, 2]);

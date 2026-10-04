@@ -54,6 +54,24 @@ describe('target export formats', () => {
     expect(model.match(/<component /g)).toHaveLength(2);
     expect(model).toContain('3.000000 4.000000 2.000000');
     expect(model).toContain('<metadata name="slic3rpe:extruder_id">3</metadata>');
+    expect(model).toContain('<metadata name="slic3rpe:Version3mf">1</metadata>');
+    const config = strFromU8(files['Metadata/Slic3r_PE.config']);
+    expect(config).toContain('; variable_layer_height = 1');
+    expect(config).toContain('; wipe_tower = 0');
+    expect(config).toContain('; layer_height = 0.20');
+    expect(config).toContain('; fill_density = 5%');
+    expect(config).toContain('; fill_pattern = gyroid');
+    expect(config).not.toContain('elefant_foot_compensation');
+    const profile = strFromU8(files['Metadata/Slic3r_PE_layer_heights_profile.txt']);
+    expect(profile).toMatch(/^object_id=1\|/);
+    const profileValues = profile
+      .slice(profile.indexOf('|') + 1)
+      .trim()
+      .split(';')
+      .map(Number);
+    const layerHeights = profileValues.filter((_, index) => index % 2 === 1);
+    expect(new Set(layerHeights).size).toBeGreaterThan(1);
+    expect(Math.min(...layerHeights)).toBeGreaterThanOrEqual(0.04);
   });
 
   it('keeps Bambu multicolor parts on one plate with separate extruders', () => {
@@ -62,6 +80,11 @@ describe('target export formats', () => {
     expect(settings.match(/<plate>/g)).toHaveLength(1);
     expect(settings).toContain('key="extruder" value="1"');
     expect(settings).toContain('key="extruder" value="3"');
+    expect(settings).not.toContain('<assemble_item');
+    const model = strFromU8(files['3D/3dmodel.model']);
+    expect(model).toContain('BambuStudio:3mfVersion');
+    expect(model.match(/<component /g)).toHaveLength(2);
+    expect(model.match(/<item /g)).toHaveLength(2);
   });
 
   it('guards open meshes and Shapeways service limits', () => {
