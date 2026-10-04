@@ -10,10 +10,15 @@ export interface Grid {
 }
 /** Manufacturing strategy for removable inserts or aligned multicolor parts. */
 export type ManufacturingMode = 'separate' | 'multicolor';
+/** Visible insert-top placement relative to sampled terrain. */
+export type InsertSurfaceMode = 'proud' | 'flush' | 'inset';
 
 /** User-controlled geometry and print settings; unit suffixes identify physical units. */
 export interface Settings {
   manufacturing_mode: ManufacturingMode;
+  insert_surface_mode: InsertSurfaceMode;
+  insert_proud_height_mm: number;
+  insert_inset_depth_mm: number;
   max_print_size_mm: [number, number];
   height_factor: number;
   base_height_mm: number;
@@ -39,6 +44,9 @@ export interface Settings {
 /** Defaults used for new projects and backward-compatible deserialization. */
 export const defaults: Settings = {
   manufacturing_mode: 'separate',
+  insert_surface_mode: 'proud',
+  insert_proud_height_mm: 0.35,
+  insert_inset_depth_mm: 0.3,
   max_print_size_mm: [248, 198],
   height_factor: 1,
   base_height_mm: 1,
@@ -61,6 +69,32 @@ export const defaults: Settings = {
   terrain_max_error_mm: 0,
   boundary: [],
 };
+/** Merge additive settings fields while preserving the legacy proud placement. */
+export function normalizeSettings(settings?: Partial<Settings>): Settings {
+  const mode = settings?.insert_surface_mode;
+  return {
+    ...defaults,
+    ...settings,
+    insert_surface_mode:
+      mode === 'flush' || mode === 'inset' || mode === 'proud'
+        ? mode
+        : defaults.insert_surface_mode,
+  };
+}
+
+/** Return the signed visible insert-top offset from sampled terrain. */
+export function insertSurfaceOffsetMm(
+  settings: Pick<
+    Settings,
+    'insert_surface_mode' | 'insert_proud_height_mm' | 'insert_inset_depth_mm'
+  >,
+) {
+  if (settings.insert_surface_mode === 'flush') return 0;
+  return settings.insert_surface_mode === 'inset'
+    ? -settings.insert_inset_depth_mm
+    : settings.insert_proud_height_mm;
+}
+
 /** Effective geometry operation selected for a feature. */
 export type Treatment = 'insert' | 'hide' | 'v_carve';
 /** Feature classes supported by classification, preview, and generation. */
@@ -115,6 +149,7 @@ export interface Overlay {
   treatment: Treatment;
   id: string;
   class: Feature['class'];
+  surface_offset_mm?: number;
   mesh: Mesh;
 }
 /** Printable insert mesh with its assembly origin and fit metadata. */
@@ -124,6 +159,7 @@ export interface Piece {
   mesh: Mesh;
   origin: [number, number, number];
   insert_depth_mm: number;
+  surface_offset_mm?: number;
   conformal?: boolean;
   taper_relief_mm?: number;
   taper_height_mm?: number;
@@ -139,6 +175,8 @@ export interface Asset {
     pieces: number;
     removed_terrain_islands: number;
     terrain_max_error_mm?: number;
+    insert_surface_mode?: InsertSurfaceMode;
+    insert_surface_offset_mm?: number;
   };
   revision: number;
 }

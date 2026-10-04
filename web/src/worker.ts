@@ -6,6 +6,7 @@ import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
+import { insertSurfaceOffsetMm } from './types';
 import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
@@ -434,6 +435,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       directTerrain = { positions: new Float32Array(), indices: new Uint32Array() };
       let resultDeleted = false;
       let raisedTerrain: Manifold | undefined;
+      let raisedTerrainOffset: number | undefined;
       try {
         try {
           for (;;) {
@@ -508,14 +510,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         const mesh = trustedManifoldMesh(result, 'Terrain');
         result.delete();
         resultDeleted = true;
-        if (plan.inserts.some(piece => piece.conformal)) {
-          const originalTerrain = solidFromMesh(M, terrain.mesh);
-          try {
-            raisedTerrain = originalTerrain.translate([0, 0, 0.35]);
-          } finally {
-            originalTerrain.delete();
-          }
-        }
+
         let preparedPieces = 0;
         for (;;) {
           const insertBatch = decodeMeshPacket<MeshBatchPacketMetadata>(
@@ -566,8 +561,22 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
                 piece.taper_height_mm = tapered.profile.footHeightMm;
                 piece.draft_angle_deg = tapered.profile.draftAngleDeg;
                 if (piece.conformal) {
-                  if (!raisedTerrain)
-                    throw new Error('Terrain surface is unavailable for ' + piece.id);
+                  const surfaceOffsetMm =
+                    piece.surface_offset_mm ?? insertSurfaceOffsetMm(settings);
+                  if (
+                    !raisedTerrain ||
+                    raisedTerrainOffset === undefined ||
+                    Math.abs(raisedTerrainOffset - surfaceOffsetMm) > 1e-9
+                  ) {
+                    raisedTerrain?.delete();
+                    const originalTerrain = solidFromMesh(M, terrain.mesh);
+                    try {
+                      raisedTerrain = originalTerrain.translate([0, 0, surfaceOffsetMm]);
+                      raisedTerrainOffset = surfaceOffsetMm;
+                    } finally {
+                      originalTerrain.delete();
+                    }
+                  }
                   const global = tapered.solid.translate(piece.origin),
                     fitted = global.intersect(raisedTerrain);
                   global.delete();
@@ -608,6 +617,8 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             pieces: plan.inserts.length,
             removed_terrain_islands: plan.removed_terrain_islands,
             terrain_max_error_mm: memory.adapted ? memory.terrainMaxErrorMm : undefined,
+            insert_surface_mode: settings.insert_surface_mode,
+            insert_surface_offset_mm: insertSurfaceOffsetMm(settings),
           },
           revision: p.revision,
         };

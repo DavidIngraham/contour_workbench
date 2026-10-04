@@ -153,6 +153,9 @@ pub struct Overlay {
     pub id: String,
     /// Normalized feature class.
     pub class: String,
+    /// Effective signed insert-top offset from terrain; zero for V-carves.
+    #[serde(default)]
+    pub surface_offset_mm: f64,
     /// Preview mesh in assembly coordinates.
     pub mesh: Mesh,
 }
@@ -169,10 +172,17 @@ pub struct Piece {
     pub origin: [f64; 3],
     /// Buried depth of the piece in millimeters.
     pub insert_depth_mm: f64,
+    /// Effective signed insert-top offset from sampled terrain.
+    #[serde(default = "default_insert_surface_offset_mm")]
+    pub surface_offset_mm: f64,
     #[serde(default)]
     /// Whether the browser must intersect the prism with a shifted terrain surface.
     pub conformal: bool,
 }
+fn default_insert_surface_offset_mm() -> f64 {
+    0.35
+}
+
 /// Geometry plan consumed by the browser solid-boolean stage.
 #[derive(Serialize, Deserialize)]
 pub struct Plan {

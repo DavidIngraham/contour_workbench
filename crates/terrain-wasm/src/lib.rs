@@ -80,6 +80,7 @@ struct OverlayMetadata<'a> {
     treatment: Treatment,
     id: &'a str,
     class: &'a str,
+    surface_offset_mm: f64,
 }
 
 #[derive(Serialize)]
@@ -88,6 +89,7 @@ struct PieceMetadata<'a> {
     class: &'a str,
     origin: [f64; 3],
     insert_depth_mm: f64,
+    surface_offset_mm: f64,
     conformal: bool,
 }
 
@@ -216,6 +218,7 @@ impl TerrainSession {
                 treatment: overlay.treatment,
                 id: &overlay.id,
                 class: &overlay.class,
+                surface_offset_mm: overlay.surface_offset_mm,
             })
             .collect();
         let meshes: Vec<_> = overlays.iter().map(|overlay| &overlay.mesh).collect();
@@ -260,6 +263,7 @@ impl TerrainSession {
                     class: &piece.class,
                     origin: piece.origin,
                     insert_depth_mm: piece.insert_depth_mm,
+                    surface_offset_mm: piece.surface_offset_mm,
                     conformal: piece.conformal,
                 })
                 .collect(),

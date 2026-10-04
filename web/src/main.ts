@@ -66,6 +66,8 @@ import {
 } from './project-store';
 import {
   defaults,
+  insertSurfaceOffsetMm,
+  normalizeSettings,
   type Project,
   type Settings,
   type Terrain,
@@ -525,7 +527,7 @@ async function openLocalWorkspace(id: string) {
   try {
     const loaded = await loadLocalProject(id);
     if (!loaded) throw new Error('This local project is no longer available.');
-    project = { ...loaded.project, settings: { ...defaults, ...loaded.project.settings } };
+    project = { ...loaded.project, settings: normalizeSettings(loaded.project.settings) };
     activateStoredWorkspace(loaded.summary);
     asset = undefined;
     revision = 0;
@@ -560,7 +562,7 @@ async function openPresetModel(entry: PresetEntry) {
   status(`Opening ${entry.name}…`, false, true);
   try {
     const bundle = await loadPreset(entry);
-    project = { ...bundle.project, settings: { ...defaults, ...bundle.project.settings } };
+    project = { ...bundle.project, settings: normalizeSettings(bundle.project.settings) };
     activatePresetWorkspace(entry.id);
     terrain = bundle.terrain;
     overlays = bundle.overlays;
@@ -582,7 +584,7 @@ async function openPresetModel(entry: PresetEntry) {
     status('Terrain ready. Adding map features...', false, true);
     $('model-caption').textContent = 'TERRAIN READY \u00b7 LOADING MAP FEATURES';
     await nextPreviewPaint();
-    viewer.setOverlays(overlays, project.features);
+    viewer.setOverlays(overlays, project.features, project.settings);
     if (overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     refreshMetrics();
@@ -811,6 +813,13 @@ viewer.onPick = id => {
   );
   row?.scrollIntoView({ block: 'nearest' });
 };
+function insertSurfaceDescription(settings: Settings) {
+  const offset = insertSurfaceOffsetMm(settings);
+  if (settings.insert_surface_mode === 'flush') return 'Flush · aligned to sampled terrain';
+  return settings.insert_surface_mode === 'inset'
+    ? 'Inset · ' + Math.abs(offset).toFixed(2) + ' mm below sampled terrain'
+    : 'Proud · ' + offset.toFixed(2) + ' mm above sampled terrain';
+}
 function fitGuidance() {
   const s = project.settings,
     extrusion = extrusionWidthMm(s.nozzle_diameter_mm),
@@ -857,6 +866,12 @@ function syncForm() {
     : '';
   ($('winter-mode') as HTMLInputElement).checked = Boolean(project.winter_mode);
   ($('manufacturing-mode') as HTMLSelectElement).value = s.manufacturing_mode;
+  ($('insert-surface-mode') as HTMLSelectElement).value = s.insert_surface_mode;
+  ($('insert-proud-height') as HTMLInputElement).value = String(s.insert_proud_height_mm);
+  ($('insert-inset-depth') as HTMLInputElement).value = String(s.insert_inset_depth_mm);
+  $('proud-height-control').classList.toggle('hidden', s.insert_surface_mode !== 'proud');
+  $('inset-depth-control').classList.toggle('hidden', s.insert_surface_mode !== 'inset');
+  $('insert-surface-guidance').textContent = insertSurfaceDescription(s);
   const groups = project.materials || [
     { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
     { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
@@ -916,7 +931,7 @@ async function rebuild(
           progress => status(progress.message, false, true),
         )
       : [];
-    viewer.setOverlays(overlays, project.features);
+    viewer.setOverlays(overlays, project.features, project.settings);
     if (stagedPreview && overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     $('model-caption').textContent =
@@ -950,7 +965,7 @@ async function updateOverlays() {
     });
     if (requested === revision) {
       overlays = result;
-      if (!previewSuspended) viewer.setOverlays(overlays, project.features);
+      if (!previewSuspended) viewer.setOverlays(overlays, project.features, project.settings);
       annotationEditor.refresh();
       if (!busy) status('');
     } else overlayAgain = true;
@@ -970,7 +985,7 @@ function design() {
   $('mode-review').classList.remove('active');
   if (terrain) {
     viewer.setTerrain(terrain.mesh, terrain.layout);
-    viewer.setOverlays(overlays, project.features);
+    viewer.setOverlays(overlays, project.features, project.settings);
     annotationEditor.refresh();
     viewer.setSection(100);
   }
@@ -1019,7 +1034,7 @@ $('generate').onclick = async () => {
     ($('download') as HTMLButtonElement).disabled = false;
     ($('mode-review') as HTMLButtonElement).disabled = false;
     $('asset-summary').innerHTML =
-      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.inserts.length} independently printable inserts${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
+      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.inserts.length} independently printable inserts<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
     $('piece-list').innerHTML = result.inserts
       .map(p => `<div class="review-piece"><span>${esc(p.id)}</span></div>`)
       .join('');
@@ -1036,7 +1051,7 @@ $('generate').onclick = async () => {
     previewSuspended = false;
     if (releasePreview && !completed && mode === 'design') {
       viewer.setTerrain(terrain.mesh, terrain.layout);
-      viewer.setOverlays(overlays, project.features);
+      viewer.setOverlays(overlays, project.features, project.settings);
     }
     updateBusy(false);
   }
@@ -1119,7 +1134,7 @@ $('file-project').onchange = async () => {
     if (data.schema_version !== 2 || !data.grid || !Array.isArray(data.features))
       throw new Error('This is not a Contour Workbench project.');
     await flushAutosave();
-    project = { ...data, settings: { ...defaults, ...data.settings } };
+    project = { ...data, settings: normalizeSettings(data.settings) };
     activateNewLocalWorkspace();
     hideLanding();
     $('area-dialog').classList.add('hidden');
@@ -1229,6 +1244,32 @@ $('manufacturing-mode').onchange = () => {
   syncForm();
   void updateOverlays();
 };
+$('insert-surface-mode').onchange = () => {
+  project.settings.insert_surface_mode = ($('insert-surface-mode') as HTMLSelectElement)
+    .value as Settings['insert_surface_mode'];
+  touch();
+  syncForm();
+  void updateOverlays();
+};
+for (const [id, key] of [
+  ['insert-proud-height', 'insert_proud_height_mm'],
+  ['insert-inset-depth', 'insert_inset_depth_mm'],
+] as const)
+  $(id).onchange = () => {
+    const value = Number(($(id) as HTMLInputElement).value);
+    if (!Number.isFinite(value) || value < 0 || value > 10) {
+      syncForm();
+      return;
+    }
+    project.settings[key] = value;
+    touch();
+    syncForm();
+    if (
+      (key === 'insert_proud_height_mm' && project.settings.insert_surface_mode === 'proud') ||
+      (key === 'insert_inset_depth_mm' && project.settings.insert_surface_mode === 'inset')
+    )
+      void updateOverlays();
+  };
 for (const id of ['terrain-color', 'feature-color', 'terrain-extruder', 'feature-extruder'])
   $(id).onchange = () => {
     project.materials = [
@@ -1538,7 +1579,7 @@ $('area-load').onclick = async () => {
         ? document.querySelector<HTMLInputElement>('input[name="wizard-features"]:checked')
             ?.value || 'osm'
         : 'none',
-      prior = wizardMode ? structuredClone(defaults) : { ...defaults, ...project?.settings };
+      prior = wizardMode ? structuredClone(defaults) : normalizeSettings(project?.settings);
     $('area-dialog').classList.add('hidden');
     updateBusy(true);
     abort = new AbortController();

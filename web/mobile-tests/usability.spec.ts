@@ -131,6 +131,20 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await expect(page.locator('#terrain-island-width')).toHaveValue('');
   await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');
   await expect(page.locator('#download-calibration')).toBeVisible();
+  await expect(page.locator('#insert-surface-mode')).toHaveValue('proud');
+  await expect(page.locator('#proud-height-control')).toBeVisible();
+  const terrainBuildsBeforePlacement = await page.evaluate(
+    () => (window as any).contourDiagnostics.terrainBuilds,
+  );
+  await page.locator('#insert-surface-mode').selectOption('inset');
+  await expect(page.locator('#inset-depth-control')).toBeVisible();
+  await page.locator('#insert-inset-depth').fill('0.4');
+  await page.locator('#insert-inset-depth').blur();
+  await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
+  await expect(page.locator('#insert-surface-guidance')).toContainText('0.40 mm below');
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.terrainBuilds)).toBe(
+    terrainBuildsBeforePlacement,
+  );
   await page.locator('#manufacturing-mode').selectOption('multicolor');
   await expect(page.locator('#fit-clearance')).toBeDisabled();
   await page.locator('#feature-extruder').fill('3');
@@ -142,6 +156,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
     true,
   );
   await expect(page.locator('#download')).toBeEnabled();
+  await expect(page.locator('#asset-summary')).toContainText('Inset · 0.40 mm below');
   await page.locator('#generate').tap();
   await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
   expect(await page.evaluate(() => (window as any).contourDiagnostics.asset?.watertight)).toBe(

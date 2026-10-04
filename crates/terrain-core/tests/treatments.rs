@@ -173,3 +173,36 @@ fn crossing_paths_and_pockets_leave_the_configured_edge_margin() {
         assert!(bounds[1] <= terrain.layout.width - s.feature_edge_clearance_mm + 0.01);
     }
 }
+
+#[test]
+fn v_carves_ignore_insert_surface_placement() {
+    let (g, proud, feature) = fixture();
+    let terrain = terrain(&g, &proud).unwrap();
+    let proud_plan = plan(&g, &proud, std::slice::from_ref(&feature), &terrain.layout).unwrap();
+    let inset = Settings {
+        insert_surface_mode: InsertSurfaceMode::Inset,
+        insert_inset_depth_mm: 0.6,
+        ..proud
+    };
+    let inset_plan = plan(&g, &inset, &[feature], &terrain.layout).unwrap();
+    assert_eq!(proud_plan.cutters.len(), inset_plan.cutters.len());
+    for (left, right) in proud_plan.cutters.iter().zip(&inset_plan.cutters) {
+        assert_eq!(left.positions, right.positions);
+        let canonical_triangles = |indices: &[u32]| {
+            let mut triangles = indices
+                .chunks_exact(3)
+                .map(|triangle| {
+                    let mut triangle = [triangle[0], triangle[1], triangle[2]];
+                    triangle.sort_unstable();
+                    triangle
+                })
+                .collect::<Vec<_>>();
+            triangles.sort_unstable();
+            triangles
+        };
+        assert_eq!(
+            canonical_triangles(&left.indices),
+            canonical_triangles(&right.indices)
+        );
+    }
+}

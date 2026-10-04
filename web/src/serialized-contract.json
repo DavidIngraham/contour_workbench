@@ -2,6 +2,9 @@
   "fields": {
     "Settings": [
       "manufacturing_mode",
+      "insert_surface_mode",
+      "insert_proud_height_mm",
+      "insert_inset_depth_mm",
       "max_print_size_mm",
       "height_factor",
       "base_height_mm",
@@ -71,6 +74,7 @@
       "treatment",
       "id",
       "class",
+      "surface_offset_mm",
       "mesh"
     ],
     "Piece": [
@@ -79,6 +83,7 @@
       "mesh",
       "origin",
       "insert_depth_mm",
+      "surface_offset_mm",
       "conformal"
     ],
     "Plan": [
@@ -93,6 +98,11 @@
     "ManufacturingMode": [
       "separate",
       "multicolor"
+    ],
+    "InsertSurfaceMode": [
+      "proud",
+      "flush",
+      "inset"
     ],
     "Treatment": [
       "insert",

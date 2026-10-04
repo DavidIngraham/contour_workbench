@@ -2,7 +2,7 @@
 import { topoSurface } from './topo';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { Mesh, Layout, Overlay, Feature, Asset } from './types';
+import type { Mesh, Layout, Overlay, Feature, Asset, Settings } from './types';
 /** Stable preview colors for normalized feature classes. */
 export const colors = {
   trail: 0xe78a43,
@@ -13,6 +13,69 @@ export const colors = {
   ski_run: 0xffffff,
   ski_lift: 0x5b5148,
 };
+/** Render-only treatment for a preview insert surface. */
+export function insertPreviewState(
+  settings: Pick<Settings, 'insert_surface_mode'>,
+  effectiveOffsetMm: number,
+  classBiasMm = 0.003,
+) {
+  if (settings.insert_surface_mode === 'flush')
+    return { renderBiasMm: Math.max(0.004, classBiasMm), opensTerrain: false, openingDepthMm: 0 };
+  if (settings.insert_surface_mode === 'inset')
+    return {
+      renderBiasMm: 0,
+      opensTerrain: effectiveOffsetMm < 0,
+      openingDepthMm: Math.max(0, -effectiveOffsetMm),
+    };
+  return { renderBiasMm: classBiasMm, opensTerrain: false, openingDepthMm: 0 };
+}
+
+/** Build render-only terrain-colored walls around a recessed preview surface. */
+export function insetOpeningWall(mesh: Mesh, depthMm: number): Mesh {
+  if (!(depthMm > 0) || mesh.positions.length % 6 !== 0) return { positions: [], indices: [] };
+  const topVertices = mesh.positions.length / 6;
+  const edges = new Map<string, { a: number; b: number; count: number }>();
+  for (let index = 0; index < mesh.indices.length; index += 3) {
+    const triangle = [
+      Number(mesh.indices[index]),
+      Number(mesh.indices[index + 1]),
+      Number(mesh.indices[index + 2]),
+    ];
+    if (triangle.some(vertex => vertex >= topVertices)) continue;
+    for (const [a, b] of [
+      [triangle[0], triangle[1]],
+      [triangle[1], triangle[2]],
+      [triangle[2], triangle[0]],
+    ]) {
+      const key = a < b ? a + ':' + b : b + ':' + a;
+      const edge = edges.get(key);
+      if (edge) edge.count++;
+      else edges.set(key, { a, b, count: 1 });
+    }
+  }
+  const positions: number[] = [];
+  const indices: number[] = [];
+  for (const edge of edges.values()) {
+    if (edge.count !== 1) continue;
+    const base = positions.length / 3;
+    for (const [vertex, lift] of [
+      [edge.a, 0],
+      [edge.b, 0],
+      [edge.b, depthMm],
+      [edge.a, depthMm],
+    ]) {
+      const offset = vertex * 3;
+      positions.push(
+        Number(mesh.positions[offset]),
+        Number(mesh.positions[offset + 1]),
+        Number(mesh.positions[offset + 2]) + lift,
+      );
+    }
+    indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  return { positions, indices };
+}
+
 /** Owns the Three.js scene and maps project meshes to interactive objects. */
 export class Viewer {
   renderer: THREE.WebGLRenderer;
@@ -263,8 +326,8 @@ export class Viewer {
     void this.loadTopo();
     this.top();
   }
-  // Preview ribbons retain their original 0.35 mm protrusion; tiny class offsets avoid crossing flicker.
-  setOverlays(overlays: Overlay[], features: Feature[]) {
+  // Preview placement is render-only: export meshes never receive these depth and polygon biases.
+  setOverlays(overlays: Overlay[], features: Feature[], settings: Settings) {
     this.dirty = true;
     this.clear(this.features);
     this.overlays.clear();
@@ -275,6 +338,17 @@ export class Viewer {
     for (const o of overlays) {
       const id = o.id.slice(0, o.id.lastIndexOf('#'));
       const carve = o.treatment === 'v_carve';
+      const classBias =
+        o.class === 'ski_lift'
+          ? 0.012
+          : o.class === 'trail'
+            ? 0.009
+            : o.class === 'road'
+              ? 0.006
+              : 0.003;
+      const placement = carve
+        ? { renderBiasMm: 0, opensTerrain: false, openingDepthMm: 0 }
+        : insertPreviewState(settings, o.surface_offset_mm ?? 0.35, classBias);
       const material = new THREE.MeshStandardMaterial({
         color: carve ? 0x60755e : colors[o.class],
         roughness: o.class === 'water' ? 0.52 : 0.85,
@@ -304,25 +378,39 @@ export class Viewer {
               : o.class === 'stream'
                 ? 4
                 : 3;
-      mesh.position.z = carve
-        ? 0
-        : o.class === 'ski_lift'
-          ? 0.012
-          : o.class === 'trail'
-            ? 0.009
-            : o.class === 'road'
-              ? 0.006
-              : 0.003;
+      mesh.position.z = placement.renderBiasMm;
       mesh.visible = enabled.get(id) ?? true;
       this.features.add(mesh);
       this.overlays.set(id, [...(this.overlays.get(id) || []), mesh]);
-      if (carve && mesh.visible && this.layout) {
+
+      if (placement.opensTerrain) {
+        const wall = insetOpeningWall(o.mesh, placement.openingDepthMm);
+        if (wall.indices.length) {
+          const opening = new THREE.Mesh(
+            this.geometry(wall),
+            new THREE.MeshStandardMaterial({
+              color: 0x60755e,
+              roughness: 0.95,
+              side: THREE.DoubleSide,
+              clippingPlanes: [this.clip],
+            }),
+          );
+          opening.userData.id = id;
+          opening.userData.previewOpening = true;
+          opening.renderOrder = mesh.renderOrder - 1;
+          opening.visible = mesh.visible;
+          this.features.add(opening);
+          this.overlays.set(id, [...(this.overlays.get(id) || []), opening]);
+        }
+      }
+
+      if ((carve || placement.opensTerrain) && mesh.visible && this.layout) {
         ctx.beginPath();
         for (let i = 0; i < o.mesh.indices.length; i += 3) {
           for (let k = 0; k < 3; k++) {
-            const j = o.mesh.indices[i + k] * 3;
-            const x = (o.mesh.positions[j] / this.layout.width) * 2048,
-              y = (1 - o.mesh.positions[j + 1] / this.layout.depth) * 2048;
+            const j = Number(o.mesh.indices[i + k]) * 3;
+            const x = (Number(o.mesh.positions[j]) / this.layout.width) * 2048,
+              y = (1 - Number(o.mesh.positions[j + 1]) / this.layout.depth) * 2048;
             if (k === 0) ctx.moveTo(x, y);
             else ctx.lineTo(x, y);
           }

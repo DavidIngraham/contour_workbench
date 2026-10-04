@@ -71,6 +71,7 @@ fn serialized_contract_matches_typescript_manifest() {
         treatment: Treatment::Insert,
         id: "overlay".into(),
         class: "trail".into(),
+        surface_offset_mm: 0.35,
         mesh: mesh.clone(),
     };
     let piece = Piece {
@@ -79,6 +80,7 @@ fn serialized_contract_matches_typescript_manifest() {
         mesh,
         origin: [0.0; 3],
         insert_depth_mm: 1.0,
+        surface_offset_mm: 0.35,
         conformal: false,
     };
     let plan = Plan {
@@ -107,6 +109,14 @@ fn serialized_contract_matches_typescript_manifest() {
     assert_eq!(
         json!([ManufacturingMode::Separate, ManufacturingMode::Multicolor]),
         manifest["enums"]["ManufacturingMode"]
+    );
+    assert_eq!(
+        json!([
+            InsertSurfaceMode::Proud,
+            InsertSurfaceMode::Flush,
+            InsertSurfaceMode::Inset
+        ]),
+        manifest["enums"]["InsertSurfaceMode"]
     );
     assert_eq!(
         json!([Treatment::Insert, Treatment::Hide, Treatment::VCarve]),

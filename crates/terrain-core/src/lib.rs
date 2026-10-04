@@ -27,12 +27,30 @@ pub enum ManufacturingMode {
     /// Aligned parts printed together with a shared, clearance-free interface.
     Multicolor,
 }
+/// Visible insert-top placement relative to the sampled terrain surface.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InsertSurfaceMode {
+    /// Raise insert tops above terrain by the configured proud height.
+    #[default]
+    Proud,
+    /// Align insert tops with the sampled terrain surface.
+    Flush,
+    /// Lower insert tops below terrain by the configured inset depth.
+    Inset,
+}
 /// Validated controls that affect terrain, overlays, inserts, and pockets.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Manufacturing strategy for insert geometry.
     pub manufacturing_mode: ManufacturingMode,
+    /// Visible insert-top placement relative to sampled terrain.
+    pub insert_surface_mode: InsertSurfaceMode,
+    /// Height of proud insert tops above sampled terrain, in millimeters.
+    pub insert_proud_height_mm: f64,
+    /// Depth of inset insert tops below sampled terrain, in millimeters.
+    pub insert_inset_depth_mm: f64,
     /// Maximum printable width and depth in millimeters.
     pub max_print_size_mm: [f64; 2],
     /// Multiplier applied to terrain relief after horizontal scaling.
@@ -80,6 +98,9 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             manufacturing_mode: ManufacturingMode::Separate,
+            insert_surface_mode: InsertSurfaceMode::Proud,
+            insert_proud_height_mm: 0.35,
+            insert_inset_depth_mm: 0.3,
             max_print_size_mm: [248., 198.],
             height_factor: 1.,
             base_height_mm: 1.,
@@ -135,6 +156,14 @@ impl Settings {
             ManufacturingMode::Multicolor => 0.,
         }
     }
+    /// Return the signed visible insert-top offset from sampled terrain.
+    pub fn insert_surface_offset_mm(&self) -> f64 {
+        match self.insert_surface_mode {
+            InsertSurfaceMode::Proud => self.insert_proud_height_mm,
+            InsertSurfaceMode::Flush => 0.,
+            InsertSurfaceMode::Inset => -self.insert_inset_depth_mm,
+        }
+    }
     /// Return the pocket floor for an insert whose lower surface is at the given base.
     pub fn insert_pocket_bottom_mm(&self, base: f64, floor: f64) -> f64 {
         match self.manufacturing_mode {
@@ -186,6 +215,8 @@ impl Settings {
             self.insert_elephant_foot_relief_mm,
             self.insert_elephant_foot_height_mm,
             self.insert_draft_angle_deg,
+            self.insert_proud_height_mm,
+            self.insert_inset_depth_mm,
             self.terrain_max_error_mm,
         ] {
             if !v.is_finite() || v < 0. {
@@ -197,6 +228,8 @@ impl Settings {
             || self.insert_elephant_foot_relief_mm > 2.
             || self.insert_elephant_foot_height_mm > 5.
             || self.insert_draft_angle_deg > 10.
+            || self.insert_proud_height_mm > 10.
+            || self.insert_inset_depth_mm > 10.
         {
             return Err("Insert compensation is outside the supported range".into());
         }
@@ -1294,12 +1327,82 @@ fn feature_boundary(s: &Settings, l: &Layout, additional_clearance_mm: f64) -> M
     };
     boundary.buffer(-(s.feature_edge_clearance_mm + additional_clearance_mm.max(0.)))
 }
-// Preview ribbons follow the surface on both sides instead of extending to the model base.
-fn preview_ribbon(poly: &Polygon<f64>, surface: impl Fn([f64; 2]) -> f64) -> Mesh {
-    let mut mesh = polygon_surface(poly, |p| surface(p) + 0.35, 0.);
+const INSERT_PREVIEW_THICKNESS_MM: f64 = 0.35;
+const INSERT_SUBSTRATE_CLEARANCE_MM: f64 = 0.15;
+const MINIMUM_INSERT_THICKNESS_MM: f64 = 0.05;
+
+fn minimum_insert_surface(
+    poly: &Polygon<f64>,
+    g: &Grid,
+    l: &Layout,
+    fixed_level: Option<f64>,
+) -> f64 {
+    if let Some(level) = fixed_level {
+        return level;
+    }
+    let mut minimum = std::iter::once(poly.exterior())
+        .chain(poly.interiors())
+        .flat_map(|ring| ring.0.iter())
+        .map(|point| l.z(g, [point.x, point.y]))
+        .fold(f64::INFINITY, f64::min);
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for coordinate in &poly.exterior().0 {
+        let point = l.lonlat([coordinate.x, coordinate.y]);
+        bounds[0] = bounds[0].min(point[0]);
+        bounds[1] = bounds[1].min(point[1]);
+        bounds[2] = bounds[2].max(point[0]);
+        bounds[3] = bounds[3].max(point[1]);
+    }
+    let index = |value: f64, min: f64, max: f64, count: usize| {
+        (value - min) / (max - min) * (count - 1) as f64
+    };
+    let i0 = (index(bounds[0], g.bounds[0], g.bounds[2], g.width).floor() as isize - 1)
+        .clamp(0, g.width as isize - 1) as usize;
+    let i1 = (index(bounds[2], g.bounds[0], g.bounds[2], g.width).ceil() as isize + 1)
+        .clamp(0, g.width as isize - 1) as usize;
+    let j0 = (index(bounds[1], g.bounds[1], g.bounds[3], g.height).floor() as isize - 1)
+        .clamp(0, g.height as isize - 1) as usize;
+    let j1 = (index(bounds[3], g.bounds[1], g.bounds[3], g.height).ceil() as isize + 1)
+        .clamp(0, g.height as isize - 1) as usize;
+    for j in j0..=j1 {
+        for i in i0..=i1 {
+            let point = l.xy([
+                g.bounds[0] + i as f64 / (g.width - 1) as f64 * (g.bounds[2] - g.bounds[0]),
+                g.bounds[1] + j as f64 / (g.height - 1) as f64 * (g.bounds[3] - g.bounds[1]),
+            ]);
+            if poly.contains(&Point::new(point[0], point[1])) {
+                minimum = minimum.min(l.z(g, point));
+            }
+        }
+    }
+    minimum
+}
+
+fn effective_insert_surface_offset(
+    minimum_surface_mm: f64,
+    requested_offset_mm: f64,
+    floor_mm: f64,
+) -> f64 {
+    requested_offset_mm.max(
+        floor_mm + INSERT_SUBSTRATE_CLEARANCE_MM + MINIMUM_INSERT_THICKNESS_MM - minimum_surface_mm,
+    )
+}
+
+// Preview ribbons follow the requested visible surface instead of extending to the model base.
+fn preview_ribbon(
+    poly: &Polygon<f64>,
+    surface: impl Fn([f64; 2]) -> f64,
+    surface_offset_mm: f64,
+) -> Mesh {
+    let mut mesh = polygon_surface(poly, |p| surface(p) + surface_offset_mm, 0.);
     let half = mesh.positions.len() / 2;
     for i in (half..mesh.positions.len()).step_by(3) {
-        mesh.positions[i + 2] = mesh.positions[i - half + 2] - 0.35;
+        mesh.positions[i + 2] = mesh.positions[i - half + 2] - INSERT_PREVIEW_THICKNESS_MM;
     }
     mesh
 }
@@ -1342,11 +1445,15 @@ pub fn overlays(
                 &insert_clip
             });
             for (i, p) in polygons.0.iter().enumerate() {
-                let mesh = if f.treatment() == Treatment::VCarve {
-                    if f.is_zone() {
+                let (mesh, surface_offset_mm) = if f.treatment() == Treatment::VCarve {
+                    let mesh = if f.is_zone() {
                         let level = feature_level(f, g, l, p);
                         if let Some(level) = level {
-                            preview_ribbon(p, |_| level - s.carve_depth_mm)
+                            preview_ribbon(
+                                p,
+                                |_| level - s.carve_depth_mm,
+                                INSERT_PREVIEW_THICKNESS_MM,
+                            )
                         } else {
                             terrain_patch(
                                 p,
@@ -1361,21 +1468,37 @@ pub fn overlays(
                             carve::mesh(g, s, f, l, p, 10000., false)
                                 .map_err(|e| format!("{} groove: {e}", f.id))?,
                         )
-                    }
+                    };
+                    (mesh, 0.)
                 } else {
+                    let floor = if f.is_zone() { s.zone_floor_mm } else { 0.4 };
+                    let requested_offset = s.insert_surface_offset_mm();
                     let level = feature_level(f, g, l, p);
-                    if let Some(level) = level {
-                        preview_ribbon(p, |_| level)
+                    let surface_offset = effective_insert_surface_offset(
+                        minimum_insert_surface(p, g, l, level),
+                        requested_offset,
+                        floor,
+                    );
+                    let mesh = if let Some(level) = level {
+                        preview_ribbon(p, |_| level, surface_offset)
                     } else if f.is_zone() {
-                        terrain_patch(p, g, l, |q| l.z(g, q) + 0.35, |q| l.z(g, q))?
+                        terrain_patch(
+                            p,
+                            g,
+                            l,
+                            |q| l.z(g, q) + surface_offset,
+                            |q| l.z(g, q) + surface_offset - INSERT_PREVIEW_THICKNESS_MM,
+                        )?
                     } else {
-                        preview_ribbon(p, |q| l.z(g, q))
-                    }
+                        preview_ribbon(p, |q| l.z(g, q), surface_offset)
+                    };
+                    (mesh, surface_offset)
                 };
                 out.push(Overlay {
                     treatment: f.treatment(),
                     id: format!("{}#{i}", f.id),
                     class: f.class.clone(),
+                    surface_offset_mm,
                     mesh,
                 });
             }
@@ -1937,22 +2060,21 @@ fn add_insert_layer(
             } else {
                 raw_pockets
             };
-            let top = |q| fixed_level.unwrap_or_else(|| l.z(g, q)) + 0.35;
-            let mut base = f64::INFINITY;
-            for pocket in &pockets.0 {
-                for c in &pocket.exterior().0 {
-                    base = base.min(top([c.x, c.y]) - depth);
-                }
-                for ring in pocket.interiors() {
-                    for c in &ring.0 {
-                        base = base.min(top([c.x, c.y]) - depth);
-                    }
-                }
-            }
-            if !base.is_finite() {
+            let surface = |q| fixed_level.unwrap_or_else(|| l.z(g, q));
+            let requested_offset = s.insert_surface_offset_mm();
+            let minimum_surface_mm = pockets
+                .0
+                .iter()
+                .map(|pocket| minimum_insert_surface(pocket, g, l, fixed_level))
+                .fold(f64::INFINITY, f64::min);
+            if !minimum_surface_mm.is_finite() {
                 continue;
             }
-            base = base.max(floor + 0.15);
+            let surface_offset_mm =
+                effective_insert_surface_offset(minimum_surface_mm, requested_offset, floor);
+            let top = |q| surface(q) + surface_offset_mm;
+            let base = (minimum_surface_mm + surface_offset_mm - depth)
+                .max(floor + INSERT_SUBSTRATE_CLEARANCE_MM);
             for (i, part) in parts.0.iter().enumerate() {
                 // Terrain-following inserts are emitted as simple prisms here.
                 // The browser solid engine intersects each prism with the
@@ -1985,6 +2107,7 @@ fn add_insert_layer(
                     mesh,
                     origin,
                     insert_depth_mm: depth,
+                    surface_offset_mm,
                     conformal,
                 });
             }
@@ -2222,8 +2345,8 @@ mod tests {
         }
     }
     #[test]
-    fn preview_ribbon_follows_surface_with_original_protrusion() {
-        let mesh = preview_ribbon(&rectangle(4., 3.), |p| 2. + p[0] * 0.7 + p[1] * 0.2);
+    fn preview_ribbon_follows_surface_with_configured_offset() {
+        let mesh = preview_ribbon(&rectangle(4., 3.), |p| 2. + p[0] * 0.7 + p[1] * 0.2, 0.35);
         let half = mesh.positions.len() / 2;
         for (i, p) in mesh.positions.chunks_exact(3).enumerate() {
             let surface = 2. + p[0] * 0.7 + p[1] * 0.2;
@@ -2232,6 +2355,82 @@ mod tests {
         }
         mesh.validate().unwrap();
     }
+    #[test]
+    fn inset_surface_is_clamped_to_preserve_substrate_and_insert_thickness() {
+        assert_eq!(effective_insert_surface_offset(1., -0.3, 0.8), 0.);
+        assert_eq!(effective_insert_surface_offset(2., -0.3, 0.8), -0.3);
+    }
+
+    #[test]
+    fn insert_surface_modes_place_watertight_parts_in_both_manufacturing_modes() {
+        let flat = Grid {
+            bounds: [0., 0., 0.001, 0.001],
+            width: 9,
+            height: 9,
+            elevations: vec![100.; 81],
+        };
+        let feature = Feature {
+            id: "path".into(),
+            name: "Path".into(),
+            class: "trail".into(),
+            lines: vec![vec![[0.0002, 0.0005], [0.0008, 0.0005]]],
+            polygons: vec![],
+            enabled: true,
+            treatment: Treatment::Insert,
+            surface: ZoneSurface::Terrain,
+            width_m: None,
+            insert_depth_mm: None,
+            tags: Value::Null,
+        };
+        for manufacturing_mode in [ManufacturingMode::Separate, ManufacturingMode::Multicolor] {
+            for (insert_surface_mode, expected_top) in [
+                (InsertSurfaceMode::Proud, 1.35),
+                (InsertSurfaceMode::Flush, 1.),
+                (InsertSurfaceMode::Inset, 0.7),
+            ] {
+                let settings = Settings {
+                    manufacturing_mode,
+                    insert_surface_mode,
+                    max_print_size_mm: [10., 10.],
+                    ..Default::default()
+                };
+                let terrain = terrain(&flat, &settings).unwrap();
+                let plan = plan(
+                    &flat,
+                    &settings,
+                    std::slice::from_ref(&feature),
+                    &terrain.layout,
+                )
+                .unwrap();
+                plan.terrain.validate().unwrap();
+                assert!(!plan.inserts.is_empty());
+                for piece in &plan.inserts {
+                    piece.mesh.validate().unwrap();
+                    let top = piece
+                        .mesh
+                        .positions
+                        .chunks_exact(3)
+                        .map(|point| point[2] + piece.origin[2])
+                        .fold(f64::NEG_INFINITY, f64::max);
+                    assert!((top - expected_top).abs() < 1e-6);
+                    assert!(
+                        (piece.surface_offset_mm - settings.insert_surface_offset_mm()).abs()
+                            < 1e-9
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_settings_default_to_proud_surface_placement() {
+        let settings: Settings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(settings.insert_surface_mode, InsertSurfaceMode::Proud);
+        assert_eq!(settings.insert_proud_height_mm, 0.35);
+        assert_eq!(settings.insert_inset_depth_mm, 0.3);
+        assert_eq!(settings.insert_surface_offset_mm(), 0.35);
+    }
+
     #[test]
     fn classification_parity() {
         assert_eq!(classify(&json!({"highway":"path"})), Some("trail"));
