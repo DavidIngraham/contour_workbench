@@ -27,30 +27,14 @@ pub enum ManufacturingMode {
     /// Aligned parts printed together with a shared, clearance-free interface.
     Multicolor,
 }
-/// Visible insert-top placement relative to the sampled terrain surface.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InsertSurfaceMode {
-    /// Raise insert tops above terrain by the configured proud height.
-    #[default]
-    Proud,
-    /// Align insert tops with the sampled terrain surface.
-    Flush,
-    /// Lower insert tops below terrain by the configured inset depth.
-    Inset,
-}
+
 /// Validated controls that affect terrain, overlays, inserts, and pockets.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Settings {
     /// Manufacturing strategy for insert geometry.
     pub manufacturing_mode: ManufacturingMode,
-    /// Visible insert-top placement relative to sampled terrain.
-    pub insert_surface_mode: InsertSurfaceMode,
-    /// Height of proud insert tops above sampled terrain, in millimeters.
-    pub insert_proud_height_mm: f64,
-    /// Depth of inset insert tops below sampled terrain, in millimeters.
-    pub insert_inset_depth_mm: f64,
+    /// Signed insert-top height relative to sampled terrain, in millimeters.
+    pub insert_relative_height_mm: f64,
     /// Maximum printable width and depth in millimeters.
     pub max_print_size_mm: [f64; 2],
     /// Multiplier applied to terrain relief after horizontal scaling.
@@ -98,9 +82,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             manufacturing_mode: ManufacturingMode::Separate,
-            insert_surface_mode: InsertSurfaceMode::Proud,
-            insert_proud_height_mm: 0.35,
-            insert_inset_depth_mm: 0.3,
+            insert_relative_height_mm: 0.35,
             max_print_size_mm: [248., 198.],
             height_factor: 1.,
             base_height_mm: 1.,
@@ -123,6 +105,77 @@ impl Default for Settings {
             terrain_max_error_mm: 0.,
             boundary: vec![],
         }
+    }
+}
+#[derive(Default, Deserialize)]
+#[serde(remote = "Settings", default)]
+struct SettingsDef {
+    manufacturing_mode: ManufacturingMode,
+    insert_relative_height_mm: f64,
+    max_print_size_mm: [f64; 2],
+    height_factor: f64,
+    base_height_mm: f64,
+    path_width_mm: f64,
+    path_clearance_mm: f64,
+    feature_edge_clearance_mm: f64,
+    nozzle_diameter_mm: f64,
+    minimum_terrain_island_width_mm: Option<f64>,
+    insert_fit_clearance_per_side_mm: f64,
+    insert_elephant_foot_relief_mm: f64,
+    insert_elephant_foot_height_mm: f64,
+    insert_draft_angle_deg: f64,
+    insert_depth_mm: f64,
+    zone_insert_depth_mm: f64,
+    zone_floor_mm: f64,
+    ski_run_width_m: f64,
+    carve_depth_mm: f64,
+    insert_gap_mm: f64,
+    insert_segment_size_mm: Option<f64>,
+    terrain_max_error_mm: f64,
+    boundary: Vec<[f64; 2]>,
+}
+impl<'de> Deserialize<'de> for Settings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        if let Some(settings) = value.as_object_mut() {
+            if !settings.contains_key("insert_relative_height_mm") {
+                let relative_height = match settings
+                    .get("insert_surface_mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("proud")
+                {
+                    "flush" => 0.,
+                    "inset" => -settings
+                        .get("insert_inset_depth_mm")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.3),
+                    _ => settings
+                        .get("insert_proud_height_mm")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(0.35),
+                };
+                settings.insert(
+                    "insert_relative_height_mm".into(),
+                    Value::from(relative_height),
+                );
+            }
+            settings.remove("insert_surface_mode");
+            settings.remove("insert_proud_height_mm");
+            settings.remove("insert_inset_depth_mm");
+        }
+        let mut merged =
+            serde_json::to_value(Settings::default()).map_err(serde::de::Error::custom)?;
+        let merged_settings = merged
+            .as_object_mut()
+            .ok_or_else(|| serde::de::Error::custom("Settings defaults must be an object"))?;
+        let supplied_settings = value
+            .as_object()
+            .ok_or_else(|| serde::de::Error::custom("Settings must be an object"))?;
+        merged_settings.extend(supplied_settings.clone());
+        SettingsDef::deserialize(merged).map_err(serde::de::Error::custom)
     }
 }
 /// Return `[west, south, east, north]` for longitude/latitude vertices.
@@ -156,14 +209,7 @@ impl Settings {
             ManufacturingMode::Multicolor => 0.,
         }
     }
-    /// Return the signed visible insert-top offset from sampled terrain.
-    pub fn insert_surface_offset_mm(&self) -> f64 {
-        match self.insert_surface_mode {
-            InsertSurfaceMode::Proud => self.insert_proud_height_mm,
-            InsertSurfaceMode::Flush => 0.,
-            InsertSurfaceMode::Inset => -self.insert_inset_depth_mm,
-        }
-    }
+
     /// Return the pocket floor for an insert whose lower surface is at the given base.
     pub fn insert_pocket_bottom_mm(&self, base: f64, floor: f64) -> f64 {
         match self.manufacturing_mode {
@@ -215,8 +261,7 @@ impl Settings {
             self.insert_elephant_foot_relief_mm,
             self.insert_elephant_foot_height_mm,
             self.insert_draft_angle_deg,
-            self.insert_proud_height_mm,
-            self.insert_inset_depth_mm,
+            self.insert_relative_height_mm.abs(),
             self.terrain_max_error_mm,
         ] {
             if !v.is_finite() || v < 0. {
@@ -228,8 +273,7 @@ impl Settings {
             || self.insert_elephant_foot_relief_mm > 2.
             || self.insert_elephant_foot_height_mm > 5.
             || self.insert_draft_angle_deg > 10.
-            || self.insert_proud_height_mm > 10.
-            || self.insert_inset_depth_mm > 10.
+            || self.insert_relative_height_mm.abs() > 10.
         {
             return Err("Insert compensation is outside the supported range".into());
         }
@@ -1472,7 +1516,7 @@ pub fn overlays(
                     (mesh, 0.)
                 } else {
                     let floor = if f.is_zone() { s.zone_floor_mm } else { 0.4 };
-                    let requested_offset = s.insert_surface_offset_mm();
+                    let requested_offset = s.insert_relative_height_mm;
                     let level = feature_level(f, g, l, p);
                     let surface_offset = effective_insert_surface_offset(
                         minimum_insert_surface(p, g, l, level),
@@ -2061,7 +2105,7 @@ fn add_insert_layer(
                 raw_pockets
             };
             let surface = |q| fixed_level.unwrap_or_else(|| l.z(g, q));
-            let requested_offset = s.insert_surface_offset_mm();
+            let requested_offset = s.insert_relative_height_mm;
             let minimum_surface_mm = pockets
                 .0
                 .iter()
@@ -2362,7 +2406,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_surface_modes_place_watertight_parts_in_both_manufacturing_modes() {
+    fn signed_insert_heights_place_watertight_parts_in_both_manufacturing_modes() {
         let flat = Grid {
             bounds: [0., 0., 0.001, 0.001],
             width: 9,
@@ -2383,14 +2427,10 @@ mod tests {
             tags: Value::Null,
         };
         for manufacturing_mode in [ManufacturingMode::Separate, ManufacturingMode::Multicolor] {
-            for (insert_surface_mode, expected_top) in [
-                (InsertSurfaceMode::Proud, 1.35),
-                (InsertSurfaceMode::Flush, 1.),
-                (InsertSurfaceMode::Inset, 0.7),
-            ] {
+            for (insert_relative_height_mm, expected_top) in [(0.35, 1.35), (0., 1.), (-0.3, 0.7)] {
                 let settings = Settings {
                     manufacturing_mode,
-                    insert_surface_mode,
+                    insert_relative_height_mm,
                     max_print_size_mm: [10., 10.],
                     ..Default::default()
                 };
@@ -2414,8 +2454,7 @@ mod tests {
                         .fold(f64::NEG_INFINITY, f64::max);
                     assert!((top - expected_top).abs() < 1e-6);
                     assert!(
-                        (piece.surface_offset_mm - settings.insert_surface_offset_mm()).abs()
-                            < 1e-9
+                        (piece.surface_offset_mm - settings.insert_relative_height_mm).abs() < 1e-9
                     );
                 }
             }
@@ -2423,12 +2462,37 @@ mod tests {
     }
 
     #[test]
-    fn legacy_settings_default_to_proud_surface_placement() {
-        let settings: Settings = serde_json::from_value(json!({})).unwrap();
-        assert_eq!(settings.insert_surface_mode, InsertSurfaceMode::Proud);
-        assert_eq!(settings.insert_proud_height_mm, 0.35);
-        assert_eq!(settings.insert_inset_depth_mm, 0.3);
-        assert_eq!(settings.insert_surface_offset_mm(), 0.35);
+    fn settings_migrate_legacy_surface_modes_to_canonical_signed_height() {
+        let oldest: Settings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(oldest.insert_relative_height_mm, 0.35);
+        let proud: Settings = serde_json::from_value(json!({
+            "insert_surface_mode": "proud",
+            "insert_proud_height_mm": 0.6,
+            "insert_inset_depth_mm": 0.2
+        }))
+        .unwrap();
+        assert_eq!(proud.insert_relative_height_mm, 0.6);
+        let flush: Settings =
+            serde_json::from_value(json!({"insert_surface_mode": "flush"})).unwrap();
+        assert_eq!(flush.insert_relative_height_mm, 0.);
+        let inset: Settings = serde_json::from_value(json!({
+            "insert_surface_mode": "inset",
+            "insert_inset_depth_mm": 0.45
+        }))
+        .unwrap();
+        assert_eq!(inset.insert_relative_height_mm, -0.45);
+        let canonical: Settings = serde_json::from_value(json!({
+            "insert_relative_height_mm": -0.8,
+            "insert_surface_mode": "proud",
+            "insert_proud_height_mm": 2.0
+        }))
+        .unwrap();
+        assert_eq!(canonical.insert_relative_height_mm, -0.8);
+        let serialized = serde_json::to_value(canonical).unwrap();
+        assert_eq!(serialized["insert_relative_height_mm"], -0.8);
+        assert!(serialized.get("insert_surface_mode").is_none());
+        assert!(serialized.get("insert_proud_height_mm").is_none());
+        assert!(serialized.get("insert_inset_depth_mm").is_none());
     }
 
     #[test]

@@ -180,8 +180,7 @@ fn v_carves_ignore_insert_surface_placement() {
     let terrain = terrain(&g, &proud).unwrap();
     let proud_plan = plan(&g, &proud, std::slice::from_ref(&feature), &terrain.layout).unwrap();
     let inset = Settings {
-        insert_surface_mode: InsertSurfaceMode::Inset,
-        insert_inset_depth_mm: 0.6,
+        insert_relative_height_mm: -0.6,
         ..proud
     };
     let inset_plan = plan(&g, &inset, &[feature], &terrain.layout).unwrap();

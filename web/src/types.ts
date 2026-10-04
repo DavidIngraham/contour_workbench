@@ -10,15 +10,10 @@ export interface Grid {
 }
 /** Manufacturing strategy for removable inserts or aligned multicolor parts. */
 export type ManufacturingMode = 'separate' | 'multicolor';
-/** Visible insert-top placement relative to sampled terrain. */
-export type InsertSurfaceMode = 'proud' | 'flush' | 'inset';
-
 /** User-controlled geometry and print settings; unit suffixes identify physical units. */
 export interface Settings {
   manufacturing_mode: ManufacturingMode;
-  insert_surface_mode: InsertSurfaceMode;
-  insert_proud_height_mm: number;
-  insert_inset_depth_mm: number;
+  insert_relative_height_mm: number;
   max_print_size_mm: [number, number];
   height_factor: number;
   base_height_mm: number;
@@ -44,9 +39,7 @@ export interface Settings {
 /** Defaults used for new projects and backward-compatible deserialization. */
 export const defaults: Settings = {
   manufacturing_mode: 'separate',
-  insert_surface_mode: 'proud',
-  insert_proud_height_mm: 0.35,
-  insert_inset_depth_mm: 0.3,
+  insert_relative_height_mm: 0.35,
   max_print_size_mm: [248, 198],
   height_factor: 1,
   base_height_mm: 1,
@@ -69,30 +62,33 @@ export const defaults: Settings = {
   terrain_max_error_mm: 0,
   boundary: [],
 };
-/** Merge additive settings fields while preserving the legacy proud placement. */
-export function normalizeSettings(settings?: Partial<Settings>): Settings {
-  const mode = settings?.insert_surface_mode;
-  return {
-    ...defaults,
-    ...settings,
-    insert_surface_mode:
-      mode === 'flush' || mode === 'inset' || mode === 'proud'
-        ? mode
-        : defaults.insert_surface_mode,
-  };
-}
-
-/** Return the signed visible insert-top offset from sampled terrain. */
-export function insertSurfaceOffsetMm(
-  settings: Pick<
-    Settings,
-    'insert_surface_mode' | 'insert_proud_height_mm' | 'insert_inset_depth_mm'
-  >,
-) {
-  if (settings.insert_surface_mode === 'flush') return 0;
-  return settings.insert_surface_mode === 'inset'
-    ? -settings.insert_inset_depth_mm
-    : settings.insert_proud_height_mm;
+/** Temporary three-mode fields accepted only while importing older projects. */
+type LegacyInsertSurfaceSettings = {
+  insert_surface_mode?: 'proud' | 'flush' | 'inset';
+  insert_proud_height_mm?: number;
+  insert_inset_depth_mm?: number;
+};
+/** Merge additive fields and migrate older insert placement controls to one signed height. */
+export function normalizeSettings(
+  settings?: Partial<Settings> & LegacyInsertSurfaceSettings,
+): Settings {
+  const {
+    insert_surface_mode: legacyMode,
+    insert_proud_height_mm: legacyProud,
+    insert_inset_depth_mm: legacyInset,
+    ...canonical
+  } = settings ?? {};
+  let relativeHeight = canonical.insert_relative_height_mm;
+  if (typeof relativeHeight !== 'number' || !Number.isFinite(relativeHeight)) {
+    if (legacyMode === 'flush') relativeHeight = 0;
+    else if (legacyMode === 'inset')
+      relativeHeight =
+        typeof legacyInset === 'number' && Number.isFinite(legacyInset) ? -legacyInset : -0.3;
+    else
+      relativeHeight =
+        typeof legacyProud === 'number' && Number.isFinite(legacyProud) ? legacyProud : 0.35;
+  }
+  return { ...defaults, ...canonical, insert_relative_height_mm: relativeHeight };
 }
 
 /** Effective geometry operation selected for a feature. */
@@ -175,8 +171,7 @@ export interface Asset {
     pieces: number;
     removed_terrain_islands: number;
     terrain_max_error_mm?: number;
-    insert_surface_mode?: InsertSurfaceMode;
-    insert_surface_offset_mm?: number;
+    insert_relative_height_mm?: number;
   };
   revision: number;
 }

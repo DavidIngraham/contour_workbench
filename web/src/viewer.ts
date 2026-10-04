@@ -14,18 +14,14 @@ export const colors = {
   ski_lift: 0x5b5148,
 };
 /** Render-only treatment for a preview insert surface. */
-export function insertPreviewState(
-  settings: Pick<Settings, 'insert_surface_mode'>,
-  effectiveOffsetMm: number,
-  classBiasMm = 0.003,
-) {
-  if (settings.insert_surface_mode === 'flush')
+export function insertPreviewState(effectiveRelativeHeightMm: number, classBiasMm = 0.003) {
+  if (Math.abs(effectiveRelativeHeightMm) < 1e-9)
     return { renderBiasMm: Math.max(0.004, classBiasMm), opensTerrain: false, openingDepthMm: 0 };
-  if (settings.insert_surface_mode === 'inset')
+  if (effectiveRelativeHeightMm < 0)
     return {
       renderBiasMm: 0,
-      opensTerrain: effectiveOffsetMm < 0,
-      openingDepthMm: Math.max(0, -effectiveOffsetMm),
+      opensTerrain: true,
+      openingDepthMm: -effectiveRelativeHeightMm,
     };
   return { renderBiasMm: classBiasMm, opensTerrain: false, openingDepthMm: 0 };
 }
@@ -348,7 +344,7 @@ export class Viewer {
               : 0.003;
       const placement = carve
         ? { renderBiasMm: 0, opensTerrain: false, openingDepthMm: 0 }
-        : insertPreviewState(settings, o.surface_offset_mm ?? 0.35, classBias);
+        : insertPreviewState(o.surface_offset_mm ?? settings.insert_relative_height_mm, classBias);
       const material = new THREE.MeshStandardMaterial({
         color: carve ? 0x60755e : colors[o.class],
         roughness: o.class === 'water' ? 0.52 : 0.85,

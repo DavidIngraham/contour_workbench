@@ -66,7 +66,6 @@ import {
 } from './project-store';
 import {
   defaults,
-  insertSurfaceOffsetMm,
   normalizeSettings,
   type Project,
   type Settings,
@@ -814,11 +813,11 @@ viewer.onPick = id => {
   row?.scrollIntoView({ block: 'nearest' });
 };
 function insertSurfaceDescription(settings: Settings) {
-  const offset = insertSurfaceOffsetMm(settings);
-  if (settings.insert_surface_mode === 'flush') return 'Flush · aligned to sampled terrain';
-  return settings.insert_surface_mode === 'inset'
-    ? 'Inset · ' + Math.abs(offset).toFixed(2) + ' mm below sampled terrain'
-    : 'Proud · ' + offset.toFixed(2) + ' mm above sampled terrain';
+  const height = settings.insert_relative_height_mm;
+  if (Math.abs(height) < 1e-9) return 'Flush · aligned to sampled terrain';
+  return height < 0
+    ? 'Inset · ' + Math.abs(height).toFixed(2) + ' mm below sampled terrain'
+    : 'Proud · ' + height.toFixed(2) + ' mm above sampled terrain';
 }
 function fitGuidance() {
   const s = project.settings,
@@ -866,12 +865,8 @@ function syncForm() {
     : '';
   ($('winter-mode') as HTMLInputElement).checked = Boolean(project.winter_mode);
   ($('manufacturing-mode') as HTMLSelectElement).value = s.manufacturing_mode;
-  ($('insert-surface-mode') as HTMLSelectElement).value = s.insert_surface_mode;
-  ($('insert-proud-height') as HTMLInputElement).value = String(s.insert_proud_height_mm);
-  ($('insert-inset-depth') as HTMLInputElement).value = String(s.insert_inset_depth_mm);
-  $('proud-height-control').classList.toggle('hidden', s.insert_surface_mode !== 'proud');
-  $('inset-depth-control').classList.toggle('hidden', s.insert_surface_mode !== 'inset');
-  $('insert-surface-guidance').textContent = insertSurfaceDescription(s);
+  ($('insert-relative-height') as HTMLInputElement).value = String(s.insert_relative_height_mm);
+
   const groups = project.materials || [
     { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
     { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
@@ -1244,32 +1239,17 @@ $('manufacturing-mode').onchange = () => {
   syncForm();
   void updateOverlays();
 };
-$('insert-surface-mode').onchange = () => {
-  project.settings.insert_surface_mode = ($('insert-surface-mode') as HTMLSelectElement)
-    .value as Settings['insert_surface_mode'];
+$('insert-relative-height').onchange = () => {
+  const value = Number(($('insert-relative-height') as HTMLInputElement).value);
+  if (!Number.isFinite(value) || value < -10 || value > 10) {
+    syncForm();
+    return;
+  }
+  project.settings.insert_relative_height_mm = value;
   touch();
   syncForm();
   void updateOverlays();
 };
-for (const [id, key] of [
-  ['insert-proud-height', 'insert_proud_height_mm'],
-  ['insert-inset-depth', 'insert_inset_depth_mm'],
-] as const)
-  $(id).onchange = () => {
-    const value = Number(($(id) as HTMLInputElement).value);
-    if (!Number.isFinite(value) || value < 0 || value > 10) {
-      syncForm();
-      return;
-    }
-    project.settings[key] = value;
-    touch();
-    syncForm();
-    if (
-      (key === 'insert_proud_height_mm' && project.settings.insert_surface_mode === 'proud') ||
-      (key === 'insert_inset_depth_mm' && project.settings.insert_surface_mode === 'inset')
-    )
-      void updateOverlays();
-  };
 for (const id of ['terrain-color', 'feature-color', 'terrain-extruder', 'feature-extruder'])
   $(id).onchange = () => {
     project.materials = [

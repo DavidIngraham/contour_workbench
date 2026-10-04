@@ -131,17 +131,17 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await expect(page.locator('#terrain-island-width')).toHaveValue('');
   await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');
   await expect(page.locator('#download-calibration')).toBeVisible();
-  await expect(page.locator('#insert-surface-mode')).toHaveValue('proud');
-  await expect(page.locator('#proud-height-control')).toBeVisible();
+  await expect(page.locator('#insert-relative-height')).toHaveValue('0.35');
+  await expect(page.locator('#insert-surface-mode')).toHaveCount(0);
+  await expect(
+    page.getByText('Positive stands proud, zero is flush, and negative is inset.'),
+  ).toBeVisible();
   const terrainBuildsBeforePlacement = await page.evaluate(
     () => (window as any).contourDiagnostics.terrainBuilds,
   );
-  await page.locator('#insert-surface-mode').selectOption('inset');
-  await expect(page.locator('#inset-depth-control')).toBeVisible();
-  await page.locator('#insert-inset-depth').fill('0.4');
-  await page.locator('#insert-inset-depth').blur();
+  await page.locator('#insert-relative-height').fill('-0.4');
+  await page.locator('#insert-relative-height').blur();
   await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
-  await expect(page.locator('#insert-surface-guidance')).toContainText('0.40 mm below');
   expect(await page.evaluate(() => (window as any).contourDiagnostics.terrainBuilds)).toBe(
     terrainBuildsBeforePlacement,
   );

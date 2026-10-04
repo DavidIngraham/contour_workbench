@@ -6,7 +6,6 @@ import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
-import { insertSurfaceOffsetMm } from './types';
 import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
@@ -562,7 +561,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
                 piece.draft_angle_deg = tapered.profile.draftAngleDeg;
                 if (piece.conformal) {
                   const surfaceOffsetMm =
-                    piece.surface_offset_mm ?? insertSurfaceOffsetMm(settings);
+                    piece.surface_offset_mm ?? settings.insert_relative_height_mm;
                   if (
                     !raisedTerrain ||
                     raisedTerrainOffset === undefined ||
@@ -617,8 +616,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             pieces: plan.inserts.length,
             removed_terrain_islands: plan.removed_terrain_islands,
             terrain_max_error_mm: memory.adapted ? memory.terrainMaxErrorMm : undefined,
-            insert_surface_mode: settings.insert_surface_mode,
-            insert_surface_offset_mm: insertSurfaceOffsetMm(settings),
+            insert_relative_height_mm: settings.insert_relative_height_mm,
           },
           revision: p.revision,
         };

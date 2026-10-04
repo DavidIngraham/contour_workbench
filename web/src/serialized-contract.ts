@@ -6,7 +6,6 @@ import type {
   Layout,
   Mesh,
   ManufacturingMode,
-  InsertSurfaceMode,
   Overlay,
   Piece,
   Settings,
@@ -19,9 +18,7 @@ export const serializedContract = {
   fields: {
     Settings: [
       'manufacturing_mode',
-      'insert_surface_mode',
-      'insert_proud_height_mm',
-      'insert_inset_depth_mm',
+      'insert_relative_height_mm',
       'max_print_size_mm',
       'height_factor',
       'base_height_mm',
@@ -77,7 +74,6 @@ export const serializedContract = {
   },
   enums: {
     ManufacturingMode: ['separate', 'multicolor'],
-    InsertSurfaceMode: ['proud', 'flush', 'inset'],
     Treatment: ['insert', 'hide', 'v_carve'],
     ZoneSurface: ['terrain', 'level'],
   },
@@ -109,8 +105,6 @@ const pieceMatch: Assert<
 > = true;
 const manufacturingModeValues: readonly ManufacturingMode[] =
   serializedContract.enums.ManufacturingMode;
-const insertSurfaceModeValues: readonly InsertSurfaceMode[] =
-  serializedContract.enums.InsertSurfaceMode;
 const treatmentValues: readonly Treatment[] = serializedContract.enums.Treatment;
 const surfaceValues: readonly ZoneSurface[] = serializedContract.enums.ZoneSurface;
 
@@ -125,7 +119,6 @@ void [
   overlayMatch,
   pieceMatch,
   manufacturingModeValues,
-  insertSurfaceModeValues,
   treatmentValues,
   surfaceValues,
 ];

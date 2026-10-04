@@ -2,9 +2,7 @@
   "fields": {
     "Settings": [
       "manufacturing_mode",
-      "insert_surface_mode",
-      "insert_proud_height_mm",
-      "insert_inset_depth_mm",
+      "insert_relative_height_mm",
       "max_print_size_mm",
       "height_factor",
       "base_height_mm",
@@ -98,11 +96,6 @@
     "ManufacturingMode": [
       "separate",
       "multicolor"
-    ],
-    "InsertSurfaceMode": [
-      "proud",
-      "flush",
-      "inset"
     ],
     "Treatment": [
       "insert",

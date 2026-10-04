@@ -110,14 +110,7 @@ fn serialized_contract_matches_typescript_manifest() {
         json!([ManufacturingMode::Separate, ManufacturingMode::Multicolor]),
         manifest["enums"]["ManufacturingMode"]
     );
-    assert_eq!(
-        json!([
-            InsertSurfaceMode::Proud,
-            InsertSurfaceMode::Flush,
-            InsertSurfaceMode::Inset
-        ]),
-        manifest["enums"]["InsertSurfaceMode"]
-    );
+
     assert_eq!(
         json!([Treatment::Insert, Treatment::Hide, Treatment::VCarve]),
         manifest["enums"]["Treatment"]
