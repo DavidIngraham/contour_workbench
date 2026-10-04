@@ -17,10 +17,22 @@ use serde_json::Value;
 use spade::FloatTriangulation;
 use std::collections::{HashMap, HashSet};
 
+/// Manufacturing strategy for removable inserts or aligned multicolor parts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManufacturingMode {
+    /// Tapered removable inserts with configurable fit clearance.
+    #[default]
+    Separate,
+    /// Aligned parts printed together with a shared, clearance-free interface.
+    Multicolor,
+}
 /// Validated controls that affect terrain, overlays, inserts, and pockets.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Manufacturing strategy for insert geometry.
+    pub manufacturing_mode: ManufacturingMode,
     /// Maximum printable width and depth in millimeters.
     pub max_print_size_mm: [f64; 2],
     /// Multiplier applied to terrain relief after horizontal scaling.
@@ -67,6 +79,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            manufacturing_mode: ManufacturingMode::Separate,
             max_print_size_mm: [248., 198.],
             height_factor: 1.,
             base_height_mm: 1.,
@@ -108,6 +121,27 @@ pub fn boundary_bounds(points: &[[f64; 2]]) -> [f64; 4] {
     b
 }
 impl Settings {
+    /// Return the lateral pocket clearance used by this manufacturing strategy.
+    pub fn effective_insert_clearance_mm(&self) -> f64 {
+        match self.manufacturing_mode {
+            ManufacturingMode::Separate => self.insert_fit_clearance_per_side_mm,
+            ManufacturingMode::Multicolor => 0.,
+        }
+    }
+    /// Return the separation between independently printable insert sections.
+    pub fn effective_insert_gap_mm(&self) -> f64 {
+        match self.manufacturing_mode {
+            ManufacturingMode::Separate => self.insert_gap_mm,
+            ManufacturingMode::Multicolor => 0.,
+        }
+    }
+    /// Return the pocket floor for an insert whose lower surface is at the given base.
+    pub fn insert_pocket_bottom_mm(&self, base: f64, floor: f64) -> f64 {
+        match self.manufacturing_mode {
+            ManufacturingMode::Separate => (base - 0.15).max(floor),
+            ManufacturingMode::Multicolor => base,
+        }
+    }
     /// Return the configured island width or the nozzle-derived default.
     pub fn effective_minimum_terrain_island_width_mm(&self) -> f64 {
         self.minimum_terrain_island_width_mm
@@ -872,20 +906,28 @@ pub fn terrain(g: &Grid, s: &Settings) -> Result<Terrain, String> {
             return Err("Boundary contains no source samples".into());
         }
     }
+    const TILE_CELLS: usize = 128;
     let mut faces = vec![];
-    for j in 0..g.height - 1 {
-        for i in 0..g.width - 1 {
-            let a = (j * g.width + i) as u32;
-            faces.extend([
-                [a, a + 1, a + g.width as u32 + 1],
-                [a, a + g.width as u32 + 1, a + g.width as u32],
-            ]);
-        }
-    }
     if s.terrain_max_error_mm > 0. {
-        let (p, f) = adaptive(&pts, g, s.terrain_max_error_mm, &l)?;
-        pts = p;
-        faces = f;
+        let (points, adaptive_faces) = adaptive(&pts, g, s.terrain_max_error_mm, &l)?;
+        pts = points;
+        faces = adaptive_faces;
+    } else {
+        for tile_y in (0..g.height - 1).step_by(TILE_CELLS) {
+            for tile_x in (0..g.width - 1).step_by(TILE_CELLS) {
+                let end_y = (tile_y + TILE_CELLS).min(g.height - 1);
+                let end_x = (tile_x + TILE_CELLS).min(g.width - 1);
+                for j in tile_y..end_y {
+                    for i in tile_x..end_x {
+                        let a = (j * g.width + i) as u32;
+                        faces.extend([
+                            [a, a + 1, a + g.width as u32 + 1],
+                            [a, a + g.width as u32 + 1, a + g.width as u32],
+                        ]);
+                    }
+                }
+            }
+        }
     }
     if !s.boundary.is_empty() {
         let mut vertices = vec![];
@@ -1342,6 +1384,388 @@ pub fn overlays(
     }
     Ok(out)
 }
+#[derive(Clone)]
+struct PocketSurface {
+    polygon: Polygon<f64>,
+    height_mm: f64,
+}
+
+fn normalized_pocket_surfaces(mut pockets: Vec<PocketSurface>) -> Vec<PocketSurface> {
+    pockets.sort_by(|a, b| a.height_mm.total_cmp(&b.height_mm));
+    let mut claimed = MultiPolygon(vec![]);
+    let mut result = vec![];
+    let mut index = 0;
+    while index < pockets.len() {
+        let height = pockets[index].height_mm;
+        let mut same_height = MultiPolygon(vec![]);
+        while index < pockets.len() && (pockets[index].height_mm - height).abs() < 1e-9 {
+            same_height = same_height.union(&pockets[index].polygon);
+            index += 1;
+        }
+        let visible = same_height.difference(&claimed);
+        for polygon in visible {
+            result.push(PocketSurface {
+                polygon,
+                height_mm: height,
+            });
+        }
+        claimed = claimed.union(&same_height);
+    }
+    result
+}
+
+fn feature_aware_terrain(
+    base: &Terrain,
+    g: &Grid,
+    s: &Settings,
+    l: &Layout,
+    pockets: &[PocketSurface],
+) -> Result<Mesh, String> {
+    use spade::Triangulation;
+    let pockets = normalized_pocket_surfaces(pockets.to_vec());
+    let boundary = if s.boundary.len() >= 3 {
+        polygon(
+            &s.boundary
+                .iter()
+                .map(|point| l.xy(*point))
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        rectangle(l.width, l.depth)
+    };
+
+    let mut vertices: Vec<Vertex> = vec![];
+    let mut vertex_map: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut constraints: Vec<[usize; 2]> = vec![];
+    let mut constraint_set = HashSet::new();
+    let add_point = |point: [f64; 2],
+                     vertices: &mut Vec<Vertex>,
+                     vertex_map: &mut HashMap<(i64, i64), usize>| {
+        let key = (
+            (point[0] * 1e7).round() as i64,
+            (point[1] * 1e7).round() as i64,
+        );
+        *vertex_map.entry(key).or_insert_with(|| {
+            let index = vertices.len();
+            vertices.push(Vertex {
+                p: spade::Point2::new(point[0], point[1]),
+                z: l.z(g, point),
+            });
+            index
+        })
+    };
+    let mut add_ring = |ring: &LineString<f64>| {
+        let coordinates = &ring.0;
+        let count = coordinates
+            .len()
+            .saturating_sub(usize::from(coordinates.first() == coordinates.last()));
+        let mut ring_vertices = vec![];
+        for coordinate in coordinates.iter().take(count) {
+            let vertex = add_point([coordinate.x, coordinate.y], &mut vertices, &mut vertex_map);
+            if ring_vertices.last() != Some(&vertex) {
+                ring_vertices.push(vertex);
+            }
+        }
+        for index in 0..ring_vertices.len() {
+            let a = ring_vertices[index];
+            let b = ring_vertices[(index + 1) % ring_vertices.len()];
+            if a != b && constraint_set.insert((a.min(b), a.max(b))) {
+                constraints.push([a, b]);
+            }
+        }
+    };
+    add_ring(boundary.exterior());
+    for pocket in &pockets {
+        add_ring(pocket.polygon.exterior());
+        for ring in pocket.polygon.interiors() {
+            add_ring(ring);
+        }
+    }
+
+    // Normalize overlapping/touching polygon linework in a small CDT first. The
+    // bulk loader accepts the nonconflicting majority; only rejected overlaps
+    // take the more expensive split path.
+    let mut conflicts = vec![];
+    let mut boundary_triangulation =
+        spade::ConstrainedDelaunayTriangulation::<Vertex>::try_bulk_load_cdt(
+            vertices,
+            constraints,
+            |edge| conflicts.push(edge),
+        )
+        .map_err(|error| format!("Could not normalize terrain interfaces: {error:?}"))?;
+    let boundary_handles = boundary_triangulation
+        .vertices()
+        .map(|vertex| vertex.fix())
+        .collect::<Vec<_>>();
+    for [from, to] in conflicts {
+        boundary_triangulation.add_constraint_and_split(
+            boundary_handles[from],
+            boundary_handles[to],
+            |position| Vertex {
+                p: position,
+                z: l.z(g, [position.x, position.y]),
+            },
+        );
+    }
+
+    let mut vertices = boundary_triangulation
+        .vertices()
+        .map(|vertex| *vertex.data())
+        .collect::<Vec<_>>();
+    let constraints = boundary_triangulation
+        .undirected_edges()
+        .filter(|edge| edge.is_constraint_edge())
+        .map(|edge| {
+            let [from, to] = edge.vertices();
+            [from.fix().index(), to.fix().index()]
+        })
+        .collect::<Vec<_>>();
+    let mut vertex_map = vertices
+        .iter()
+        .enumerate()
+        .map(|(index, vertex)| {
+            (
+                (
+                    (vertex.p.x * 1e7).round() as i64,
+                    (vertex.p.y * 1e7).round() as i64,
+                ),
+                index,
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for point in base
+        .mesh
+        .positions
+        .chunks_exact(3)
+        .take(base.retained_samples)
+        .map(|point| [point[0], point[1]])
+    {
+        let position = spade::Point2::new(point[0], point[1]);
+        let on_interface = match boundary_triangulation.locate(position) {
+            spade::PositionInTriangulation::OnVertex(_) => true,
+            spade::PositionInTriangulation::OnEdge(edge) => boundary_triangulation
+                .directed_edge(edge)
+                .is_constraint_edge(),
+            _ => false,
+        };
+        if boundary.contains(&Point::new(point[0], point[1])) && !on_interface {
+            add_point(point, &mut vertices, &mut vertex_map);
+        }
+    }
+    let triangulation =
+        spade::ConstrainedDelaunayTriangulation::<Vertex>::bulk_load_cdt(vertices, constraints)
+            .map_err(|error| format!("Could not triangulate feature-aware terrain: {error:?}"))?;
+    let points: Vec<[f64; 2]> = triangulation
+        .vertices()
+        .map(|vertex| [vertex.position().x, vertex.position().y])
+        .collect();
+    let mut faces: Vec<([u32; 3], usize)> = vec![];
+    for face in triangulation.inner_faces() {
+        let vertices = face.vertices();
+        let mut triangle = [
+            vertices[0].fix().index() as u32,
+            vertices[1].fix().index() as u32,
+            vertices[2].fix().index() as u32,
+        ];
+        let center = Point::new(
+            (points[triangle[0] as usize][0]
+                + points[triangle[1] as usize][0]
+                + points[triangle[2] as usize][0])
+                / 3.,
+            (points[triangle[0] as usize][1]
+                + points[triangle[1] as usize][1]
+                + points[triangle[2] as usize][1])
+                / 3.,
+        );
+        if !boundary.contains(&center) {
+            continue;
+        }
+        let region = pockets
+            .iter()
+            .position(|pocket| pocket.polygon.contains(&center))
+            .map_or(0, |index| index + 1);
+        let a = points[triangle[0] as usize];
+        let b = points[triangle[1] as usize];
+        let c = points[triangle[2] as usize];
+        if (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0. {
+            triangle.swap(1, 2);
+        }
+        faces.push((triangle, region));
+    }
+    if faces.is_empty() {
+        return Err("Feature-aware terrain contains no surface faces".into());
+    }
+
+    let surface_height = |region: usize, vertex: u32| {
+        if region == 0 {
+            l.z(g, points[vertex as usize])
+        } else {
+            pockets[region - 1].height_mm
+        }
+    };
+    let surface_key = |region: usize, vertex: u32| {
+        (
+            vertex,
+            (surface_height(region, vertex) * 1e7).round() as i64,
+        )
+    };
+    let mut mesh = Mesh::default();
+    let mut top_indices: HashMap<(u32, i64), u32> = HashMap::new();
+    let mut base_indices = vec![None; points.len()];
+    for (triangle, region) in &faces {
+        for &vertex in triangle {
+            let z = surface_height(*region, vertex);
+            top_indices
+                .entry(surface_key(*region, vertex))
+                .or_insert_with(|| {
+                    let point = points[vertex as usize];
+                    let index = mesh.positions.len() as u32 / 3;
+                    mesh.positions.extend([point[0], point[1], z]);
+                    index
+                });
+            if base_indices[vertex as usize].is_none() {
+                let point = points[vertex as usize];
+                let index = mesh.positions.len() as u32 / 3;
+                mesh.positions.extend([point[0], point[1], 0.]);
+                base_indices[vertex as usize] = Some(index);
+            }
+        }
+    }
+
+    type RegionEdge = (usize, [u32; 2]);
+    let mut adjacency: HashMap<(u32, u32), Vec<RegionEdge>> = HashMap::new();
+    let mut vertex_regions = vec![HashSet::new(); points.len()];
+    for (triangle, region) in &faces {
+        for vertex in triangle {
+            vertex_regions[*vertex as usize].insert(*region);
+        }
+        mesh.indices.extend([
+            top_indices[&surface_key(*region, triangle[0])],
+            top_indices[&surface_key(*region, triangle[1])],
+            top_indices[&surface_key(*region, triangle[2])],
+        ]);
+        mesh.indices.extend([
+            base_indices[triangle[2] as usize].unwrap(),
+            base_indices[triangle[1] as usize].unwrap(),
+            base_indices[triangle[0] as usize].unwrap(),
+        ]);
+        for edge in [
+            [triangle[0], triangle[1]],
+            [triangle[1], triangle[2]],
+            [triangle[2], triangle[0]],
+        ] {
+            adjacency
+                .entry((edge[0].min(edge[1]), edge[0].max(edge[1])))
+                .or_default()
+                .push((*region, edge));
+        }
+    }
+
+    let height = surface_height;
+    let mut wall_indices = top_indices.clone();
+    for neighbors in adjacency.values() {
+        match neighbors.as_slice() {
+            [(region, [a, b])] => {
+                let top_a = top_indices[&surface_key(*region, *a)];
+                let top_b = top_indices[&surface_key(*region, *b)];
+                let base_a = base_indices[*a as usize].unwrap();
+                let base_b = base_indices[*b as usize].unwrap();
+                mesh.indices
+                    .extend([top_a, base_b, top_b, top_a, base_a, base_b]);
+            }
+            [(left_region, left_edge), (right_region, right_edge)]
+                if left_region != right_region =>
+            {
+                let left_height =
+                    (height(*left_region, left_edge[0]) + height(*left_region, left_edge[1])) / 2.;
+                let right_height = (height(*right_region, right_edge[0])
+                    + height(*right_region, right_edge[1]))
+                    / 2.;
+                let (high_region, high_edge, low_region) = if left_height >= right_height {
+                    (*left_region, *left_edge, *right_region)
+                } else {
+                    (*right_region, *right_edge, *left_region)
+                };
+                let [a, b] = high_edge;
+                let high_a = height(high_region, a);
+                let high_b = height(high_region, b);
+                let low_a = height(low_region, a);
+                let low_b = height(low_region, b);
+                let levels = |vertex: u32, start: f64, end: f64| {
+                    let minimum = start.min(end);
+                    let maximum = start.max(end);
+                    let mut levels = vertex_regions[vertex as usize]
+                        .iter()
+                        .map(|region| height(*region, vertex))
+                        .filter(|value| *value >= minimum - 1e-9 && *value <= maximum + 1e-9)
+                        .collect::<Vec<_>>();
+                    levels.extend([start, end]);
+                    levels.sort_by(f64::total_cmp);
+                    levels.dedup_by(|left, right| (*left - *right).abs() < 1e-9);
+                    if start > end {
+                        levels.reverse();
+                    }
+                    levels
+                };
+                let mut chain = |vertex: u32, start: f64, end: f64| {
+                    levels(vertex, start, end)
+                        .into_iter()
+                        .map(|z| {
+                            let key = (vertex, (z * 1e7).round() as i64);
+                            *wall_indices.entry(key).or_insert_with(|| {
+                                let point = points[vertex as usize];
+                                let index = mesh.positions.len() as u32 / 3;
+                                mesh.positions.extend([point[0], point[1], z]);
+                                index
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                let a_chain = chain(a, high_a, low_a);
+                let b_chain = chain(b, high_b, low_b);
+                let mut a_index = 0;
+                let mut b_index = 0;
+                while a_index + 1 < a_chain.len() || b_index + 1 < b_chain.len() {
+                    let a_progress = if a_index + 1 < a_chain.len() {
+                        (a_index + 1) as f64 / (a_chain.len() - 1) as f64
+                    } else {
+                        f64::INFINITY
+                    };
+                    let b_progress = if b_index + 1 < b_chain.len() {
+                        (b_index + 1) as f64 / (b_chain.len() - 1) as f64
+                    } else {
+                        f64::INFINITY
+                    };
+                    if a_progress <= b_progress {
+                        let triangle = [a_chain[a_index], a_chain[a_index + 1], b_chain[b_index]];
+                        if triangle[0] != triangle[1]
+                            && triangle[1] != triangle[2]
+                            && triangle[2] != triangle[0]
+                        {
+                            mesh.indices.extend(triangle);
+                        }
+                        a_index += 1;
+                    } else {
+                        let triangle = [a_chain[a_index], b_chain[b_index + 1], b_chain[b_index]];
+                        if triangle[0] != triangle[1]
+                            && triangle[1] != triangle[2]
+                            && triangle[2] != triangle[0]
+                        {
+                            mesh.indices.extend(triangle);
+                        }
+                        b_index += 1;
+                    }
+                }
+            }
+            [_, _] => {}
+            _ => return Err("Feature-aware terrain has a non-manifold surface edge".into()),
+        }
+    }
+    mesh.validate()?;
+    Ok(mesh)
+}
+
 struct InsertLayerContext<'a> {
     grid: &'a Grid,
     settings: &'a Settings,
@@ -1357,6 +1781,7 @@ fn add_insert_layer(
     layer: &MultiPolygon<f64>,
     feature: Option<&Feature>,
     depth: f64,
+    pocket_surfaces: &mut Vec<PocketSurface>,
     serial: &mut usize,
 ) -> Result<(), String> {
     let g = context.grid;
@@ -1386,12 +1811,25 @@ fn add_insert_layer(
                 [x + seg[0], y + seg[1]],
                 [x, y + seg[1]],
             ]);
-            let pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
-            let raw_parts = layer.intersection(&cell.buffer(-s.insert_gap_mm / 2.));
+            let raw_pockets = layer.intersection(&MultiPolygon(vec![cell.clone()]));
+            let gap = s.effective_insert_gap_mm();
+            let part_cell = if gap == 0. {
+                MultiPolygon(vec![cell.clone()])
+            } else {
+                cell.buffer(-gap / 2.)
+            };
+            let raw_parts = layer.intersection(&part_cell);
             let parts = printable_parts(raw_parts, s.nozzle_diameter_mm);
             if parts.0.is_empty() {
                 continue;
             }
+            // Print-together pockets use the exact post-repair insert boundary. This keeps
+            // canonical interface coordinates even when polygon cleanup changes a narrow feature.
+            let pockets = if s.manufacturing_mode == ManufacturingMode::Multicolor {
+                parts.clone()
+            } else {
+                raw_pockets
+            };
             let top = |q| fixed_level.unwrap_or_else(|| l.z(g, q)) + 0.35;
             let mut base = f64::INFINITY;
             for pocket in &pockets.0 {
@@ -1443,18 +1881,16 @@ fn add_insert_layer(
                     conformal,
                 });
             }
-            for raw_pocket in pockets.buffer(s.insert_fit_clearance_per_side_mm).0 {
+            for raw_pocket in pockets.buffer(s.effective_insert_clearance_mm()).0 {
                 let (pocket, removed) = remove_unprintable_terrain_islands(
                     &raw_pocket,
                     s.effective_minimum_terrain_island_width_mm(),
                 );
                 out.removed_terrain_islands += removed;
-                let cutter =
-                    polygon_surface_detail(&pocket, |_| roof, (base - 0.15).max(floor), false);
-                cutter
-                    .validate()
-                    .map_err(|e| format!("{class} pocket {row},{col}: {e}"))?;
-                out.cutters.push(cutter);
+                pocket_surfaces.push(PocketSurface {
+                    polygon: pocket,
+                    height_mm: s.insert_pocket_bottom_mm(base, floor),
+                });
             }
         }
     }
@@ -1463,20 +1899,26 @@ fn add_insert_layer(
 /// Build insert pieces and grouped cutter meshes for final solid generation.
 pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<Plan, String> {
     s.validate()?;
+    let base_terrain = terrain(g, s)?;
     let clip = feature_boundary(s, l, 0.);
-    let insert_clip = feature_boundary(s, l, s.insert_fit_clearance_per_side_mm);
+    let insert_clip = feature_boundary(s, l, s.effective_insert_clearance_mm());
     let mut occupied = MultiPolygon(vec![]);
     let mut occupied_inserts = MultiPolygon(vec![]);
     let mut out = Plan {
+        terrain: Mesh::default(),
         inserts: vec![],
         cutters: vec![],
         cutter_group_ends: vec![],
         removed_terrain_islands: 0,
     };
-    let seg = s
-        .insert_segment_size_mm
-        .map(|v| [v, v])
-        .unwrap_or(s.max_print_size_mm);
+    let seg = if s.manufacturing_mode == ManufacturingMode::Multicolor {
+        s.max_print_size_mm
+    } else {
+        s.insert_segment_size_mm
+            .map(|value| [value, value])
+            .unwrap_or(s.max_print_size_mm)
+    };
+    let mut pocket_surfaces = vec![];
     let roof = (g
         .elevations
         .iter()
@@ -1555,6 +1997,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                         &individual,
                         Some(f),
                         depth,
+                        &mut pocket_surfaces,
                         &mut serial,
                     )?;
                 } else if let Some((_, _, group)) = terrain_groups
@@ -1574,6 +2017,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                     &group,
                     Some(feature),
                     depth,
+                    &mut pocket_surfaces,
                     &mut serial,
                 )?;
             }
@@ -1584,6 +2028,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
                 &layer,
                 None,
                 s.insert_depth_mm,
+                &mut pocket_surfaces,
                 &mut serial,
             )?;
         }
@@ -1592,6 +2037,26 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         }
         occupied = occupied.union(&layer).union(&carved);
         occupied_inserts = occupied_inserts.union(&layer);
+    }
+    if pocket_surfaces.is_empty() {
+        out.terrain = base_terrain.mesh;
+    } else {
+        match feature_aware_terrain(&base_terrain, g, s, l, &pocket_surfaces) {
+            Ok(terrain) => out.terrain = terrain,
+            Err(_) => {
+                // Multi-height regions can meet in a non-manifold vertical junction.
+                // Preserve correctness with the established bounded Boolean path.
+                out.terrain = base_terrain.mesh;
+                for pocket in pocket_surfaces {
+                    let cutter =
+                        polygon_surface_detail(&pocket.polygon, |_| roof, pocket.height_mm, false);
+                    cutter
+                        .validate()
+                        .map_err(|error| format!("Fallback pocket: {error}"))?;
+                    out.cutters.push(cutter);
+                }
+            }
+        }
     }
     Ok(out)
 }
@@ -1687,6 +2152,35 @@ mod tests {
         assert!((min - 1.).abs() < 1e-8);
     }
     #[test]
+    fn tiled_full_resolution_stitches_shared_vertices() {
+        let grid = Grid {
+            bounds: [0., 0., 0.26, 0.002],
+            width: 261,
+            height: 3,
+            elevations: vec![100.; 261 * 3],
+        };
+        let terrain = terrain(&grid, &Settings::default()).unwrap();
+        terrain.mesh.validate().unwrap();
+        let top_vertices = terrain.retained_samples as u32;
+        let seam = (128_u32, 128_u32 + grid.width as u32);
+        let mut uses = 0;
+        for triangle in terrain.mesh.indices.chunks_exact(3) {
+            if triangle.iter().all(|index| *index < top_vertices) {
+                for (a, b) in [
+                    (triangle[0], triangle[1]),
+                    (triangle[1], triangle[2]),
+                    (triangle[2], triangle[0]),
+                ] {
+                    if (a.min(b), a.max(b)) == seam {
+                        uses += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(uses, 2);
+    }
+
+    #[test]
     fn adaptive_planar() {
         let g = grid();
         let s = Settings {
@@ -1736,6 +2230,34 @@ mod tests {
         let (cleaned, removed) = remove_unprintable_terrain_islands(&open_notch, 3.);
         assert_eq!(removed, 0);
         assert_eq!(cleaned, open_notch);
+    }
+    #[test]
+    fn multicolor_uses_canonical_zero_clearance_interface() {
+        let separate = Settings::default();
+        assert_eq!(separate.effective_insert_clearance_mm(), 0.15);
+        assert_eq!(separate.insert_pocket_bottom_mm(2., 0.8), 1.85);
+        let together = Settings {
+            manufacturing_mode: ManufacturingMode::Multicolor,
+            ..separate
+        };
+        assert_eq!(together.effective_insert_clearance_mm(), 0.);
+        assert_eq!(together.effective_insert_gap_mm(), 0.);
+        assert_eq!(together.insert_pocket_bottom_mm(2., 0.8), 2.);
+    }
+    #[test]
+    fn multicolor_keeps_structural_zone_floor() {
+        let settings = Settings {
+            manufacturing_mode: ManufacturingMode::Multicolor,
+            zone_floor_mm: 1.2,
+            ..Default::default()
+        };
+        let requested_base: f64 = 0.5;
+        let base = requested_base.max(settings.zone_floor_mm + 0.15);
+        assert!(base > settings.zone_floor_mm);
+        assert_eq!(
+            settings.insert_pocket_bottom_mm(base, settings.zone_floor_mm),
+            base
+        );
     }
     #[test]
     fn tile_hemispheres() {

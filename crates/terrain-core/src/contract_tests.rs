@@ -82,6 +82,7 @@ fn serialized_contract_matches_typescript_manifest() {
         conformal: false,
     };
     let plan = Plan {
+        terrain: Mesh::default(),
         inserts: vec![],
         cutters: vec![],
         cutter_group_ends: vec![],
@@ -103,6 +104,10 @@ fn serialized_contract_matches_typescript_manifest() {
         assert_eq!(keys, expected(&manifest, name), "{name} contract drifted");
     }
 
+    assert_eq!(
+        json!([ManufacturingMode::Separate, ManufacturingMode::Multicolor]),
+        manifest["enums"]["ManufacturingMode"]
+    );
     assert_eq!(
         json!([Treatment::Insert, Treatment::Hide, Treatment::VCarve]),
         manifest["enums"]["Treatment"]

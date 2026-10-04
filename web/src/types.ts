@@ -8,8 +8,12 @@ export interface Grid {
   height: number;
   elevations: number[];
 }
+/** Manufacturing strategy for removable inserts or aligned multicolor parts. */
+export type ManufacturingMode = 'separate' | 'multicolor';
+
 /** User-controlled geometry and print settings; unit suffixes identify physical units. */
 export interface Settings {
+  manufacturing_mode: ManufacturingMode;
   max_print_size_mm: [number, number];
   height_factor: number;
   base_height_mm: number;
@@ -34,6 +38,7 @@ export interface Settings {
 }
 /** Defaults used for new projects and backward-compatible deserialization. */
 export const defaults: Settings = {
+  manufacturing_mode: 'separate',
   max_print_size_mm: [248, 198],
   height_factor: 1,
   base_height_mm: 1,
@@ -133,6 +138,7 @@ export interface Asset {
     triangles: number;
     pieces: number;
     removed_terrain_islands: number;
+    terrain_max_error_mm?: number;
   };
   revision: number;
 }
@@ -145,11 +151,31 @@ export interface Source {
   urls?: string[];
   bundled?: boolean;
 }
+/* Printable material group shared by slicer and service exports. */
+export interface MaterialGroup {
+  id: 'terrain' | 'features';
+  name: string;
+  color: string;
+  extruder: number;
+}
+/** Default two-material assignment. */
+export const defaultMaterialGroups: MaterialGroup[] = [
+  { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
+  { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
+];
+/** Resolve saved groups while keeping old projects compatible. */
+export function projectMaterialGroups(project: Pick<Project, 'materials'>): MaterialGroup[] {
+  return defaultMaterialGroups.map(fallback => ({
+    ...fallback,
+    ...(project.materials?.find(group => group.id === fallback.id) || {}),
+  }));
+}
 /** Complete editable project persisted in .contour.json and preset packs. */
 export interface Project {
   annotations?: import('./annotations').Annotation[];
   extent_editor?: import('./extent-shapes').ExtentEditorState;
   winter_mode?: boolean;
+  materials?: MaterialGroup[];
   schema_version: 2;
   name: string;
   grid: Grid;

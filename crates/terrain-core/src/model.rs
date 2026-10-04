@@ -110,6 +110,15 @@ impl Mesh {
                     .iter()
                     .filter(|(_, &(n, d))| n != 2 || d != 0)
                     .take(5)
+                    .map(|(&(a, b), &(count, direction))| {
+                        (
+                            (
+                                &self.positions[a as usize * 3..a as usize * 3 + 3],
+                                &self.positions[b as usize * 3..b as usize * 3 + 3],
+                            ),
+                            (count, direction),
+                        )
+                    })
                     .collect::<Vec<_>>()
             ));
         }
@@ -167,9 +176,11 @@ pub struct Piece {
 /// Geometry plan consumed by the browser solid-boolean stage.
 #[derive(Serialize, Deserialize)]
 pub struct Plan {
+    /// Final planned terrain mesh; pockets are constructed directly when validation succeeds.
+    pub terrain: Mesh,
     /// Separately printable insert pieces.
     pub inserts: Vec<Piece>,
-    /// Pocket and V-carve cutters, ordered by processing group.
+    /// Remaining Boolean cutters, including V-carves and bounded pocket fallbacks.
     pub cutters: Vec<Mesh>,
     /// Exclusive cutter indices that end each boolean group.
     pub cutter_group_ends: Vec<usize>,

@@ -12,14 +12,15 @@ Contour Workbench turns elevation and map features into printable terrain models
 
 ## Highlights
 
-- Full source resolution by default, with optional gradient-driven simplification.
+- Full source resolution by default, with optional gradient-driven simplification and an automatic final-build memory preflight.
 - Freeform, spline, square, rectangle, and circle extents with editable dimensions and corner radii.
 - USGS 3DEP, geographic GeoTIFF imports, and Copernicus download links.
 - Direct OpenStreetMap queries with mirror failover and local response caching.
 - Per-feature visibility and Insert/V-carve treatment controls.
-- Nozzle-aware insert clearance, taper, elephant-foot relief, and a calibration coupon.
+- Separate tapered inserts or aligned multicolor print-together parts. Large inlays retain a structural terrain substrate.
+- Direct feature-aware terrain pockets with canonical insert interfaces, plus nozzle-aware clearance, taper, elephant-foot relief, and a calibration coupon.
 - Text and monochrome PNG annotations on the terrain or an attached porch.
-- Separate STL files, portable assembled 3MF, and Bambu Studio multi-plate 3MF.
+- First-class Bambu Studio and PrusaSlicer multipart 3MF, portable 3MF, STL bundles, and Shapeways full-color or single-material files.
 - Static hosting on GitHub Pages, with lazily loaded geometry tools and processing performed locally.
 
 ## Repository layout

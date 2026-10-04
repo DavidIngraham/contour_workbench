@@ -1,6 +1,7 @@
 {
   "fields": {
     "Settings": [
+      "manufacturing_mode",
       "max_print_size_mm",
       "height_factor",
       "base_height_mm",
@@ -81,6 +82,7 @@
       "conformal"
     ],
     "Plan": [
+      "terrain",
       "inserts",
       "cutters",
       "cutter_group_ends",
@@ -88,6 +90,10 @@
     ]
   },
   "enums": {
+    "ManufacturingMode": [
+      "separate",
+      "multicolor"
+    ],
     "Treatment": [
       "insert",
       "hide",

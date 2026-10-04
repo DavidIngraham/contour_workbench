@@ -1,10 +1,10 @@
 /** Portable and Bambu-oriented 3MF package generation. All model coordinates are millimeters. */
 import { strToU8, zipSync } from 'fflate';
-import type { Asset, Mesh, Piece, Project } from './types';
+import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project } from './types';
 import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
 
 /** Supported 3MF packaging variants. */
-export type ThreeMfKind = 'portable' | 'bambu';
+export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
 
 interface Bounds3 {
   min: [number, number, number];
@@ -133,16 +133,73 @@ function packedPlacement(objects: ObjectRecord[], bed: [number, number]): Placem
   return result;
 }
 
+function prusaModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+  const materials = projectMaterialGroups(project);
+  const meshObjects = objects
+    .map(object => {
+      const group = materials[object.kind === 'terrain' ? 0 : 1];
+      return (
+        '<object id="' +
+        object.id +
+        '" name="' +
+        xmlEscape(object.name) +
+        '" type="model" pid="1" pindex="' +
+        (object.kind === 'terrain' ? 0 : 1) +
+        '"><metadata name="slic3rpe:extruder_id">' +
+        group.extruder +
+        '</metadata>' +
+        meshXml(object.mesh) +
+        '</object>'
+      );
+    })
+    .join('');
+  const assemblyId = objects.length + 1;
+  const components = placements
+    .map(
+      item =>
+        '<component objectid="' +
+        item.object.id +
+        '" transform="' +
+        transform(item.translation) +
+        '"/>',
+    )
+    .join('');
+  return (
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Title">' +
+    xmlEscape(project.name) +
+    '</metadata><resources><basematerials id="1"><base name="' +
+    xmlEscape(materials[0].name) +
+    '" displaycolor="' +
+    materials[0].color.toUpperCase() +
+    'FF"/><base name="' +
+    xmlEscape(materials[1].name) +
+    '" displaycolor="' +
+    materials[1].color.toUpperCase() +
+    'FF"/></basematerials>' +
+    meshObjects +
+    '<object id="' +
+    assemblyId +
+    '" name="' +
+    xmlEscape(project.name) +
+    '" type="model"><components>' +
+    components +
+    '</components></object></resources><build><item objectid="' +
+    assemblyId +
+    '"/></build></model>'
+  );
+}
+
 function coreModel(
   project: Project,
   objects: ObjectRecord[],
   placements: Placement[],
   kind: ThreeMfKind,
 ) {
+  if (kind === 'prusa') return prusaModel(project, objects, placements);
   const objectXml = objects
     .map(
       object =>
-        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="1" pindex="${object.kind === 'terrain' ? 0 : 1}">${meshXml(object.mesh)}</object>`,
+        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="1" pindex="${kind === 'shapeways' || object.kind === 'terrain' ? 0 : 1}">${meshXml(object.mesh)}</object>`,
     )
     .join('');
   const build = placements
@@ -152,17 +209,18 @@ function coreModel(
     )
     .join('');
   const title = xmlEscape(project.name);
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'portable' ? 'Assembled terrain and inserts' : 'Bambu Studio multi-plate terrain project'}</metadata><resources><basematerials id="1"><base name="Terrain" displaycolor="#8BAA73FF"/><base name="Inserts" displaycolor="#F4B45EFF"/></basematerials>${objectXml}</resources><build>${build}</build></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="1"><base name="${xmlEscape(projectMaterialGroups(project)[0].name)}" displaycolor="${projectMaterialGroups(project)[0].color.toUpperCase()}FF"/><base name="${xmlEscape(projectMaterialGroups(project)[1].name)}" displaycolor="${projectMaterialGroups(project)[1].color.toUpperCase()}FF"/></basematerials>${objectXml}</resources><build>${build}</build></model>`;
 }
 
-function modelSettings(objects: ObjectRecord[], placements: Placement[]) {
+function modelSettings(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+  const materials = projectMaterialGroups(project);
   const byPlate = new Map<number, Placement[]>();
   for (const placement of placements)
     byPlate.set(placement.plate, [...(byPlate.get(placement.plate) || []), placement]);
   const objectXml = objects
     .map(object => {
       const faces = Math.floor(object.mesh.indices.length / 3);
-      return `<object id="${object.id}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="1"/><metadata face_count="${faces}"/><part id="${object.id}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
+      return `<object id="${object.id}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="${materials[object.kind === 'terrain' ? 0 : 1].extruder}"/><metadata face_count="${faces}"/><part id="${object.id}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
     })
     .join('');
   const plateXml = [...byPlate.entries()]
@@ -205,18 +263,23 @@ function contentTypes(kind: ThreeMfKind) {
 const relationships = `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
 
 /** Build an assembled portable 3MF or a Bambu multi-plate archive. */
-export function buildThreeMf(asset: Asset, project: Project, kind: ThreeMfKind): Uint8Array {
+export function buildThreeMf(
+  asset: Asset,
+  project: Project,
+  kind: ThreeMfKind,
+  projectFile?: Uint8Array,
+): Uint8Array {
   const objects = records(asset);
   for (const object of objects) validateThreeMfMesh(object.mesh, object.name);
   const placements =
-    kind === 'portable'
+    kind !== 'bambu' || project.settings.manufacturing_mode === 'multicolor'
       ? assembledPlacement(objects)
       : packedPlacement(objects, project.settings.max_print_size_mm);
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
     '3D/3dmodel.model': strToU8(coreModel(project, objects, placements, kind)),
-    'Metadata/project.contour.json': strToU8(JSON.stringify(project)),
+    'Metadata/project.contour.json': projectFile || strToU8(JSON.stringify(project)),
     'Metadata/contour_workbench.json': strToU8(
       JSON.stringify(
         {
@@ -249,7 +312,7 @@ export function buildThreeMf(asset: Asset, project: Project, kind: ThreeMfKind):
     files['Metadata/project_settings.config'] = strToU8(
       JSON.stringify(bambuProcessSettings(project), null, 2),
     );
-    files['Metadata/model_settings.config'] = strToU8(modelSettings(objects, placements));
+    files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
   }
   validateThreeMfFiles(files, kind);
   return zipSync(files, { level: 6 });

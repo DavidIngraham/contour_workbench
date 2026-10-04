@@ -39,6 +39,9 @@ import { polygonBounds, validatePolygon, type Vertex } from './polygon';
 import { previewBoundary, previewLayout } from './preview-layout';
 import { Viewer } from './viewer';
 import { Engine } from './client';
+import { ExportClient } from './export-client';
+import { browserBuildMemoryBudgetMb } from './memory-plan';
+import type { ExportFormat } from './export-formats';
 import { automaticProduct } from './source-resolution';
 import {
   extrusionWidthMm,
@@ -147,12 +150,14 @@ try {
   throw e;
 }
 const engine = new Engine();
+const exportClient = new ExportClient();
 let project: Project;
 let terrain: Terrain;
 let overlays: Overlay[] = [];
 let asset: Asset | undefined;
 let revision = 0;
 let busy = false;
+let exportRunning = false;
 let mode: 'design' | 'review' = 'design';
 let selected: string | null = null;
 let abort = new AbortController();
@@ -160,6 +165,9 @@ let overlayTimer: ReturnType<typeof setTimeout>;
 let overlayRunning = false;
 let overlayAgain = false;
 let previewSuspended = false;
+type PreviewStage = 'topo' | 'terrain' | 'features';
+let previewStage: PreviewStage | undefined;
+let previewStageHistory: PreviewStage[] = [];
 let boundaryPoints: [number, number][] = [];
 let terrainBuilds = 0;
 let selectedBounds: Bounds | undefined;
@@ -191,6 +199,39 @@ function status(message: string, error = false, loading = false) {
   $('status').innerHTML =
     (loading ? '<span class="spinner"></span>' : '') + `<span>${esc(message)}</span>`;
   if (!message) $('status').innerHTML = '';
+}
+function nextPreviewPaint() {
+  return new Promise<void>(resolve =>
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+  );
+}
+function markPreviewStage(stage: PreviewStage, reset = false) {
+  if (reset) previewStageHistory = [];
+  previewStage = stage;
+  if (previewStageHistory.at(-1) !== stage) previewStageHistory.push(stage);
+}
+function showProjectLoadingPreview() {
+  const bounds = project.grid.bounds;
+  const boundary: [number, number][] =
+    project.settings.boundary?.length >= 3
+      ? project.settings.boundary
+      : [
+          [bounds[0], bounds[1]],
+          [bounds[2], bounds[1]],
+          [bounds[2], bounds[3]],
+          [bounds[0], bounds[3]],
+        ];
+  const layout = previewLayout(bounds, project.settings);
+  const projected = previewBoundary(layout, boundary);
+  const first = projected[0],
+    last = projected.at(-1),
+    closed =
+      first && last && (first[0] !== last[0] || first[1] !== last[1])
+        ? [...projected, first]
+        : projected;
+  viewer.showLoadingMap(layout, closed);
+  markPreviewStage('topo', true);
+  $('model-caption').textContent = 'PROJECT AREA \u00b7 LOADING TOPO AND ELEVATION';
 }
 function updateBusy(v: boolean) {
   busy = v;
@@ -498,7 +539,9 @@ async function openLocalWorkspace(id: string) {
     syncForm();
     listFeatures();
     viewer.model.scale.z = 1;
-    await rebuild(true);
+    showProjectLoadingPreview();
+    await nextPreviewPaint();
+    await rebuild(true, true, false, false, true);
     setPanel('terrain');
     $('save-status').textContent = 'Saved locally';
     status('');
@@ -531,12 +574,16 @@ async function openPresetModel(entry: PresetEntry) {
     syncForm();
     listFeatures();
     viewer.model.scale.z = 1;
+    hideLanding();
+    showProjectLoadingPreview();
+    await nextPreviewPaint();
     viewer.setTerrain(terrain.mesh, terrain.layout, true);
+    markPreviewStage('terrain');
     status('Terrain ready. Adding map features...', false, true);
-    await new Promise<void>(resolve =>
-      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-    );
+    $('model-caption').textContent = 'TERRAIN READY \u00b7 LOADING MAP FEATURES';
+    await nextPreviewPaint();
     viewer.setOverlays(overlays, project.features);
+    if (overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     refreshMetrics();
     $('model-caption').textContent = 'DESIGN PREVIEW · PREBUILT';
@@ -545,7 +592,6 @@ async function openPresetModel(entry: PresetEntry) {
     ($('mode-review') as HTMLButtonElement).disabled = true;
     $('save-status').textContent = 'Example · edit to save';
     setPanel('terrain');
-    hideLanding();
     status('');
     void engine.call('hydrate', { project, terrain }).catch(error);
   } catch (e) {
@@ -810,6 +856,17 @@ function syncForm() {
     ? String(s.insert_segment_size_mm)
     : '';
   ($('winter-mode') as HTMLInputElement).checked = Boolean(project.winter_mode);
+  ($('manufacturing-mode') as HTMLSelectElement).value = s.manufacturing_mode;
+  const groups = project.materials || [
+    { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
+    { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
+  ];
+  ($('terrain-color') as HTMLInputElement).value = groups[0].color;
+  ($('feature-color') as HTMLInputElement).value = groups[1].color;
+  ($('terrain-extruder') as HTMLInputElement).value = String(groups[0].extruder);
+  ($('feature-extruder') as HTMLInputElement).value = String(groups[1].extruder);
+  for (const id of ['fit-clearance', 'foot-relief', 'foot-height', 'draft-angle'])
+    ($(id) as HTMLInputElement).disabled = s.manufacturing_mode === 'multicolor';
   fitGuidance();
 }
 function projectLabels() {
@@ -827,6 +884,7 @@ async function rebuild(
   includeOverlays = true,
   keepBusy = false,
   propagateError = false,
+  stagedPreview = false,
 ) {
   if (!project) return;
   updateBusy(true);
@@ -846,6 +904,11 @@ async function rebuild(
     terrainBuilds = t.terrainBuilds;
     viewer.model.scale.z = 1;
     viewer.setTerrain(t.mesh, t.layout, fit);
+    if (stagedPreview) {
+      markPreviewStage('terrain');
+      $('model-caption').textContent = 'TERRAIN READY \u00b7 LOADING MAP FEATURES';
+      await nextPreviewPaint();
+    }
     overlays = includeOverlays
       ? await engine.call(
           'overlays',
@@ -854,6 +917,7 @@ async function rebuild(
         )
       : [];
     viewer.setOverlays(overlays, project.features);
+    if (stagedPreview && overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     $('model-caption').textContent =
       project.settings.terrain_max_error_mm > 0
@@ -943,6 +1007,7 @@ $('generate').onclick = async () => {
         settings: project.settings,
         annotations: project.annotations || [],
         revision: requested,
+        memory_budget_mb: browserBuildMemoryBudgetMb(),
       },
       progress => status(progress.message, false, true),
     );
@@ -994,33 +1059,26 @@ $('download-cancel').onclick = () => downloadDialog(false);
 $('download-confirm').onclick = async () => {
   if (!asset || asset.revision !== revision) return;
   const format =
-      document.querySelector<HTMLInputElement>('input[name="download-format"]:checked')?.value ||
-      'stl',
-    stem = projectFileStem(project.name);
+    (document.querySelector<HTMLInputElement>('input[name=\"download-format\"]:checked')
+      ?.value as ExportFormat) || 'stl';
   downloadDialog(false);
   updateBusy(true);
+  exportRunning = true;
+  abort = new AbortController();
   try {
-    if (format === 'stl') {
-      const zip = await engine.call('export', { asset, project }, s =>
-        status(s.message, false, true),
-      );
-      downloadFile(zip as unknown as BlobPart, stem + '.zip', 'application/zip');
-      status('STL print bundle downloaded.');
-    } else {
-      const kind = format === 'bambu' ? 'bambu' : 'portable',
-        file = await engine.call('export-3mf', { asset, project, kind }, s =>
-          status(s.message, false, true),
-        );
-      downloadFile(
-        file as unknown as BlobPart,
-        stem + (kind === 'bambu' ? '-bambu.3mf' : '.3mf'),
-        'model/3mf',
-      );
-      status(kind === 'bambu' ? 'Bambu multi-plate 3MF downloaded.' : 'Portable 3MF downloaded.');
-    }
+    const result = await exportClient.run(
+      format,
+      asset,
+      project,
+      progress => status(progress.message, false, true),
+      abort.signal,
+    );
+    downloadFile(result.bytes as unknown as BlobPart, result.filename, result.mime);
+    status(result.filename + ' downloaded.');
   } catch (e) {
-    error(e);
+    if (!(e instanceof DOMException && e.name === 'AbortError')) error(e);
   } finally {
+    exportRunning = false;
     updateBusy(false);
   }
 };
@@ -1069,7 +1127,9 @@ $('file-project').onchange = async () => {
     projectLabels();
     syncForm();
     listFeatures();
-    await rebuild(true);
+    showProjectLoadingPreview();
+    await nextPreviewPaint();
+    await rebuild(true, true, false, false, true);
   } catch (e) {
     error(e);
   }
@@ -1162,6 +1222,31 @@ $('height-factor').onchange = () => {
   touch();
   void rebuild();
 };
+$('manufacturing-mode').onchange = () => {
+  project.settings.manufacturing_mode = ($('manufacturing-mode') as HTMLSelectElement)
+    .value as Settings['manufacturing_mode'];
+  touch();
+  syncForm();
+  void updateOverlays();
+};
+for (const id of ['terrain-color', 'feature-color', 'terrain-extruder', 'feature-extruder'])
+  $(id).onchange = () => {
+    project.materials = [
+      {
+        id: 'terrain',
+        name: 'Terrain',
+        color: ($('terrain-color') as HTMLInputElement).value,
+        extruder: Number(($('terrain-extruder') as HTMLInputElement).value),
+      },
+      {
+        id: 'features',
+        name: 'Features',
+        color: ($('feature-color') as HTMLInputElement).value,
+        extruder: Number(($('feature-extruder') as HTMLInputElement).value),
+      },
+    ];
+    touch();
+  };
 for (const [id, k] of [['quality', 'terrain_max_error_mm']] as const)
   $(id).onchange = () => {
     project.settings[k] = Number(($(id) as HTMLInputElement).value);
@@ -1460,6 +1545,8 @@ $('area-load').onclick = async () => {
     const loadingLayout = previewLayout(bounds, prior);
     const loadingBoundary = previewBoundary(loadingLayout, boundary);
     viewer.showLoadingMap(loadingLayout, [...loadingBoundary, loadingBoundary[0]]);
+    markPreviewStage('topo', true);
+    await nextPreviewPaint();
     $('model-caption').textContent = 'SELECTED AREA · LOADING TOPO AND ELEVATION';
     const data = await loadElevation(
       bounds,
@@ -1482,7 +1569,7 @@ $('area-load').onclick = async () => {
     projectLabels();
     syncForm();
     listFeatures();
-    await rebuild(true, false, true, true);
+    await rebuild(true, false, true, true, true);
     $('model-caption').textContent = 'TERRAIN READY · LOADING MAP FEATURES';
     let featureWarning = '';
     if (featureChoice !== 'none') {
@@ -1517,6 +1604,7 @@ $('area-load').onclick = async () => {
     if (project.features.length) {
       touch();
       await updateOverlays();
+      if (overlays.length) markPreviewStage('features');
     }
     listFeatures();
     $('model-caption').textContent =
@@ -1566,9 +1654,16 @@ $('file-dem').onchange = async () => {
 };
 $('cancel-job').onclick = () => {
   abort.abort();
+  if (exportRunning) {
+    exportClient.cancel();
+    exportRunning = false;
+    updateBusy(false);
+    status('Export canceled.');
+    return;
+  }
   engine.cancel();
   updateBusy(false);
-  status('Canceled. Restoring the current terrain…');
+  status('Canceled. Restoring the current terrain...');
   if (project) void rebuild();
 };
 function unproject(p: [number, number]): [number, number] {
@@ -1642,6 +1737,8 @@ Object.defineProperty(window, 'contourDiagnostics', {
     revision,
     busy,
     overlayBusy: overlayRunning || overlayAgain,
+    previewStage,
+    previewStageHistory: [...previewStageHistory],
     mode,
     boundary: project?.settings.boundary,
     triangles: terrain?.mesh.indices.length / 3,

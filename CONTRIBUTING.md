@@ -49,6 +49,8 @@ When replacing a bundled preset at the same asset URL, increment its `revision` 
 
 Prefer small commits with one purpose. Keep formatting-only changes separate from behavior changes when practical. Generated WASM, build output, dependencies, and Playwright artifacts are ignored and must not be committed.
 
-The Rust core returns deterministic meshes and geometry plans. The worker owns Manifold objects and must delete temporary WASM-backed objects explicitly. Never transfer the worker's retained terrain buffer directly to the UI; send a copy so cached geometry remains usable.
+The Rust core returns deterministic meshes and geometry plans. Plan meshes cross the WASM boundary through take operations: transfer terrain first, then every V-carve batch, then every insert batch. A take must empty the Rust source allocation immediately. The worker owns Manifold objects and must delete temporary WASM-backed objects explicitly. Never transfer the worker's retained preview-terrain buffer directly to the UI; send a copy so cached geometry remains usable.
+
+Final-build changes must preserve the split between the persistent interactive worker and the disposable export worker. Add direct geometry invariants in Rust, ownership or cancellation tests at the boundary, and run the preset performance suite when changing terrain construction, memory preflight, or Manifold lifetime rules.
 
 Update [HLD.md](HLD.md) whenever a change affects component responsibilities, data flow, the WASM packet, caching, providers, persistence, or deployment.

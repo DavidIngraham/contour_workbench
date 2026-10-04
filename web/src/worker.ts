@@ -5,6 +5,7 @@ import { calibrationSwitchbackCenterlineMm } from './calibration-path';
 import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
+import { finalBuildMemoryPlan } from './memory-plan';
 import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
@@ -44,6 +45,7 @@ type TerrainPacketMetadata = Omit<Terrain, 'mesh'>;
 type OverlayPacketMetadata = Omit<Overlay, 'mesh'>;
 type PiecePacketMetadata = Omit<Piece, 'mesh'>;
 interface PlanPacketMetadata {
+  terrain_triangles: number;
   inserts: PiecePacketMetadata[];
   cutter_batches: number;
   insert_batches: number;
@@ -381,10 +383,29 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       syncBase(p.settings);
       features = p.features;
       settings = p.settings;
-      progress('Building tapered inserts and continuous pockets\u2026');
+      const memory = finalBuildMemoryPlan(
+        grid.elevations.length,
+        terrain.mesh.indices.length / 3,
+        features.filter(feature => feature.enabled).length,
+        settings.terrain_max_error_mm,
+        p.memory_budget_mb,
+      );
+      const buildSettings = memory.adapted
+        ? { ...settings, terrain_max_error_mm: memory.terrainMaxErrorMm }
+        : settings;
+      progress(
+        memory.adapted
+          ? 'Memory preflight selected ' +
+              memory.terrainMaxErrorMm.toFixed(3) +
+              ' mm final terrain error before construction...'
+          : 'Memory preflight passed. Building direct terrain pockets...',
+        'memory-preflight',
+        0,
+        1,
+      );
       const metadata = JSON.parse(
         rust!.prepare_plan(
-          JSON.stringify(settings),
+          JSON.stringify(buildSettings),
           JSON.stringify(features),
           JSON.stringify(terrain.layout),
           150_000,
@@ -401,8 +422,16 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         })),
         removed_terrain_islands: metadata.removed_terrain_islands,
       };
+      progress('Transferring final terrain...', 'terrain-transfer', 0, 1);
+      const terrainPacket = decodeMeshPacket<null>(rust!.take_plan_terrain());
+      if (terrainPacket.meshes.length !== 1)
+        throw new Error('Final terrain packet is inconsistent.');
+      let directTerrain = terrainPacket.meshes[0];
+      if (directTerrain.indices.length / 3 !== metadata.terrain_triangles)
+        throw new Error('Final terrain metadata is inconsistent.');
       const M = await loadManifold(progress);
-      let result = solidFromMesh(M, terrain.mesh);
+      let result = solidFromMesh(M, directTerrain);
+      directTerrain = { positions: new Float32Array(), indices: new Uint32Array() };
       let resultDeleted = false;
       let raisedTerrain: Manifold | undefined;
       try {
@@ -444,7 +473,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
           );
         }
         if (result.status() !== 'NoError' || result.numTri() === 0)
-          throw new Error('Terrain subtraction did not produce a valid solid');
+          throw new Error('Terrain operation did not produce a valid solid');
 
         if (p.annotations?.length) {
           progress('Adding annotations and attached porches…');
@@ -513,22 +542,24 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             try {
               await checkpoint(request.id);
               const prism = solidFromMesh(M, piece.mesh),
-                tapered = shouldTaperInsert(piece.mesh.indices.length)
-                  ? safeTaperedSolid(M, prism, piece.class, settings, piece.insert_depth_mm)
-                  : {
-                      solid: prism,
-                      profile: fitProfile(
-                        {
-                          ...settings,
-                          insert_elephant_foot_relief_mm: 0,
-                          insert_elephant_foot_height_mm: 0,
-                          insert_draft_angle_deg: 0,
-                        },
-                        piece.class,
-                        piece.insert_depth_mm,
-                        0,
-                      ),
-                    };
+                tapered =
+                  settings.manufacturing_mode === 'separate' &&
+                  shouldTaperInsert(piece.mesh.indices.length)
+                    ? safeTaperedSolid(M, prism, piece.class, settings, piece.insert_depth_mm)
+                    : {
+                        solid: prism,
+                        profile: fitProfile(
+                          {
+                            ...settings,
+                            insert_elephant_foot_relief_mm: 0,
+                            insert_elephant_foot_height_mm: 0,
+                            insert_draft_angle_deg: 0,
+                          },
+                          piece.class,
+                          piece.insert_depth_mm,
+                          0,
+                        ),
+                      };
               let raw = tapered.solid;
               try {
                 piece.taper_relief_mm = tapered.profile.footReliefMm;
@@ -576,6 +607,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             triangles: mesh.indices.length / 3,
             pieces: plan.inserts.length,
             removed_terrain_islands: plan.removed_terrain_islands,
+            terrain_max_error_mm: memory.adapted ? memory.terrainMaxErrorMm : undefined,
           },
           revision: p.revision,
         };
@@ -623,52 +655,6 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const M = await loadManifold(progress);
       progress('Building nozzle-aware fit-test pieces…');
       return zipSync(calibrationFiles(M, p.settings as Settings, ''), { level: 3 });
-    }
-    case 'export-3mf': {
-      const kind = p.kind;
-      progress(
-        kind === 'bambu'
-          ? 'Arranging terrain and inserts across Bambu Studio plates…'
-          : 'Packaging an assembled portable 3MF…',
-      );
-      const { buildThreeMf } = await import('./three-mf');
-      return buildThreeMf(p.asset, p.project, kind);
-    }
-    case 'export': {
-      const asset = p.asset as Asset,
-        project = p.project as Project;
-      progress('Packaging validated STL files and fit test…');
-      const files: Record<string, Uint8Array> = {
-        'terrain.stl': stl(asset.terrain),
-        'project.contour.json': strToU8(JSON.stringify(project)),
-        'validation.json': strToU8(JSON.stringify(asset.validation, null, 2)),
-        'attribution.txt': strToU8(
-          project.source.attribution +
-            '\nOpenStreetMap data: © OpenStreetMap contributors, ODbL. https://www.openstreetmap.org/copyright\n',
-        ),
-      };
-      for (const piece of asset.inserts) files[`inserts/${piece.id}.stl`] = stl(piece.mesh);
-      files['insert_manifest.json'] = strToU8(
-        JSON.stringify(
-          {
-            units: 'mm',
-            settings: project.settings,
-            source: project.source,
-            pieces: asset.inserts.map(i => ({
-              file: `${i.id}.stl`,
-              class: i.class,
-              assembly_origin_mm: i.origin,
-              taper_relief_mm: i.taper_relief_mm,
-              taper_height_mm: i.taper_height_mm,
-              draft_angle_deg: i.draft_angle_deg,
-            })),
-          },
-          null,
-          2,
-        ),
-      );
-      Object.assign(files, calibrationFiles(await loadManifold(progress), project.settings));
-      return zipSync(files, { level: 3 });
     }
     default:
       throw new Error('Unknown operation');

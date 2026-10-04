@@ -71,6 +71,10 @@ fn inserts_win_over_same_class_carves() {
     let t = terrain(&g, &s).unwrap();
     let only = plan(&g, &s, &[insert.clone()], &t.layout).unwrap();
     let both = plan(&g, &s, &[insert, f], &t.layout).unwrap();
+    assert!(only.cutters.is_empty());
+    assert!(both.cutters.is_empty());
+    only.terrain.validate().unwrap();
+    both.terrain.validate().unwrap();
     assert_eq!(only.cutters.len(), both.cutters.len());
     assert_eq!(only.inserts.len(), both.inserts.len());
 }
@@ -141,16 +145,13 @@ fn crossing_paths_and_pockets_leave_the_configured_edge_margin() {
     let terrain = terrain(&g, &s).unwrap();
     let insert_plan = plan(&g, &s, &[feature.clone()], &terrain.layout).unwrap();
     assert!(!insert_plan.inserts.is_empty());
+    assert!(insert_plan.cutters.is_empty());
+    insert_plan.terrain.validate().unwrap();
     let insert_margin = s.feature_edge_clearance_mm + s.insert_fit_clearance_per_side_mm;
     for piece in &insert_plan.inserts {
         let bounds = x_bounds(&piece.mesh, piece.origin[0]);
         assert!(bounds[0] >= insert_margin - 0.01);
         assert!(bounds[1] <= terrain.layout.width - insert_margin + 0.01);
-    }
-    for pocket in &insert_plan.cutters {
-        let bounds = x_bounds(pocket, 0.);
-        assert!(bounds[0] >= s.feature_edge_clearance_mm - 0.01);
-        assert!(bounds[1] <= terrain.layout.width - s.feature_edge_clearance_mm + 0.01);
     }
     for overlay in overlays(&g, &s, &[feature.clone()], &terrain.layout).unwrap() {
         let bounds = x_bounds(&overlay.mesh, 0.);

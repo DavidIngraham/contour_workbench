@@ -10,6 +10,9 @@ test('preset changes become a durable recent project with a thumbnail', async ({
       Boolean((window as any).contourDiagnostics?.triangles) &&
       !(window as any).contourDiagnostics.busy,
   );
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.previewStageHistory)).toEqual(
+    ['topo', 'terrain', 'features'],
+  );
 
   await page.locator('#show-projects').tap();
   await expect(page.locator('#recent-section')).toBeHidden();
@@ -46,6 +49,9 @@ test('preset changes become a durable recent project with a thumbnail', async ({
     () =>
       Boolean((window as any).contourDiagnostics?.triangles) &&
       !(window as any).contourDiagnostics.busy,
+  );
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.previewStageHistory)).toEqual(
+    ['topo', 'terrain', 'features'],
   );
   await page.locator('#mobile-settings').tap();
   await expect(page.locator('#base-height')).toHaveValue('1.1');

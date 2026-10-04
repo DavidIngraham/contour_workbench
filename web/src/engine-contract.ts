@@ -1,6 +1,5 @@
 /** Typed messages exchanged between the UI and the geometry worker. */
 import type { Annotation } from './annotations';
-import type { ThreeMfKind } from './three-mf';
 import type { Asset, Bounds, Feature, Overlay, Project, Settings, Terrain, Grid } from './types';
 
 /** Progress emitted by a long-running worker operation. */
@@ -28,16 +27,12 @@ export interface EngineOperationMap {
       features: Feature[];
       annotations: Annotation[];
       revision: number;
+      memory_budget_mb: number;
     };
     result: Asset;
   };
   'preset-pack': { payload: { project: Project }; result: Uint8Array };
   calibration: { payload: { settings: Settings }; result: Uint8Array };
-  'export-3mf': {
-    payload: { asset: Asset; project: Project; kind: ThreeMfKind };
-    result: Uint8Array;
-  };
-  export: { payload: { asset: Asset; project: Project }; result: Uint8Array };
 }
 
 /** Valid operation name understood by the geometry worker. */
@@ -91,6 +86,4 @@ const operationNames: Record<EngineOperation, true> = {
   generate: true,
   'preset-pack': true,
   calibration: true,
-  'export-3mf': true,
-  export: true,
 };

@@ -93,6 +93,7 @@ struct PieceMetadata<'a> {
 
 #[derive(Serialize)]
 struct PlanMetadata<'a> {
+    terrain_triangles: usize,
     inserts: Vec<PieceMetadata<'a>>,
     cutter_batches: usize,
     insert_batches: usize,
@@ -250,6 +251,7 @@ impl TerrainSession {
             maximum_meshes,
         );
         let metadata = PlanMetadata {
+            terrain_triangles: plan.terrain.indices.len() / 3,
             inserts: plan
                 .inserts
                 .iter()
@@ -280,12 +282,28 @@ impl TerrainSession {
         Ok(encoded)
     }
 
+    /// Transfer and release the final planned terrain mesh.
+    pub fn take_plan_terrain(&mut self) -> Result<Vec<u8>, JsValue> {
+        let pending = self
+            .pending_plan
+            .as_mut()
+            .ok_or_else(|| err("No prepared geometry plan"))?;
+        if pending.plan.terrain.indices.is_empty() {
+            return Err(err("Final terrain has already been consumed"));
+        }
+        let terrain = take_mesh(&mut pending.plan.terrain);
+        encode_packet(&(), &[&terrain])
+    }
+
     /// Transfer and release the next cutter batch from a prepared plan.
     pub fn take_plan_cutter_batch(&mut self) -> Result<Vec<u8>, JsValue> {
         let pending = self
             .pending_plan
             .as_mut()
             .ok_or_else(|| err("No prepared geometry plan"))?;
+        if !pending.plan.terrain.indices.is_empty() {
+            return Err(err("Consume final terrain before taking cutters"));
+        }
         let Some(range) = pending.cutter_batches.pop_front() else {
             let metadata = MeshBatchMetadata {
                 batch_index: pending.completed_cutter_batches,
@@ -411,5 +429,24 @@ mod tests {
         let metadata_len = u32::from_le_bytes(packet[4..8].try_into().unwrap()) as usize;
         assert_eq!((20 + metadata_len + 3) & !3, 32);
         assert_eq!(packet.len(), 56);
+    }
+
+    #[test]
+    fn taking_a_mesh_releases_the_source_allocation() {
+        let mut source = Mesh {
+            positions: vec![1., 2., 3., 4., 5., 6.],
+            indices: vec![0, 1, 0],
+        };
+        let positions_capacity = source.positions.capacity();
+        let indices_capacity = source.indices.capacity();
+
+        let taken = take_mesh(&mut source);
+
+        assert!(source.positions.is_empty());
+        assert!(source.indices.is_empty());
+        assert_eq!(source.positions.capacity(), 0);
+        assert_eq!(source.indices.capacity(), 0);
+        assert_eq!(taken.positions.capacity(), positions_capacity);
+        assert_eq!(taken.indices.capacity(), indices_capacity);
     }
 }

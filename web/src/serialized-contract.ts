@@ -5,6 +5,7 @@ import type {
   Grid,
   Layout,
   Mesh,
+  ManufacturingMode,
   Overlay,
   Piece,
   Settings,
@@ -16,6 +17,7 @@ import type {
 export const serializedContract = {
   fields: {
     Settings: [
+      'manufacturing_mode',
       'max_print_size_mm',
       'height_factor',
       'base_height_mm',
@@ -67,9 +69,10 @@ export const serializedContract = {
     Terrain: ['mesh', 'layout', 'source_samples', 'retained_samples'],
     Overlay: ['treatment', 'id', 'class', 'mesh'],
     Piece: ['id', 'class', 'mesh', 'origin', 'insert_depth_mm', 'conformal'],
-    Plan: ['inserts', 'cutters', 'cutter_group_ends', 'removed_terrain_islands'],
+    Plan: ['terrain', 'inserts', 'cutters', 'cutter_group_ends', 'removed_terrain_islands'],
   },
   enums: {
+    ManufacturingMode: ['separate', 'multicolor'],
     Treatment: ['insert', 'hide', 'v_carve'],
     ZoneSurface: ['terrain', 'level'],
   },
@@ -99,6 +102,8 @@ const pieceMatch: Assert<
     'taper_relief_mm' | 'taper_height_mm' | 'draft_angle_deg'
   >
 > = true;
+const manufacturingModeValues: readonly ManufacturingMode[] =
+  serializedContract.enums.ManufacturingMode;
 const treatmentValues: readonly Treatment[] = serializedContract.enums.Treatment;
 const surfaceValues: readonly ZoneSurface[] = serializedContract.enums.ZoneSurface;
 
@@ -112,6 +117,7 @@ void [
   terrainMatch,
   overlayMatch,
   pieceMatch,
+  manufacturingModeValues,
   treatmentValues,
   surfaceValues,
 ];

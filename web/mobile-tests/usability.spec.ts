@@ -88,6 +88,9 @@ test.beforeEach(async ({ page }) => {
     () =>
       !!(window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
   );
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.previewStageHistory)).toEqual(
+    ['topo', 'terrain', 'features'],
+  );
 });
 test('full-width model, touch controls, settings and feature editing', async ({
   page,
@@ -128,6 +131,9 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await expect(page.locator('#terrain-island-width')).toHaveValue('');
   await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');
   await expect(page.locator('#download-calibration')).toBeVisible();
+  await page.locator('#manufacturing-mode').selectOption('multicolor');
+  await expect(page.locator('#fit-clearance')).toBeDisabled();
+  await page.locator('#feature-extruder').fill('3');
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#generate').tap();
@@ -143,7 +149,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
   );
   if (testInfo.project.name === 'phone') {
     await page.locator('#download').tap();
-    await expect(page.locator('.format-option')).toHaveCount(3);
+    await expect(page.locator('.format-option')).toHaveCount(7);
     await expect(page.locator('#bambu-export-note')).toContainText('0.20 mm layers');
     await page.locator('input[value=portable]').check();
     let pendingDownload = page.waitForEvent('download');
@@ -154,6 +160,18 @@ test('full-width model, touch controls, settings and feature editing', async ({
     pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
     expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape-bambu.3mf');
+    await page.locator('#download').tap();
+    await page.locator('input[value=prusa]').check();
+    pendingDownload = page.waitForEvent('download');
+    await page.locator('#download-confirm').tap();
+    expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape-prusa.3mf');
+    await page.locator('#download').tap();
+    await page.locator('input[value=shapeways-color]').check();
+    pendingDownload = page.waitForEvent('download');
+    await page.locator('#download-confirm').tap();
+    expect((await pendingDownload).suggestedFilename()).toBe(
+      'Mobile landscape-shapeways-color.zip',
+    );
   }
 });
 test('polygon picker and annotation controls stay reachable', async ({ page }) => {

@@ -38,7 +38,7 @@ function validXml(name: string, xml: string) {
 /** Validate required OPC parts, XML syntax, namespaces, object IDs, and build references. */
 export function validateThreeMfFiles(
   files: Record<string, Uint8Array>,
-  kind: 'portable' | 'bambu',
+  kind: 'portable' | 'bambu' | 'prusa' | 'shapeways',
 ) {
   const contentTypes = decode(files, '[Content_Types].xml');
   const relationships = decode(files, '_rels/.rels');
@@ -60,9 +60,17 @@ export function validateThreeMfFiles(
   if (!objectIds.length || new Set(objectIds).size !== objectIds.length)
     throw new Error('3MF object identifiers are empty or duplicated.');
   const known = new Set(objectIds);
-  const references = [...model.matchAll(/<item\b[^>]*\bobjectid="(\d+)"/g)].map(match => match[1]);
-  if (!references.length || references.some(id => !known.has(id)))
-    throw new Error('3MF build references an unknown object.');
+  const buildReferences = [...model.matchAll(/<item\b[^>]*\bobjectid="(\d+)"/g)].map(
+    match => match[1],
+  );
+  const componentReferences = [...model.matchAll(/<component\b[^>]*\bobjectid="(\d+)"/g)].map(
+    match => match[1],
+  );
+  if (
+    !buildReferences.length ||
+    [...buildReferences, ...componentReferences].some(id => !known.has(id))
+  )
+    throw new Error('3MF build or component references an unknown object.');
 
   if (kind === 'bambu') {
     const modelSettings = decode(files, 'Metadata/model_settings.config');
