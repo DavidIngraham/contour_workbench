@@ -94,8 +94,16 @@ export function normalizeSettings(
 /** Effective geometry operation selected for a feature. */
 export type Treatment = 'insert' | 'hide' | 'v_carve';
 /** Feature classes supported by classification, preview, and generation. */
-export type FeatureClass =
-  'trail' | 'road' | 'stream' | 'water' | 'glacier' | 'ski_run' | 'ski_lift';
+export const featureClasses = [
+  'trail',
+  'road',
+  'stream',
+  'water',
+  'glacier',
+  'ski_run',
+  'ski_lift',
+] as const;
+export type FeatureClass = (typeof featureClasses)[number];
 /** Polygon-zone surface behavior. */
 export type ZoneSurface = 'terrain' | 'level';
 /** Polygon-zone ring data, including preserved holes. */
@@ -186,22 +194,41 @@ export interface Source {
 }
 /* Printable material group shared by slicer and service exports. */
 export interface MaterialGroup {
-  id: 'terrain' | 'features';
+  id: 'terrain' | 'features' | FeatureClass;
   name: string;
   color: string;
   extruder: number;
 }
-/** Default two-material assignment. */
+/** Default terrain and per-feature-class assignments. */
 export const defaultMaterialGroups: MaterialGroup[] = [
   { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
-  { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
+  { id: 'trail', name: 'Trails', color: '#e78a43', extruder: 2 },
+  { id: 'road', name: 'Roads', color: '#c2b17a', extruder: 2 },
+  { id: 'stream', name: 'Streams', color: '#609ca7', extruder: 2 },
+  { id: 'water', name: 'Water', color: '#4f9fca', extruder: 2 },
+  { id: 'glacier', name: 'Glaciers', color: '#f4f8f7', extruder: 2 },
+  { id: 'ski_run', name: 'Ski runs', color: '#ffffff', extruder: 2 },
+  { id: 'ski_lift', name: 'Ski lifts', color: '#5b5148', extruder: 2 },
 ];
 /** Resolve saved groups while keeping old projects compatible. */
 export function projectMaterialGroups(project: Pick<Project, 'materials'>): MaterialGroup[] {
-  return defaultMaterialGroups.map(fallback => ({
-    ...fallback,
-    ...(project.materials?.find(group => group.id === fallback.id) || {}),
-  }));
+  const legacyFeatures = project.materials?.find(group => group.id === 'features');
+  return defaultMaterialGroups.map(fallback => {
+    const saved = project.materials?.find(group => group.id === fallback.id);
+    const inherited = fallback.id === 'terrain' ? undefined : legacyFeatures;
+    return {
+      ...fallback,
+      ...(inherited ? { color: inherited.color, extruder: inherited.extruder } : {}),
+      ...(saved || {}),
+    };
+  });
+}
+/** Resolve one terrain or feature-class material assignment. */
+export function projectMaterialGroup(
+  project: Pick<Project, 'materials'>,
+  id: 'terrain' | FeatureClass,
+) {
+  return projectMaterialGroups(project).find(group => group.id === id)!;
 }
 /** Complete editable project persisted in .contour.json and preset packs. */
 export interface Project {

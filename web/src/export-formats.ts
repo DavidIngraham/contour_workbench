@@ -116,20 +116,26 @@ export function validateShapewaysLimits(triangles: number, archiveBytes = 0) {
 
 function shapewaysColor(asset: Asset, project: Project) {
   const groups = projectMaterialGroups(project);
+  const materialEntry = (id: string) => {
+    const index = groups.findIndex(group => group.id === id);
+    const safeIndex = index < 0 ? 1 : index;
+    return {
+      material: groups[safeIndex].name,
+      uv: (safeIndex + 0.5) / groups.length,
+    };
+  };
   const entries = [
     {
       name: 'terrain',
       mesh: asset.terrain,
       origin: [0, 0, 0] as [number, number, number],
-      material: groups[0].name,
-      uv: 0.25,
+      ...materialEntry('terrain'),
     },
     ...asset.inserts.map(piece => ({
       name: piece.id,
       mesh: piece.mesh,
       origin: piece.origin,
-      material: groups[1].name,
-      uv: 0.75,
+      ...materialEntry(piece.class),
     })),
   ];
   let obj = 'mtllib model.mtl\n';

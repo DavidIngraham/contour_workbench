@@ -348,11 +348,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       setGrid(p.grid);
       settings = p.settings;
       features = p.features;
-      progress(
-        settings.terrain_max_error_mm > 0
-          ? `Building adaptive terrain (≤ ${settings.terrain_max_error_mm} mm sampled error)…`
-          : 'Building terrain at full source resolution…',
-      );
+      progress('Creating your terrain…');
       const packet = decodeMeshPacket<TerrainPacketMetadata>(
         rust!.build_terrain(JSON.stringify(settings)),
       );
@@ -366,7 +362,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       syncBase(p.settings);
       features = p.features;
       settings = p.settings;
-      progress('Draping features over the terrain…');
+      progress('Adding trails, water, and map details…');
       const packet = decodeMeshPacket<OverlayPacketMetadata[]>(
         rust!.build_overlays(
           JSON.stringify(settings),
@@ -395,10 +391,8 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         : settings;
       progress(
         memory.adapted
-          ? 'Memory preflight selected ' +
-              memory.terrainMaxErrorMm.toFixed(3) +
-              ' mm final terrain error before construction...'
-          : 'Memory preflight passed. Building direct terrain pockets...',
+          ? 'Optimizing this detailed model for your device…'
+          : 'Creating the printable model…',
         'memory-preflight',
         0,
         1,
@@ -422,7 +416,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         })),
         removed_terrain_islands: metadata.removed_terrain_islands,
       };
-      progress('Transferring final terrain...', 'terrain-transfer', 0, 1);
+      progress('Preparing the terrain for final assembly…', 'terrain-transfer', 0, 1);
       const terrainPacket = decodeMeshPacket<null>(rust!.take_plan_terrain());
       if (terrainPacket.meshes.length !== 1)
         throw new Error('Final terrain packet is inconsistent.');
@@ -441,13 +435,13 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             const batch = decodeMeshPacket<MeshBatchPacketMetadata>(rust!.take_plan_cutter_batch());
             if (!batch.meshes.length) break;
             progress(
-              'Cutting terrain pocket batch ' +
+              'Making spaces for separate pieces… ' +
                 batch.metadata.batch_index +
                 ' of ' +
                 batch.metadata.batch_total +
                 '\u2026',
               'terrain-pockets',
-              batch.metadata.batch_index - 1,
+              batch.metadata.batch_index,
               batch.metadata.batch_total,
             );
             await checkpoint(request.id);
@@ -477,7 +471,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
           throw new Error('Terrain operation did not produce a valid solid');
 
         if (p.annotations?.length) {
-          progress('Adding annotations and attached porches…');
+          progress('Adding labels and raised details…');
           for (const a of p.annotations as Annotation[]) {
             if (!a.enabled) continue;
             const data = annotationGeometry(a, grid, settings, terrain.layout);
@@ -505,7 +499,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               );
           }
         }
-        progress('Validating terrain topology\u2026', 'terrain-validation');
+        progress('Checking that the model is ready to print…', 'terrain-validation');
         const mesh = trustedManifoldMesh(result, 'Terrain');
         result.delete();
         resultDeleted = true;
@@ -528,9 +522,9 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             piece.mesh = insertBatch.meshes[batchIndex];
             if (pieceIndex % 10 === 0)
               progress(
-                'Preparing insert ' + (pieceIndex + 1) + ' of ' + plan.inserts.length + '\u2026',
+                'Preparing separate pieces… ' + (pieceIndex + 1) + ' of ' + plan.inserts.length,
                 'inserts',
-                pieceIndex,
+                pieceIndex + 1,
                 plan.inserts.length,
               );
             try {
@@ -662,7 +656,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
     }
     case 'calibration': {
       const M = await loadManifold(progress);
-      progress('Building nozzle-aware fit-test pieces…');
+      progress('Creating fit-test pieces for your printer…');
       return zipSync(calibrationFiles(M, p.settings as Settings, ''), { level: 3 });
     }
     default:

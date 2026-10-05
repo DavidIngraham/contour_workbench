@@ -7,7 +7,7 @@ let modulePromise: Promise<ManifoldToplevel> | undefined;
 /** Load and initialize Manifold only when printable solid geometry is requested. */
 export function loadManifold(progress: (message: string) => void): Promise<ManifoldToplevel> {
   if (!modulePromise) {
-    progress('Loading the solid geometry engine…');
+    progress('Starting the model builder…');
     modulePromise = Promise.all([
       import('manifold-3d'),
       import('manifold-3d/manifold.wasm?url'),

@@ -89,6 +89,21 @@ function records(asset: Asset): ObjectRecord[] {
   ];
 }
 
+function materialIndex(project: Project, object: ObjectRecord) {
+  const materials = projectMaterialGroups(project);
+  const id = object.kind === 'terrain' ? 'terrain' : object.piece!.class;
+  const index = materials.findIndex(group => group.id === id);
+  return index < 0 ? (object.kind === 'terrain' ? 0 : 1) : index;
+}
+
+function baseMaterialsXml(project: Project) {
+  return projectMaterialGroups(project)
+    .map(
+      group =>
+        `<base name="${xmlEscape(group.name)}" displaycolor="${group.color.toUpperCase()}FF"/>`,
+    )
+    .join('');
+}
 function assembledPlacement(objects: ObjectRecord[]): Placement[] {
   return objects.map(object => ({
     object,
@@ -318,14 +333,15 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
   const materials = projectMaterialGroups(project);
   const meshObjects = objects
     .map(object => {
-      const group = materials[object.kind === 'terrain' ? 0 : 1];
+      const index = materialIndex(project, object);
+      const group = materials[index];
       return (
         '<object id="' +
         object.id +
         '" name="' +
         xmlEscape(object.name) +
         '" type="model" pid="1" pindex="' +
-        (object.kind === 'terrain' ? 0 : 1) +
+        index +
         '"><metadata name="slic3rpe:extruder_id">' +
         group.extruder +
         '</metadata>' +
@@ -348,15 +364,9 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
   return (
     '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><metadata name="Title">' +
     xmlEscape(project.name) +
-    '</metadata><resources><basematerials id="1"><base name="' +
-    xmlEscape(materials[0].name) +
-    '" displaycolor="' +
-    materials[0].color.toUpperCase() +
-    'FF"/><base name="' +
-    xmlEscape(materials[1].name) +
-    '" displaycolor="' +
-    materials[1].color.toUpperCase() +
-    'FF"/></basematerials>' +
+    '</metadata><resources><basematerials id="1">' +
+    baseMaterialsXml(project) +
+    '</basematerials>' +
     meshObjects +
     '<object id="' +
     assemblyId +
@@ -380,7 +390,7 @@ function coreModel(
   const objectXml = objects
     .map(
       object =>
-        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="1" pindex="${kind === 'shapeways' || object.kind === 'terrain' ? 0 : 1}">${meshXml(object.mesh)}</object>`,
+        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="1" pindex="${kind === 'shapeways' ? 0 : materialIndex(project, object)}">${meshXml(object.mesh)}</object>`,
     )
     .join('');
   const build = placements
@@ -390,7 +400,7 @@ function coreModel(
     )
     .join('');
   const title = xmlEscape(project.name);
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="1"><base name="${xmlEscape(projectMaterialGroups(project)[0].name)}" displaycolor="${projectMaterialGroups(project)[0].color.toUpperCase()}FF"/><base name="${xmlEscape(projectMaterialGroups(project)[1].name)}" displaycolor="${projectMaterialGroups(project)[1].color.toUpperCase()}FF"/></basematerials>${objectXml}</resources><build>${build}</build></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="1">${baseMaterialsXml(project)}</basematerials>${objectXml}</resources><build>${build}</build></model>`;
 }
 
 function bambuRootModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
@@ -410,10 +420,11 @@ function bambuRootModel(project: Project, objects: ObjectRecord[], placements: P
   return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">Contour Workbench</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">Bambu Studio multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
 }
 
-function bambuChildModel(object: ObjectRecord) {
+function bambuChildModel(project: Project, object: ObjectRecord) {
   const childId = object.id * 2 - 1;
   const objectUuid = bambuPartUuid(object.id, '-81cb-4c03-9d28-80fed5dfa1dc');
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="BambuStudio:3mfVersion">1</metadata><resources><object id="${childId}" name="${xmlEscape(object.name)}" p:UUID="${objectUuid}" type="model">${meshXml(object.mesh)}</object></resources><build/></model>`;
+  const group = projectMaterialGroups(project)[materialIndex(project, object)];
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="BambuStudio:3mfVersion">1</metadata><resources><basematerials id="1"><base name="${xmlEscape(group.name)}" displaycolor="${group.color.toUpperCase()}FF"/></basematerials><object id="${childId}" name="${xmlEscape(object.name)}" p:UUID="${objectUuid}" type="model" pid="1" pindex="0">${meshXml(object.mesh)}</object></resources><build/></model>`;
 }
 
 function bambuModelRelationships(objects: ObjectRecord[]) {
@@ -434,7 +445,7 @@ function modelSettings(project: Project, objects: ObjectRecord[], placements: Pl
   const objectXml = objects
     .map(object => {
       const faces = Math.floor(object.mesh.indices.length / 3);
-      return `<object id="${object.id * 2}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="${materials[object.kind === 'terrain' ? 0 : 1].extruder}"/><metadata face_count="${faces}"/><part id="${object.id * 2 - 1}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
+      return `<object id="${object.id * 2}"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="extruder" value="${materials[materialIndex(project, object)].extruder}"/><metadata face_count="${faces}"/><part id="${object.id * 2 - 1}" subtype="normal_part"><metadata key="name" value="${xmlEscape(object.name)}"/><metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/><mesh_stat face_count="${faces}" edges_fixed="0" degenerate_facets="0" facets_removed="0" facets_reversed="0" backwards_edges="0"/></part></object>`;
     })
     .join('');
   const plateXml = [...byPlate.entries()]
@@ -549,7 +560,7 @@ export function buildThreeMf(
   if (kind === 'bambu') {
     files['3D/_rels/3dmodel.model.rels'] = strToU8(bambuModelRelationships(objects));
     for (const object of objects)
-      files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(object));
+      files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
     files['Metadata/project_settings.config'] = strToU8(
       JSON.stringify(bambuProcessSettings(project), null, 2),
     );

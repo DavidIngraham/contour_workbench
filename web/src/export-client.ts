@@ -38,7 +38,7 @@ export class ExportClient {
     if (this.worker) return Promise.reject(new Error('An export is already running.'));
     if (signal?.aborted) return Promise.reject(canceled());
     progress?.({
-      message: 'Preparing compact export geometry...',
+      message: 'Preparing your download…',
       phase: 'prepare',
       completed: 0,
       total: 2,

@@ -43,7 +43,7 @@ describe('provider registry', () => {
         { type: 'way', id: 1 },
       ],
     });
-    expect(progress).toContain('OpenStreetMap attempt 2 of 2 via two.example…');
+    expect(progress).toContain('Loading trails and water… Attempt 2 of 2');
   });
 
   it('aborts a timed-out attempt before trying the next mirror', async () => {

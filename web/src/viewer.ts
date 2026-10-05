@@ -2,7 +2,17 @@
 import { topoSurface } from './topo';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import type { Mesh, Layout, Overlay, Feature, Asset, Settings } from './types';
+import {
+  defaultMaterialGroups,
+  projectMaterialGroups,
+  type Mesh,
+  type Layout,
+  type Overlay,
+  type Feature,
+  type Asset,
+  type Settings,
+  type Project,
+} from './types';
 /** Stable preview colors for normalized feature classes. */
 export const colors = {
   trail: 0xe78a43,
@@ -13,6 +23,14 @@ export const colors = {
   ski_run: 0xffffff,
   ski_lift: 0x5b5148,
 };
+function materialColors(project?: Pick<Project, 'materials'>): Map<string, string> {
+  return new Map(
+    (project ? projectMaterialGroups(project) : defaultMaterialGroups).map(group => [
+      group.id,
+      group.color,
+    ]),
+  );
+}
 /** Render-only treatment for a preview insert surface. */
 export function insertPreviewState(effectiveRelativeHeightMm: number, classBiasMm = 0.003) {
   if (Math.abs(effectiveRelativeHeightMm) < 1e-9)
@@ -239,9 +257,9 @@ export class Viewer {
     material.dispose();
     this.topo = undefined;
   }
-  private terrainMaterial() {
+  private terrainMaterial(color: THREE.ColorRepresentation = '#8baa73') {
     const m = new THREE.MeshStandardMaterial({
-      color: 0x819981,
+      color,
       roughness: 0.92,
       metalness: 0,
       wireframe: this.wire,
@@ -273,7 +291,7 @@ export class Viewer {
     };
     return m;
   }
-  setTerrain(mesh: Mesh, layout: Layout, fit = false) {
+  setTerrain(mesh: Mesh, layout: Layout, fit = false, project?: Pick<Project, 'materials'>) {
     this.dirty = true;
     this.review = false;
     this.layout = layout;
@@ -283,7 +301,10 @@ export class Viewer {
     this.clear(this.land);
     this.boundary([]);
     this.model.position.set(-layout.width / 2, -layout.depth / 2, 0);
-    const surface = new THREE.Mesh(this.geometry(mesh), this.terrainMaterial());
+    const surface = new THREE.Mesh(
+      this.geometry(mesh),
+      this.terrainMaterial(materialColors(project).get('terrain')),
+    );
     surface.castShadow = true;
     surface.receiveShadow = true;
     this.land.add(surface);
@@ -323,12 +344,18 @@ export class Viewer {
     this.top();
   }
   // Preview placement is render-only: export meshes never receive these depth and polygon biases.
-  setOverlays(overlays: Overlay[], features: Feature[], settings: Settings) {
+  setOverlays(
+    overlays: Overlay[],
+    features: Feature[],
+    settings: Settings,
+    project?: Pick<Project, 'materials'>,
+  ) {
     this.dirty = true;
     this.clear(this.features);
     this.overlays.clear();
     const enabled = new Map(features.map(f => [f.id, f.enabled && f.treatment !== 'hide']));
     const ctx = this.carveCanvas.getContext('2d')!;
+    const projectColors = materialColors(project);
     ctx.clearRect(0, 0, 2048, 2048);
     ctx.fillStyle = 'white';
     for (const o of overlays) {
@@ -346,7 +373,7 @@ export class Viewer {
         ? { renderBiasMm: 0, opensTerrain: false, openingDepthMm: 0 }
         : insertPreviewState(o.surface_offset_mm ?? settings.insert_relative_height_mm, classBias);
       const material = new THREE.MeshStandardMaterial({
-        color: carve ? 0x60755e : colors[o.class],
+        color: carve ? 0x60755e : projectColors.get(o.class) || colors[o.class],
         roughness: o.class === 'water' ? 0.52 : 0.85,
         clippingPlanes: [this.clip],
         polygonOffset: !carve,
@@ -358,6 +385,7 @@ export class Viewer {
       mesh.userData.carve = carve;
       if (carve) {
         mesh.userData.rawFloor = Array.from(o.mesh.positions);
+        mesh.userData.featureClass = o.class;
         const attr = mesh.geometry.getAttribute('position');
         for (let i = 0; i < attr.count; i++) attr.setZ(i, Math.max(0.4, attr.getZ(i)));
         attr.needsUpdate = true;
@@ -385,7 +413,7 @@ export class Viewer {
           const opening = new THREE.Mesh(
             this.geometry(wall),
             new THREE.MeshStandardMaterial({
-              color: 0x60755e,
+              color: projectColors.get('terrain'),
               roughness: 0.95,
               side: THREE.DoubleSide,
               clippingPlanes: [this.clip],
@@ -478,9 +506,9 @@ export class Viewer {
       }
     }
   }
-  showAsset(asset: Asset, layout: Layout) {
+  showAsset(asset: Asset, layout: Layout, project?: Pick<Project, 'materials'>) {
     this.dirty = true;
-    this.setTerrain(asset.terrain, layout);
+    this.setTerrain(asset.terrain, layout, false, project);
     this.review = true;
     this.clear(this.features);
     this.overlays.clear();
@@ -488,7 +516,10 @@ export class Viewer {
       const m = new THREE.Mesh(
         this.geometry(p.mesh),
         new THREE.MeshStandardMaterial({
-          color: colors[p.class as keyof typeof colors],
+          color:
+            materialColors(project).get(p.class) ||
+            colors[p.class as keyof typeof colors] ||
+            '#f4b45e',
           roughness: 0.65,
           clippingPlanes: [this.clip],
         }),
@@ -498,10 +529,26 @@ export class Viewer {
       m.userData.id = p.id;
       m.castShadow = true;
       this.features.add(m);
+      m.userData.featureClass = p.class;
     }
+  }
+  applyMaterials(project: Pick<Project, 'materials'>) {
+    const projectColors = materialColors(project);
+    const terrainColor = projectColors.get('terrain');
+    if (this.surface)
+      (this.surface.material as THREE.MeshStandardMaterial).color.set(terrainColor || '#8baa73');
+    this.features.traverse(object => {
+      if (!(object instanceof THREE.Mesh)) return;
+      const material = object.material as THREE.MeshStandardMaterial;
+      if (object.userData.previewOpening) material.color.set(terrainColor || '#8baa73');
+      else if (!object.userData.carve && object.userData.featureClass)
+        material.color.set(projectColors.get(object.userData.featureClass) || '#f4b45e');
+    });
+    this.dirty = true;
   }
   explode(value: number) {
     this.dirty = true;
+
     if (!this.review) return;
     this.features.children.forEach(o => {
       const origin = o.userData.origin;

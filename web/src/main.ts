@@ -33,6 +33,8 @@ import {
   X,
   CheckCheck,
 } from 'lucide';
+import { resolveStatusProgress } from './status-progress';
+import { userErrorMessage } from './user-errors';
 import { extentPolygon, type Shape } from './extent-shapes';
 import { ExtentMap } from './extent-map';
 import { polygonBounds, validatePolygon, type Vertex } from './polygon';
@@ -65,8 +67,10 @@ import {
   type LocalProjectSummary,
 } from './project-store';
 import {
+  defaultMaterialGroups,
   defaults,
   normalizeSettings,
+  projectMaterialGroups,
   type Project,
   type Settings,
   type Terrain,
@@ -116,6 +120,18 @@ const esc = (s: unknown) =>
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
 $('app').innerHTML = renderAppShell(icon);
+const legacyFeatureMaterialRow = $('feature-color').closest<HTMLElement>('.input-row');
+if (legacyFeatureMaterialRow)
+  legacyFeatureMaterialRow.outerHTML =
+    '<div class="material-list"><div class="material-list-heading"><span>Feature class</span><span>Color</span><span>Extruder</span></div>' +
+    defaultMaterialGroups
+      .slice(1)
+      .map(
+        group =>
+          `<div class="material-row"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} extruder"/></div>`,
+      )
+      .join('') +
+    '</div>';
 createIcons({ icons });
 function mobileSettings(open: boolean) {
   document.body.classList.toggle('settings-open', open);
@@ -199,11 +215,32 @@ const annotationEditor = new AnnotationEditor(
   () => touch(),
   () => setPanel('annotations'),
 );
-function status(message: string, error = false, loading = false) {
-  $('status').classList.toggle('error', error);
-  $('status').innerHTML =
-    (loading ? '<span class="spinner"></span>' : '') + `<span>${esc(message)}</span>`;
-  if (!message) $('status').innerHTML = '';
+function status(
+  message: string,
+  error = false,
+  loading = false,
+  completed?: number,
+  total?: number,
+) {
+  const container = $('status');
+  container.classList.toggle('error', error);
+  if (!message) {
+    container.classList.remove('with-progress');
+    container.innerHTML = '';
+    return;
+  }
+  const progress = loading ? resolveStatusProgress(message, completed, total) : undefined;
+  container.classList.toggle('with-progress', Boolean(progress));
+  const bar = progress
+    ? `<div class="status-progress" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.completed}"><span style="width:${progress.percent}%"></span></div>`
+    : '';
+  container.innerHTML =
+    '<div class="status-body"><div class="status-line">' +
+    (loading ? '<span class="spinner"></span>' : '') +
+    `<span>${esc(message)}</span></div>${bar}</div>`;
+}
+function progressStatus(progress: { message: string; completed?: number; total?: number }) {
+  status(progress.message, false, true, progress.completed, progress.total);
 }
 function nextPreviewPaint() {
   return new Promise<void>(resolve =>
@@ -265,7 +302,8 @@ function updateBusy(v: boolean) {
   syncOsmAction();
 }
 function error(e: unknown) {
-  status(e instanceof Error ? e.message : String(e), true);
+  console.error(e);
+  status(userErrorMessage(e), true);
 }
 function activateNewLocalWorkspace(originPresetId?: string) {
   localIdentity = newLocalProjectIdentity(originPresetId);
@@ -602,12 +640,12 @@ async function openPresetModel(entry: PresetEntry) {
     hideLanding();
     showProjectLoadingPreview();
     await nextPreviewPaint();
-    viewer.setTerrain(terrain.mesh, terrain.layout, true);
+    viewer.setTerrain(terrain.mesh, terrain.layout, true, project);
     markPreviewStage('terrain');
     status('Terrain ready. Adding map features...', false, true);
-    $('model-caption').textContent = 'TERRAIN READY \u00b7 LOADING MAP FEATURES';
+    $('model-caption').textContent = 'TERRAIN READY · ADDING MAP DETAILS';
     await nextPreviewPaint();
-    viewer.setOverlays(overlays, project.features, project.settings);
+    viewer.setOverlays(overlays, project.features, project.settings, project);
     if (overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     refreshMetrics();
@@ -891,14 +929,14 @@ function syncForm() {
   ($('manufacturing-mode') as HTMLSelectElement).value = s.manufacturing_mode;
   ($('insert-relative-height') as HTMLInputElement).value = String(s.insert_relative_height_mm);
 
-  const groups = project.materials || [
-    { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
-    { id: 'features', name: 'Features', color: '#f4b45e', extruder: 2 },
-  ];
-  ($('terrain-color') as HTMLInputElement).value = groups[0].color;
-  ($('feature-color') as HTMLInputElement).value = groups[1].color;
-  ($('terrain-extruder') as HTMLInputElement).value = String(groups[0].extruder);
-  ($('feature-extruder') as HTMLInputElement).value = String(groups[1].extruder);
+  const groups = projectMaterialGroups(project);
+  const terrainGroup = groups[0];
+  ($('terrain-color') as HTMLInputElement).value = terrainGroup.color;
+  ($('terrain-extruder') as HTMLInputElement).value = String(terrainGroup.extruder);
+  for (const group of groups.slice(1)) {
+    ($(`material-${group.id}-color`) as HTMLInputElement).value = group.color;
+    ($(`material-${group.id}-extruder`) as HTMLInputElement).value = String(group.extruder);
+  }
   for (const id of ['fit-clearance', 'foot-relief', 'foot-height', 'draft-angle'])
     ($(id) as HTMLInputElement).disabled = s.manufacturing_mode === 'multicolor';
   fitGuidance();
@@ -927,7 +965,7 @@ async function rebuild(
     const t = await engine.call(
       'terrain',
       { grid: project.grid, settings: project.settings, features: project.features },
-      progress => status(progress.message, false, true),
+      progressStatus,
     );
     if (requested !== revision) {
       status('Settings changed during generation. Applying the latest design…', false, true);
@@ -937,26 +975,26 @@ async function rebuild(
     terrain = t;
     terrainBuilds = t.terrainBuilds;
     viewer.model.scale.z = 1;
-    viewer.setTerrain(t.mesh, t.layout, fit);
+    viewer.setTerrain(t.mesh, t.layout, fit, project);
     if (stagedPreview) {
       markPreviewStage('terrain');
-      $('model-caption').textContent = 'TERRAIN READY \u00b7 LOADING MAP FEATURES';
+      $('model-caption').textContent = 'TERRAIN READY · ADDING MAP DETAILS';
       await nextPreviewPaint();
     }
     overlays = includeOverlays
       ? await engine.call(
           'overlays',
           { features: project.features, settings: project.settings },
-          progress => status(progress.message, false, true),
+          progressStatus,
         )
       : [];
-    viewer.setOverlays(overlays, project.features, project.settings);
+    viewer.setOverlays(overlays, project.features, project.settings, project);
     if (stagedPreview && overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     $('model-caption').textContent =
       project.settings.terrain_max_error_mm > 0
-        ? `DESIGN PREVIEW · ADAPTIVE ≤ ${project.settings.terrain_max_error_mm} MM`
-        : 'DESIGN PREVIEW · SOURCE RESOLUTION';
+        ? 'DESIGN PREVIEW · OPTIMIZED DETAIL'
+        : 'DESIGN PREVIEW · FULL DETAIL';
     refreshMetrics();
     status('');
     ($('generate') as HTMLButtonElement).disabled = false;
@@ -984,7 +1022,8 @@ async function updateOverlays() {
     });
     if (requested === revision) {
       overlays = result;
-      if (!previewSuspended) viewer.setOverlays(overlays, project.features, project.settings);
+      if (!previewSuspended)
+        viewer.setOverlays(overlays, project.features, project.settings, project);
       annotationEditor.refresh();
       if (!busy) status('');
     } else overlayAgain = true;
@@ -1003,19 +1042,19 @@ function design() {
   $('mode-design').classList.add('active');
   $('mode-review').classList.remove('active');
   if (terrain) {
-    viewer.setTerrain(terrain.mesh, terrain.layout);
-    viewer.setOverlays(overlays, project.features, project.settings);
+    viewer.setTerrain(terrain.mesh, terrain.layout, false, project);
+    viewer.setOverlays(overlays, project.features, project.settings, project);
     annotationEditor.refresh();
     viewer.setSection(100);
   }
-  $('model-caption').textContent = 'DESIGN PREVIEW · NOT PRINT GEOMETRY';
+  $('model-caption').textContent = 'PREVIEW ONLY · GENERATE TO DOWNLOAD';
   $('review-controls').classList.add('hidden');
 }
 $('mode-design').onclick = design;
 $('mode-review').onclick = () => {
   if (!asset || asset.revision !== revision) return;
   mode = 'review';
-  viewer.showAsset(asset, terrain.layout);
+  viewer.showAsset(asset, terrain.layout, project);
   annotationEditor.refresh(true);
   $('mode-review').classList.add('active');
   $('mode-design').classList.remove('active');
@@ -1043,7 +1082,7 @@ $('generate').onclick = async () => {
         revision: requested,
         memory_budget_mb: browserBuildMemoryBudgetMb(),
       },
-      progress => status(progress.message, false, true),
+      progressStatus,
     );
     if (requested !== revision) {
       status('The design changed while generating. Generate again for the latest selection.');
@@ -1069,8 +1108,8 @@ $('generate').onclick = async () => {
   } finally {
     previewSuspended = false;
     if (releasePreview && !completed && mode === 'design') {
-      viewer.setTerrain(terrain.mesh, terrain.layout);
-      viewer.setOverlays(overlays, project.features, project.settings);
+      viewer.setTerrain(terrain.mesh, terrain.layout, false, project);
+      viewer.setOverlays(overlays, project.features, project.settings, project);
     }
     updateBusy(false);
   }
@@ -1082,7 +1121,7 @@ function downloadDialog(open: boolean) {
   if (open) {
     const layer = Math.max(0.08, Math.min(0.32, project.settings.nozzle_diameter_mm * 0.5));
     $('bambu-export-note').textContent =
-      `Bambu defaults: ${layer.toFixed(2)} mm layers, 3 walls, 4 top/bottom layers, 15% grid infill, automatic brim. Elephant-foot compensation stays off because the insert taper is built into the geometry.`;
+      `Bambu defaults: ${layer.toFixed(2)} mm layers, adaptive layer heights, 3 walls, 4 top/bottom layers, 5% gyroid infill, and automatic brim. Elephant-foot compensation follows your slicer preset.`;
     ($('download-confirm') as HTMLButtonElement).focus();
   }
 }
@@ -1100,13 +1139,7 @@ $('download-confirm').onclick = async () => {
   exportRunning = true;
   abort = new AbortController();
   try {
-    const result = await exportClient.run(
-      format,
-      asset,
-      project,
-      progress => status(progress.message, false, true),
-      abort.signal,
-    );
+    const result = await exportClient.run(format, asset, project, progressStatus, abort.signal);
     downloadFile(result.bytes as unknown as BlobPart, result.filename, result.mime);
     status(result.filename + ' downloaded.');
   } catch (e) {
@@ -1120,9 +1153,7 @@ $('download-calibration').onclick = async () => {
   if (!project || busy) return;
   updateBusy(true);
   try {
-    const zip = await engine.call('calibration', { settings: project.settings }, s =>
-      status(s.message, false, true),
-    );
+    const zip = await engine.call('calibration', { settings: project.settings }, progressStatus);
     downloadFile(zip as unknown as BlobPart, 'Contour Workbench fit test.zip', 'application/zip');
     status(
       'Fit-test bundle downloaded. Print the numbered base and inserts before the full model.',
@@ -1206,7 +1237,8 @@ async function loadProjectOsm(focusFeatures = false) {
     });
     if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
     const data = await loadOsm(query, controller.signal, progress => {
-      if (serial === osmLoadSerial && project === target) status(progress.message, false, true);
+      if (serial === osmLoadSerial && project === target)
+        status(progress.message, false, true, progress.attempt, progress.maxAttempts);
     });
     if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
     const incoming = await engine.call('classify', data);
@@ -1237,17 +1269,13 @@ async function loadProjectOsm(focusFeatures = false) {
     if (overlays.length) markPreviewStage('features');
     if (focusFeatures && incoming.length) setPanel('features');
     osmRetryAvailable = false;
-    status(
-      `Loaded ${incoming.length} OSM features, including polygon zones. Select any feature to configure it.`,
-    );
+    status(`Added ${incoming.length} map features. Select any feature to customize it.`);
   } catch (e) {
     if (controller.signal.aborted || serial !== osmLoadSerial || project !== target) return;
     osmRetryAvailable = true;
-    const message = e instanceof Error ? e.message : String(e);
+    console.error(e);
     status(
-      message.startsWith('OpenStreetMap')
-        ? message
-        : `Terrain is ready, but trails and water could not be loaded: ${message}`,
+      'Trails and water could not be loaded right now. Your terrain is ready—use “Retry trails and water” when you are ready.',
       true,
     );
   } finally {
@@ -1307,7 +1335,13 @@ $('insert-relative-height').onchange = () => {
   syncForm();
   void updateOverlays();
 };
-for (const id of ['terrain-color', 'feature-color', 'terrain-extruder', 'feature-extruder'])
+for (const id of [
+  'terrain-color',
+  'terrain-extruder',
+  ...defaultMaterialGroups
+    .slice(1)
+    .flatMap(group => [`material-${group.id}-color`, `material-${group.id}-extruder`]),
+])
   $(id).onchange = () => {
     project.materials = [
       {
@@ -1316,14 +1350,14 @@ for (const id of ['terrain-color', 'feature-color', 'terrain-extruder', 'feature
         color: ($('terrain-color') as HTMLInputElement).value,
         extruder: Number(($('terrain-extruder') as HTMLInputElement).value),
       },
-      {
-        id: 'features',
-        name: 'Features',
-        color: ($('feature-color') as HTMLInputElement).value,
-        extruder: Number(($('feature-extruder') as HTMLInputElement).value),
-      },
+      ...defaultMaterialGroups.slice(1).map(group => ({
+        ...group,
+        color: ($(`material-${group.id}-color`) as HTMLInputElement).value,
+        extruder: Number(($(`material-${group.id}-extruder`) as HTMLInputElement).value),
+      })),
     ];
     touch();
+    viewer.applyMaterials(project);
   };
 for (const [id, k] of [['quality', 'terrain_max_error_mm']] as const)
   $(id).onchange = () => {
@@ -1627,7 +1661,7 @@ $('area-load').onclick = async () => {
     viewer.showLoadingMap(loadingLayout, [...loadingBoundary, loadingBoundary[0]]);
     markPreviewStage('topo', true);
     await nextPreviewPaint();
-    $('model-caption').textContent = 'SELECTED AREA · LOADING TOPO AND ELEVATION';
+    $('model-caption').textContent = 'SELECTED AREA · LOADING TERRAIN';
     const data = await loadElevation(
       bounds,
       selectedProduct,
@@ -1652,8 +1686,8 @@ $('area-load').onclick = async () => {
     await rebuild(true, false, true, true, true);
     $('model-caption').textContent =
       project.settings.terrain_max_error_mm > 0
-        ? `DESIGN PREVIEW · ADAPTIVE ≤ ${project.settings.terrain_max_error_mm} MM`
-        : 'DESIGN PREVIEW · SOURCE RESOLUTION';
+        ? 'DESIGN PREVIEW · OPTIMIZED DETAIL'
+        : 'DESIGN PREVIEW · FULL DETAIL';
     setPanel('terrain');
     wizardMode = false;
     updateBusy(false);
@@ -1762,7 +1796,7 @@ async function projectThumbnailDataUrl() {
 async function buildPresetDownload() {
   if (!project || !terrain) throw new Error('Open a project before building a preset.');
   await engine.call('hydrate', { project, terrain });
-  const packed = await engine.call('preset-pack', { project }, s => status(s.message, false, true)),
+  const packed = await engine.call('preset-pack', { project }, progressStatus),
     name =
       project.name
         .toLowerCase()

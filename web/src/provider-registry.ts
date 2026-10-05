@@ -205,7 +205,7 @@ export async function queryOverpass(
       maxAttempts,
       endpoint,
       phase: 'request',
-      message: `OpenStreetMap attempt ${attempt} of ${maxAttempts} via ${host}…`,
+      message: `Loading trails and water… Attempt ${attempt} of ${maxAttempts}`,
     });
 
     const attemptController = new AbortController();
@@ -288,7 +288,7 @@ export async function queryOverpass(
       maxAttempts,
       endpoint,
       phase: 'backoff',
-      message: `OpenStreetMap service is busy; retrying in ${Math.max(1, Math.ceil(delayMs / 1000))} s…`,
+      message: `Map details are temporarily busy. Trying again in ${Math.max(1, Math.ceil(delayMs / 1000))} seconds…`,
     });
     await sleep(delayMs, signal);
   }

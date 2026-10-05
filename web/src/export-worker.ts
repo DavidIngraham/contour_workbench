@@ -8,7 +8,14 @@ self.onmessage = (event: MessageEvent<ExportRequest>) => {
   const request = event.data;
   const progress: ExportResponse = {
     progress: {
-      message: 'Encoding ' + request.format.replaceAll('-', ' ') + ' output...',
+      message:
+        request.format === 'bambu'
+          ? 'Creating your Bambu Studio project…'
+          : request.format === 'prusa'
+            ? 'Creating your PrusaSlicer project…'
+            : request.format.startsWith('shapeways')
+              ? 'Creating your Shapeways files…'
+              : 'Creating your model files…',
       completed: 1,
       total: 2,
     },

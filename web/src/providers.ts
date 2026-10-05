@@ -157,9 +157,7 @@ export async function loadElevation(
   checkBounds(bounds);
   if (product === 'auto') {
     product = automaticProduct(bounds);
-    progress(
-      `Selecting ${product.endsWith('10m') ? '10' : product.endsWith('90') ? '90' : '30'} m elevation for this area…`,
-    );
+    progress('Choosing the best available terrain detail…');
   }
   const spacing = product.endsWith('10m') ? 10 : product.endsWith('90') ? 90 : 30;
   if (sourceSampleCount(bounds, spacing) > 2_000_000)
@@ -176,10 +174,10 @@ export async function loadElevation(
     elevationCacheAgeMs,
   );
   if (cached) {
-    progress(`Using cached ${cached.source.name} elevation…`);
+    progress('Loading saved terrain data…');
     return cached;
   }
-  if (requestedProduct.startsWith('usgs')) progress('Finding USGS elevation coverage…');
+  if (requestedProduct.startsWith('usgs')) progress('Finding terrain data for this area…');
   const { urls, product: resolved } = await resolveElevationUrls({
     bounds,
     product: requestedProduct,
@@ -193,12 +191,12 @@ export async function loadElevation(
   const { fromUrl } = await import('geotiff');
   const windows: WindowRaster[] = [];
   for (let i = 0; i < urls.length; i++) {
-    progress(`Reading elevation tile ${i + 1} of ${urls.length}…`);
+    progress(`Downloading terrain data… ${i + 1} of ${urls.length}`);
     const tiff = await fromUrl(urls[i], { allowFullFile: false }, signal);
     const r = await raster(tiff, bounds, urls[i], signal);
     if (r) windows.push(r);
   }
-  progress('Checking coverage and preparing terrain…');
+  progress('Combining terrain data…');
   const grid = mosaic(windows, bounds);
   const source: Source = {
     product: resolved,

@@ -38,6 +38,11 @@ function box(width: number, depth: number, height: number): Mesh {
   };
 }
 const project: Project = {
+  materials: [
+    { id: 'terrain', name: 'Terrain', color: '#8baa73', extruder: 1 },
+    { id: 'water', name: 'Water', color: '#0055ff', extruder: 3 },
+    { id: 'ski_run', name: 'Ski runs', color: '#ffffff', extruder: 4 },
+  ],
   schema_version: 2,
   name: 'Meadows / winter',
   grid: { bounds: [0, 0, 1, 1], width: 2, height: 2, elevations: [0, 0, 0, 0] },
@@ -77,6 +82,10 @@ describe('3MF export', () => {
     expect(JSON.parse(strFromU8(files['Metadata/project.contour.json'])).name).toBe(project.name);
     const model = strFromU8(files['3D/3dmodel.model']);
     expect(model.match(/<object /g)).toHaveLength(3);
+    expect(model).toContain('displaycolor="#0055FFFF"');
+    expect(model).toMatch(/object id="2"[^>]*pindex="4"/);
+    expect(model).toMatch(/object id="3"[^>]*pindex="6"/);
+    expect(model.match(/<base /g)).toHaveLength(8);
     expect(model.match(/<item /g)).toHaveLength(3);
     expect(model).toContain('10.000000 20.000000 5.000000');
     expect(model).toContain('lake &amp; one');
@@ -118,6 +127,7 @@ describe('3MF export', () => {
     );
     expect(childPaths).toHaveLength(3);
     expect(model).toContain('object_2.model" objectid="3"');
+    expect(strFromU8(files['3D/Objects/object_2.model'])).toContain('displaycolor="#0055FFFF"');
     expect(strFromU8(files['3D/Objects/object_2.model'])).toContain('<object id="3"');
     const relationships = strFromU8(files['3D/_rels/3dmodel.model.rels']);
     for (const path of childPaths) {
@@ -131,6 +141,9 @@ describe('3MF export', () => {
     expect(modelSettings).toContain('object_id" value="4"');
     expect(modelSettings).toContain('object_id" value="6"');
     expect(modelSettings.match(/<plate>/g)).toHaveLength(2);
+    expect(modelSettings).toMatch(/object id="2".*?key="extruder" value="1"/);
+    expect(modelSettings).toMatch(/object id="4".*?key="extruder" value="3"/);
+    expect(modelSettings).toMatch(/object id="6".*?key="extruder" value="4"/);
     expect(modelSettings).toContain('plater_name" value="Terrain');
     expect(modelSettings).toContain('plater_name" value="Inserts 1');
     expect(modelSettings).not.toContain('<assemble_item');
