@@ -63,7 +63,7 @@ const asset: Asset = {
     {
       id: 'ski run',
       class: 'ski_run',
-      mesh: box(25, 25, 2),
+      mesh: box(25, 25, 0.1),
       origin: [20, 10, 5],
       insert_depth_mm: 1,
     },

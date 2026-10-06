@@ -1214,7 +1214,7 @@ $('file-features').onchange = async () => {
     listFeatures();
     refreshMetrics();
     await updateOverlays();
-    status(`Added ${added.length} supported features.`);
+    status(`Added ${added.length} supported ${added.length === 1 ? 'feature' : 'features'}.`);
   } catch (e) {
     error(e);
   }
@@ -1269,7 +1269,9 @@ async function loadProjectOsm(focusFeatures = false) {
     if (overlays.length) markPreviewStage('features');
     if (focusFeatures && incoming.length) setPanel('features');
     osmRetryAvailable = false;
-    status(`Added ${incoming.length} map features. Select any feature to customize it.`);
+    status(
+      `Added ${incoming.length} map ${incoming.length === 1 ? 'feature' : 'features'}. Select any feature to customize it.`,
+    );
   } catch (e) {
     if (controller.signal.aborted || serial !== osmLoadSerial || project !== target) return;
     osmRetryAvailable = true;

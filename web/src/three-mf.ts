@@ -245,6 +245,13 @@ function prusaAdaptiveLayerProfile(placements: Placement[], nozzle: number): Lay
   faces.sort((left, right) => left.minZ - right.minZ || left.maxZ - right.maxZ);
 
   const objectHeight = objectMaxZ - objectMinZ;
+  if (objectHeight <= firstLayerHeight) {
+    const thinLayerHeight = Math.max(minLayerHeight, objectHeight);
+    return [
+      { z: 0, height: thinLayerHeight },
+      { z: objectHeight, height: thinLayerHeight },
+    ];
+  }
   const profile: LayerHeightPoint[] = [
     { z: 0, height: firstLayerHeight },
     { z: firstLayerHeight, height: firstLayerHeight },

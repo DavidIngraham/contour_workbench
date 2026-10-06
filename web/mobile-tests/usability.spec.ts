@@ -147,7 +147,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
   );
   await page.locator('#manufacturing-mode').selectOption('multicolor');
   await expect(page.locator('#fit-clearance')).toBeDisabled();
-  await page.locator('#feature-extruder').fill('3');
+  await page.locator('#material-trail-extruder').fill('3');
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#generate').tap();
@@ -264,7 +264,7 @@ test('Overpass failure keeps terrain usable and offers a successful retry', asyn
   await page.locator('#mobile-settings').tap();
   await page.getByRole('button', { name: /^Features/, exact: false }).tap();
   await page.locator('#fetch-osm').tap();
-  await expect(page.locator('#status')).toContainText('OpenStreetMap attempt 1 of 4');
+  await expect(page.locator('#status')).toContainText('Loading trails and water… Attempt 1 of 4');
   await expect(page.locator('#fetch-osm')).toHaveText('Retry trails and water', {
     timeout: 15_000,
   });
@@ -274,12 +274,12 @@ test('Overpass failure keeps terrain usable and offers a successful retry', asyn
   );
   expect(await page.evaluate(() => (window as any).contourDiagnostics.busy)).toBe(false);
   await expect(page.locator('#generate')).toBeEnabled();
-  await expect(page.locator('#status')).toContainText('Terrain is ready');
+  await expect(page.locator('#status')).toContainText('Your terrain is ready');
 
   recover = true;
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toHaveText('Pull from OpenStreetMap');
-  await expect(page.locator('#status')).toContainText('Loaded 1 OSM feature');
+  await expect(page.locator('#status')).toContainText('Added 1 map feature');
   await expect(page.locator('#feature-list')).toContainText('Recovered trail');
 });
 
