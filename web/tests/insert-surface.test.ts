@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { defaults, normalizeSettings, type Mesh, type Settings } from '../src/types';
-import { insetOpeningWall, insertPreviewState } from '../src/viewer';
+import {
+  boundaryFillGeometry,
+  insetOpeningWall,
+  insertPreviewState,
+  perspectiveFitDistance,
+  topViewFitDistance,
+} from '../src/viewer';
 
 const prism: Mesh = {
   positions: [0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 2, 1, 0, 0, 0.5, 2, 0, 0.5, 2, 2, 0.5, 0, 2, 0.5],
@@ -71,5 +77,38 @@ describe('insert relative height', () => {
     expect(walls.indices).toHaveLength(24);
     expect(Math.max(...walls.positions.filter((_, index) => index % 3 === 2))).toBeCloseTo(1.3);
     expect(prism.positions).toEqual(original);
+  });
+});
+
+describe('preview framing', () => {
+  it('backs the camera up enough for narrow viewports', () => {
+    expect(topViewFitDistance(200, 100, 0.5, 35)).toBeGreaterThan(
+      topViewFitDistance(200, 100, 2, 35),
+    );
+    expect(perspectiveFitDistance(100, 0.5, 35)).toBeGreaterThan(
+      perspectiveFitDistance(100, 2, 35),
+    );
+  });
+
+  it('builds a closed, elevated fill from an outline', () => {
+    const geometry = boundaryFillGeometry(
+      [
+        [0, 0],
+        [200, 0],
+        [200, 100],
+        [0, 100],
+        [0, 0],
+      ],
+      0.2,
+    );
+    geometry.computeBoundingBox();
+
+    expect(geometry.getAttribute('position').count).toBeGreaterThanOrEqual(4);
+    expect(geometry.getIndex()?.count).toBe(6);
+    expect(geometry.boundingBox?.min.toArray().slice(0, 2)).toEqual([0, 0]);
+    expect(geometry.boundingBox?.max.toArray().slice(0, 2)).toEqual([200, 100]);
+    expect(geometry.boundingBox?.min.z).toBeCloseTo(0.2);
+    expect(geometry.boundingBox?.max.z).toBeCloseTo(0.2);
+    geometry.dispose();
   });
 });

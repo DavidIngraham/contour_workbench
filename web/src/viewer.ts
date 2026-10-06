@@ -91,6 +91,50 @@ export function insetOpeningWall(mesh: Mesh, depthMm: number): Mesh {
 }
 
 /** Owns the Three.js scene and maps project meshes to interactive objects. */
+function boundaryRing(points: [number, number][]) {
+  if (points.length > 1 && points[0][0] === points.at(-1)![0] && points[0][1] === points.at(-1)![1])
+    return points.slice(0, -1);
+  return points;
+}
+
+/** Triangulate a boundary footprint at a deliberate height above the topo surface. */
+export function boundaryFillGeometry(points: [number, number][], elevationMm: number) {
+  const ring = boundaryRing(points);
+  if (ring.length < 3) return new THREE.BufferGeometry();
+  const shape = new THREE.Shape();
+  shape.moveTo(ring[0][0], ring[0][1]);
+  for (const [x, y] of ring.slice(1)) shape.lineTo(x, y);
+  shape.closePath();
+  const geometry = new THREE.ShapeGeometry(shape);
+  geometry.translate(0, 0, elevationMm);
+  return geometry;
+}
+
+/** Distance required to contain a sphere in both dimensions of a perspective viewport. */
+export function perspectiveFitDistance(
+  radius: number,
+  aspect: number,
+  verticalFovDegrees: number,
+  padding = 1.12,
+) {
+  const verticalFov = THREE.MathUtils.degToRad(verticalFovDegrees);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * Math.max(aspect, 0.01));
+  return (Math.max(radius, 0.01) / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * padding;
+}
+
+/** Height required for a top-down rectangular footprint to fit without clipping. */
+export function topViewFitDistance(
+  width: number,
+  depth: number,
+  aspect: number,
+  verticalFovDegrees: number,
+  padding = 1.12,
+) {
+  const tangent = Math.tan(THREE.MathUtils.degToRad(verticalFovDegrees) / 2);
+  const verticalDistance = depth / 2 / tangent;
+  const horizontalDistance = width / 2 / (tangent * Math.max(aspect, 0.01));
+  return Math.max(verticalDistance, horizontalDistance, 1) * padding;
+}
 export class Viewer {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -122,7 +166,7 @@ export class Viewer {
   private pointer = new THREE.Vector2();
   onPick?: (id: string) => void;
   onBoundary?: (p: [number, number]) => void;
-  private boundaryLine?: THREE.Line;
+  private boundaryPreview?: THREE.Group;
   private dragging = false;
   private down = [0, 0];
   constructor(private host: HTMLElement) {
@@ -341,7 +385,7 @@ export class Viewer {
     this.topoKey = '';
     this.boundary(boundary, 0.2);
     void this.loadTopo();
-    this.top();
+    this.top(boundary);
   }
   // Preview placement is render-only: export meshes never receive these depth and polygon biases.
   setOverlays(
@@ -672,8 +716,26 @@ export class Viewer {
   fit() {
     this.dirty = true;
     const pose = this.presentationPose();
+    this.surface?.geometry.computeBoundingBox();
+    let radius = Math.hypot(this.layout?.width || 220, this.layout?.depth || 200) / 2;
+    const bounds = this.surface?.geometry.boundingBox;
+    if (bounds) {
+      radius = 0;
+      for (const x of [bounds.min.x, bounds.max.x])
+        for (const y of [bounds.min.y, bounds.max.y])
+          for (const z of [bounds.min.z, bounds.max.z]) {
+            const corner = new THREE.Vector3(
+              x + this.model.position.x,
+              y + this.model.position.y,
+              z + this.model.position.z,
+            );
+            radius = Math.max(radius, corner.distanceTo(pose.target));
+          }
+    }
+    const direction = pose.position.clone().sub(pose.target).normalize();
+    const distance = perspectiveFitDistance(radius, this.camera.aspect, this.camera.fov);
     this.controls.target.copy(pose.target);
-    this.camera.position.copy(pose.position);
+    this.camera.position.copy(pose.target).addScaledVector(direction, distance);
     this.controls.update();
   }
   private updateNorth() {
@@ -753,31 +815,72 @@ export class Viewer {
       }
     }
   }
-  top() {
+  top(points?: [number, number][]) {
     this.dirty = true;
-    const size = Math.max(this.layout?.width || 220, this.layout?.depth || 200);
-    this.controls.target.set(0, 0, 0);
+    const footprint = points?.length
+      ? boundaryRing(points)
+      : [
+          [0, 0] as [number, number],
+          [this.layout?.width || 220, 0] as [number, number],
+          [this.layout?.width || 220, this.layout?.depth || 200] as [number, number],
+          [0, this.layout?.depth || 200] as [number, number],
+        ];
+    const xs = footprint.map(point => point[0] + this.model.position.x);
+    const ys = footprint.map(point => point[1] + this.model.position.y);
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    const target = new THREE.Vector3((minX + maxX) / 2, (minY + maxY) / 2, 0);
+    const distance = topViewFitDistance(
+      maxX - minX,
+      maxY - minY,
+      this.camera.aspect,
+      this.camera.fov,
+    );
+    this.controls.target.copy(target);
     this.camera.position.set(
-      this.layout?.rotated ? 0.01 : 0,
-      this.layout?.rotated ? 0 : -0.01,
-      size * 2,
+      target.x + (this.layout?.rotated ? 0.01 : 0),
+      target.y + (this.layout?.rotated ? 0 : -0.01),
+      target.z + distance,
     );
     this.controls.update();
   }
   boundary(points: [number, number][], elevationMm = 70) {
     this.dirty = true;
-    if (this.boundaryLine) {
-      this.frame.remove(this.boundaryLine);
-      this.boundaryLine.geometry.dispose();
+    if (this.boundaryPreview) {
+      this.frame.remove(this.boundaryPreview);
+      this.clear(this.boundaryPreview);
+      this.boundaryPreview = undefined;
     }
     if (!points.length) return;
-    const data = points.map(p => new THREE.Vector3(p[0], p[1], elevationMm));
+    const ring = boundaryRing(points);
+    if (ring.length < 3) return;
+    const group = new THREE.Group();
+    const fill = new THREE.Mesh(
+      boundaryFillGeometry(ring, elevationMm),
+      new THREE.MeshBasicMaterial({
+        color: 0xe88945,
+        transparent: true,
+        opacity: 0.2,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -4,
+        side: THREE.DoubleSide,
+      }),
+    );
+    fill.renderOrder = 99;
+    const outlinePoints = [...ring, ring[0]].map(
+      point => new THREE.Vector3(point[0], point[1], elevationMm + 0.01),
+    );
     const line = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(data),
+      new THREE.BufferGeometry().setFromPoints(outlinePoints),
       new THREE.LineBasicMaterial({ color: 0xe88945, depthTest: false }),
     );
     line.renderOrder = 100;
-    this.frame.add(line);
-    this.boundaryLine = line;
+    group.add(fill, line);
+    this.frame.add(group);
+    this.boundaryPreview = group;
   }
 }
