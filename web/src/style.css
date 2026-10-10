@@ -2090,3 +2090,77 @@ button.compass {
 .gpx-placement[data-placement='partial'] {
   color: #8a541b;
 }
+
+.print-order-dialog {
+  width: min(640px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  box-sizing: border-box;
+  border: 1px solid #ccd1ca;
+  border-radius: 16px;
+  padding: 24px;
+  color: #263a31;
+  background: #fafbf7;
+  overflow: auto;
+}
+.print-order-dialog::backdrop {
+  background: #142c2799;
+}
+.print-order-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.print-order-dialog h2 {
+  margin: 0;
+  font-size: 22px;
+}
+.print-order-dialog p {
+  line-height: 1.5;
+}
+.print-order-dialog label {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+}
+.print-order-dialog input,
+.print-order-dialog select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px;
+  min-width: 0;
+  font: inherit;
+}
+.print-order-dialog img {
+  display: block;
+  max-width: 100%;
+  max-height: 300px;
+  margin: auto;
+}
+.print-order-dialog .btn {
+  white-space: normal;
+  margin: 5px 4px 5px 0;
+}
+.print-order-dialog .print-confirm {
+  display: flex;
+  align-items: flex-start;
+}
+.print-order-dialog .print-confirm input {
+  width: auto;
+}
+.print-palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.print-palette span {
+  padding-left: 5px;
+}
+@media (max-width: 600px) {
+  .model-actions {
+    flex-wrap: wrap;
+  }
+  .print-order-dialog {
+    padding: 16px;
+  }
+}

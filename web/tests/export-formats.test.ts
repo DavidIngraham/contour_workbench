@@ -1,4 +1,4 @@
-import { strFromU8, unzipSync } from 'fflate';
+import { strFromU8, unzipSync, unzlibSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { buildExport, validateShapewaysLimits, validateWatertight } from '../src/export-formats';
 import { defaults, type Asset, type Mesh, type Project } from '../src/types';
@@ -149,5 +149,64 @@ describe('target export formats', () => {
         project,
       ),
     ).toThrow('not watertight');
+  });
+});
+
+describe('Marketiger full-color exterior', () => {
+  const painted = {
+    ...asset,
+    inserts: [],
+    faceMaterials: new Uint8Array([0, 1, 2, 3, 4, 5, 0, 1, 2, 3, 4, 5]),
+  };
+  it('exports exact faces, texture colors, mm bounds and cm3 volume without project data', () => {
+    const result = buildExport('marketiger', painted, project);
+    expect(result.printModel!.dimensionsMm).toEqual([2, 2, 2]);
+    expect(result.printModel!.volumeCm3).toBeCloseTo(0.008, 10);
+    const files = unzipSync(result.bytes);
+    expect(Object.keys(files).sort()).toEqual([
+      'README.txt',
+      'colors.png',
+      'model.mtl',
+      'model.obj',
+    ]);
+    const png = files['colors.png'];
+    const length = new DataView(png.buffer, png.byteOffset).getUint32(33);
+    expect(Array.from(unzlibSync(png.slice(41, 41 + length)).slice(0, 5))).toEqual([
+      0, 0x11, 0x22, 0x33, 255,
+    ]);
+    const obj = strFromU8(files['model.obj']);
+    expect(obj.match(/^f /gm)).toHaveLength(12);
+    expect(obj.match(/^o /gm)).toHaveLength(1);
+    expect(obj).toContain('usemtl color_1\nf 1/2 4/2 3/2');
+    // White Kd avoids multiplying texture RGB by itself.
+    expect(strFromU8(files['model.mtl'])).toContain('# sRGB #112233\nKd 1 1 1');
+    expect(buildExport('marketiger', painted, project).bytes).toEqual(result.bytes);
+    expect(
+      buildExport('marketiger', painted, {
+        ...project,
+        materials: project.materials!.map(m => ({ ...m, extruder: 1 })),
+      }).bytes,
+    ).toEqual(result.bytes);
+  });
+  it('rejects separate parts, open meshes, and invalid face colors', () => {
+    expect(() => buildExport('marketiger', asset, project)).toThrow('Print together');
+    expect(() =>
+      buildExport(
+        'marketiger',
+        { ...painted, faceMaterials: new Uint8Array(12).fill(255) },
+        project,
+      ),
+    ).toThrow('Unknown surface color');
+    expect(() =>
+      buildExport(
+        'marketiger',
+        {
+          ...painted,
+          terrain: { ...box(), indices: box().indices.slice(3) },
+          faceMaterials: new Uint8Array(11),
+        },
+        project,
+      ),
+    ).toThrow('watertight');
   });
 });

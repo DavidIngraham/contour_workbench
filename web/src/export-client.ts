@@ -49,7 +49,9 @@ export class ExportClient {
     const worker = new Worker(new URL('./export-worker.ts', import.meta.url), { type: 'module' });
     this.worker = worker;
     const transfers: Transferable[] = [];
-    const projectFile = new TextEncoder().encode(JSON.stringify(project));
+    const projectFile = new TextEncoder().encode(
+      format === 'marketiger' ? '' : JSON.stringify(project),
+    );
     transfers.push(projectFile.buffer);
     const compactProject: ExportProject = {
       name: project.name,

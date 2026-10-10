@@ -454,3 +454,169 @@ test('leaving a project cancels Overpass work and suppresses its stale response'
   expect(await page.evaluate(() => (window as any).contourDiagnostics.osmLoading)).toBe(false);
   expect(await page.evaluate(() => (window as any).contourDiagnostics.features)).toBe(2);
 });
+
+for (const scenario of [
+  'checkout',
+  'wrong dimensions',
+  'interrupted upload',
+  'interrupted order',
+  'no project',
+]) {
+  test(`Marketiger ${scenario}`, async ({ page }, testInfo) => {
+    let bounds = '';
+    let uploads = 0;
+    let orders = 0;
+    await page.route('https://api.marketiger3d.com/v2/**', async route => {
+      const path = new URL(route.request().url()).pathname;
+      let data: object = {};
+      if (path.endsWith('/Login')) data = { accessToken: 'test-token-not-real' };
+      else if (path.endsWith('/GetProjects'))
+        data = {
+          projects:
+            scenario === 'no project'
+              ? []
+              : [{ projectId: 'test-project', name: 'Full color test' }],
+        };
+      else if (path.endsWith('/UploadModelFile')) {
+        uploads++;
+        const body = route.request().postDataBuffer()!.toString();
+        bounds = body.match(/x:[\d.e+-]+ y:[\d.e+-]+ z:[\d.e+-]+/)![0];
+        if (scenario === 'interrupted upload') {
+          await route.abort();
+          return;
+        }
+        data = { modelId: 'test-model' };
+      } else if (path.endsWith('/GetModelData'))
+        data = {
+          modelReady: true,
+          model: {
+            id: 'test-model',
+            status: 3,
+            bounds: scenario === 'wrong dimensions' ? 'x:1 y:1 z:1' : bounds,
+            price: 2300,
+            parts: 1,
+            image: 'https://preview.example.test/model.png',
+          },
+        };
+      else if (path.endsWith('/GetShippingMethods'))
+        data = {
+          methods: [
+            {
+              shippingMethodId: 12,
+              carrier: 'Test carrier',
+              method: 'home_delivery',
+              servicePoint: false,
+              price: 800,
+            },
+          ],
+        };
+      else if (path.endsWith('/CreateOrder')) {
+        orders++;
+        if (scenario === 'interrupted order') {
+          await route.abort();
+          return;
+        }
+        expect(route.request().postDataJSON()).toMatchObject({
+          country: 'US',
+          models: [{ modelId: 'test-model', quantity: 2 }],
+          shippingMethod: 12,
+        });
+        data = { orderId: 'test-order', paymentUrl: 'https://checkout.stripe.com/pay/test-only' };
+      } else if (path.endsWith('/GetOrder')) data = { order: { id: 'test-order', status: 5 } };
+      else throw new Error(`Unexpected API request ${path}`);
+      await route.fulfill({ json: { success: true, data } });
+    });
+    await page.route('https://preview.example.test/**', route =>
+      route.fulfill({
+        contentType: 'image/png',
+        body: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aP1sAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      }),
+    );
+    await page.locator('#mobile-settings').tap();
+    await page.getByRole('button', { name: 'Print setup', exact: true }).tap();
+    await page.locator('#manufacturing-mode').selectOption('multicolor');
+    await page.locator('#mobile-close').tap();
+    await page.locator('#generate').tap();
+    await expect(page.locator('#download')).toBeEnabled({ timeout: 60000 });
+    await page.locator('#order-print').tap();
+    const dialog = page.getByRole('dialog', { name: 'Order a full-color print' });
+    await expect(dialog.getByLabel('Marketiger email', { exact: true })).toBeVisible();
+    if (scenario === 'checkout')
+      await page.screenshot({ path: testInfo.outputPath('marketiger-connect.png') });
+    await dialog.getByLabel('Marketiger email', { exact: true }).fill('test@example.com');
+    await dialog.getByLabel('Password', { exact: true }).fill('test-password-not-real');
+    await dialog.getByRole('button', { name: 'Connect Marketiger' }).tap();
+    if (scenario === 'no project') {
+      await expect(dialog).toContainText('has not assigned a project');
+      expect(uploads).toBe(0);
+      return;
+    }
+    await dialog.getByRole('button', { name: 'Upload model and get quote' }).tap();
+    if (scenario === 'wrong dimensions') {
+      await expect(dialog).toContainText('dimensions do not match');
+      expect(orders).toBe(0);
+      return;
+    }
+    if (scenario === 'interrupted upload') {
+      await expect(dialog).toContainText('may have accepted');
+      expect(uploads).toBe(1);
+      await expect(dialog.getByRole('button', { name: 'Upload model and get quote' })).toHaveCount(
+        0,
+      );
+      return;
+    }
+    await expect(dialog).toContainText('€23.00');
+    await dialog.getByRole('button', { name: 'Get shipping options' }).tap();
+    await expect(dialog).toContainText('Subtotal: €31.00');
+    await dialog.getByLabel('Quantity', { exact: true }).fill('2');
+    await expect(dialog.getByRole('button', { name: 'Create order with Marketiger' })).toHaveCount(
+      0,
+    );
+    await dialog.getByRole('button', { name: 'Get shipping options' }).tap();
+    await expect(dialog).toContainText('Subtotal: €54.00');
+    for (const [name, value] of [
+      ['First name', 'Test'],
+      ['Last name', 'Customer'],
+      ['Street address', '123 Test St'],
+      ['City', 'Portland'],
+      ['Postal code', '97201'],
+      ['Phone number', '5555550100'],
+      ['Email', 'test@example.com'],
+    ])
+      await dialog.getByLabel(name, { exact: true }).fill(value);
+    await dialog.getByRole('checkbox').check();
+    await dialog.getByRole('button', { name: 'Create order with Marketiger' }).tap();
+    if (scenario === 'interrupted order') {
+      await expect(dialog).toContainText('may have accepted');
+      expect(orders).toBe(1);
+      await expect(
+        dialog.getByRole('button', { name: 'Create order with Marketiger' }),
+      ).toHaveCount(0);
+      return;
+    }
+    await expect(
+      dialog.getByRole('link', { name: 'Pay securely with Marketiger' }),
+    ).toHaveAttribute('href', 'https://checkout.stripe.com/pay/test-only');
+    expect(orders).toBe(1);
+    const stored = await page.evaluate(() => localStorage.getItem('contour-marketiger-receipt-v1'));
+    expect(stored).toContain('test-order');
+    expect(stored).not.toContain('test-token');
+    expect(stored).not.toContain('test-password');
+    expect(stored).not.toContain('123 Test');
+    await dialog.getByRole('button', { name: 'Refresh order status' }).tap();
+    await expect(dialog).toContainText('Paid');
+    await dialog.getByRole('button', { name: 'Close print order' }).tap();
+    await page.locator('#order-print').tap();
+    await dialog.getByLabel('Marketiger email', { exact: true }).fill('test@example.com');
+    await dialog.getByLabel('Password', { exact: true }).fill('test-password-not-real');
+    await dialog.getByRole('button', { name: 'Connect Marketiger' }).tap();
+    await dialog.getByRole('button', { name: 'Check previous order' }).tap();
+    await expect(dialog).toContainText('Paid');
+    expect(uploads).toBe(1);
+    expect(orders).toBe(1);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  });
+}

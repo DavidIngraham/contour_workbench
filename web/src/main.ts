@@ -1,3 +1,4 @@
+import { PrintOrderDialog } from './print-order-dialog';
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
@@ -175,6 +176,10 @@ let project: Project;
 let terrain: Terrain;
 let overlays: Overlay[] = [];
 let asset: Asset | undefined;
+const printOrder = new PrintOrderDialog(() => (asset && !busy ? { asset, project } : undefined));
+$('order-print').onclick = () => {
+  void printOrder.open();
+};
 let revision = 0;
 let busy = false;
 let exportRunning = false;
@@ -401,6 +406,7 @@ function scheduleThumbnail() {
   thumbnailTimer = setTimeout(() => void captureThumbnail(), 2200);
 }
 function touch() {
+  printOrder.invalidate();
   revision++;
   ensureLocalIdentity();
   thumbnailDirty = true;
@@ -593,6 +599,7 @@ async function openLocalWorkspace(id: string) {
     if (!loaded) throw new Error('This local project is no longer available.');
     project = { ...loaded.project, settings: normalizeSettings(loaded.project.settings) };
     activateStoredWorkspace(loaded.summary);
+    printOrder.invalidate();
     asset = undefined;
     revision = 0;
     terrainBuilds = 0;
@@ -631,6 +638,7 @@ async function openPresetModel(entry: PresetEntry) {
     activatePresetWorkspace(entry.id);
     terrain = bundle.terrain;
     overlays = bundle.overlays;
+    printOrder.invalidate();
     asset = undefined;
     revision = 0;
     terrainBuilds = 0;

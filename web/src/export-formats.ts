@@ -1,15 +1,29 @@
 /** Target-specific archive encoders used only by the disposable export worker. */
 import { strToU8, zipSync, zlibSync } from 'fflate';
 import { buildThreeMf, type ThreeMfKind } from './three-mf';
-import { projectMaterialGroups, type Asset, type Mesh, type Project } from './types';
+import {
+  featureClasses,
+  projectMaterialGroups,
+  type Asset,
+  type Mesh,
+  type Project,
+} from './types';
 
 export type ExportFormat =
-  'stl' | 'portable' | 'bambu' | 'prusa' | 'shapeways-color' | 'shapeways-stl' | 'shapeways-3mf';
+  | 'marketiger'
+  | 'stl'
+  | 'portable'
+  | 'bambu'
+  | 'prusa'
+  | 'shapeways-color'
+  | 'shapeways-stl'
+  | 'shapeways-3mf';
 
 export interface ExportResult {
   bytes: Uint8Array;
   filename: string;
   mime: string;
+  printModel?: { dimensionsMm: number[]; volumeCm3: number };
 }
 
 const safeName = (value: string) =>
@@ -221,6 +235,7 @@ export function buildExport(
   projectFile?: Uint8Array,
 ): ExportResult {
   const stem = safeName(project.name);
+  if (format === 'marketiger') return marketigerColor(asset, project, stem);
   if (format === 'stl') {
     const files: Record<string, Uint8Array> = {
       'terrain.stl': stl([{ mesh: asset.terrain, origin: [0, 0, 0] }]),
@@ -298,5 +313,86 @@ export function buildExport(
     bytes: buildThreeMf(asset, project, kind, projectFile),
     filename: stem + (kind === 'portable' ? '.3mf' : '-' + kind + '.3mf'),
     mime: 'model/3mf',
+  };
+}
+
+/** Full-color provider package: one painted exterior in millimeters, no project data. */
+function marketigerColor(asset: Asset, project: Project, stem: string): ExportResult {
+  const mesh = asset.terrain;
+  const materials = asset.faceMaterials;
+  if (!materials || materials.length !== mesh.indices.length / 3 || asset.inserts.length)
+    throw new Error(
+      'Choose Print together and generate the model before ordering a full-color print.',
+    );
+  if (
+    !mesh.positions.length ||
+    mesh.positions.length % 3 ||
+    !mesh.indices.length ||
+    mesh.indices.length % 3
+  )
+    throw new Error('The model has no valid surface.');
+  const min = [Infinity, Infinity, Infinity],
+    max = [-Infinity, -Infinity, -Infinity];
+  for (let i = 0; i < mesh.positions.length; i++) {
+    const value = Number(mesh.positions[i]);
+    if (!Number.isFinite(value)) throw new Error('Invalid model coordinates.');
+    min[i % 3] = Math.min(min[i % 3], value);
+    max[i % 3] = Math.max(max[i % 3], value);
+  }
+  for (const index of mesh.indices)
+    if (!Number.isInteger(index) || index < 0 || index * 3 >= mesh.positions.length)
+      throw new Error('Invalid model triangle.');
+  validateWatertight(mesh, 'Print model');
+  const groups = projectMaterialGroups(project);
+  const colors = ['terrain', ...featureClasses].map(id => groups.find(g => g.id === id)!.color);
+  if (colors.some(color => !/^#[0-9a-f]{6}$/i.test(color))) throw new Error('Invalid print color.');
+  let obj = '# Units: millimeters\nmtllib model.mtl\no terrain\n';
+  for (let i = 0; i < mesh.positions.length; i += 3)
+    obj += `v ${mesh.positions[i]} ${mesh.positions[i + 1]} ${mesh.positions[i + 2]}\n`;
+  colors.forEach((_, i) => {
+    obj += `vt ${(i + 0.5) / colors.length} 0.5\n`;
+  });
+  let volume = 0,
+    previous = -1;
+  for (let i = 0; i < mesh.indices.length; i += 3) {
+    const material = materials[i / 3];
+    if (material >= colors.length) throw new Error('Unknown surface color.');
+    if (material !== previous) {
+      obj += `usemtl color_${material}\n`;
+      previous = material;
+    }
+    const vertices = Array.from(mesh.indices.slice(i, i + 3), Number);
+    obj += 'f ' + vertices.map(v => `${v + 1}/${material + 1}`).join(' ') + '\n';
+    const [a, b, c] = vertices.map(v => Array.from(mesh.positions.slice(v * 3, v * 3 + 3), Number));
+    volume +=
+      (a[0] * (b[1] * c[2] - b[2] * c[1]) +
+        a[1] * (b[2] * c[0] - b[0] * c[2]) +
+        a[2] * (b[0] * c[1] - b[1] * c[0])) /
+      6;
+  }
+  if (!(volume > 0)) throw new Error('Print model must enclose a positive volume.');
+  const mtl = colors
+    .map(
+      (color, i) =>
+        `newmtl color_${i}\n# sRGB ${color}\nKd 1 1 1\nd 1\nillum 1\nmap_Kd colors.png\n`,
+    )
+    .join('\n');
+  return {
+    bytes: zipSync(
+      {
+        'model.obj': strToU8(obj),
+        'model.mtl': strToU8(mtl),
+        'colors.png': colorTexture(colors),
+        'README.txt': strToU8(
+          'Contour Workbench full-color exterior. Units: millimeters.\n' +
+            project.source.attribution +
+            '\nOpenStreetMap contributors, ODbL.\n',
+        ),
+      },
+      { mtime: new Date('2000-01-01T00:00:00Z') },
+    ),
+    filename: stem + '-full-color.zip',
+    mime: 'application/zip',
+    printModel: { dimensionsMm: max.map((v, i) => v - min[i]), volumeCm3: volume / 1000 },
   };
 }
