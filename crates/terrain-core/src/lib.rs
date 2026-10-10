@@ -1627,6 +1627,72 @@ fn classify_pocket_topology(pockets: &[PocketSurface]) -> PocketTerrainStrategy 
 mod pocket_topology_tests {
     use super::*;
 
+    #[test]
+    fn long_pocket_edges_follow_a_ridge_instead_of_bridging_its_endpoints() {
+        let g = Grid {
+            bounds: [0., 0., 0.001, 0.001],
+            width: 5,
+            height: 5,
+            elevations: (0..25).map(|i| if i % 5 == 2 { 10. } else { 0. }).collect(),
+        };
+        for (error_mm, bed, hole) in [
+            (0., [100., 100.], false),
+            (0.1, [100., 100.], false),
+            (0., [120., 100.], true),
+            (0.1, [120., 100.], true),
+        ] {
+            let s = Settings {
+                max_print_size_mm: bed,
+                terrain_max_error_mm: error_mm,
+                ..Default::default()
+            };
+            let base = terrain(&g, &s).unwrap();
+            let l = &base.layout;
+            let ring = polygon(&[
+                l.xy([0.0001, 0.0003]),
+                l.xy([0.0009, 0.0003]),
+                l.xy([0.0009, 0.0007]),
+                l.xy([0.0001, 0.0007]),
+            ]);
+            let pocket = PocketSurface {
+                polygon: if hole {
+                    let outer = polygon(&[
+                        l.xy([0.00005, 0.00005]),
+                        l.xy([0.00095, 0.00005]),
+                        l.xy([0.00095, 0.00095]),
+                        l.xy([0.00005, 0.00095]),
+                    ]);
+                    Polygon::new(outer.exterior().clone(), vec![ring.exterior().clone()])
+                } else {
+                    ring
+                },
+                height_mm: 0.8,
+            };
+            let mesh = feature_aware_terrain(&base, &g, &s, l, &[pocket]).unwrap();
+            mesh.validate().unwrap();
+            let mut edge_count = 0;
+            for triangle in mesh.indices.chunks_exact(3) {
+                for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                    let a = &mesh.positions[triangle[a] as usize * 3..][..3];
+                    let b = &mesh.positions[triangle[b] as usize * 3..][..3];
+                    if (l.lonlat([a[0], a[1]])[1] - 0.0003).abs() > 1e-12
+                        || (l.lonlat([b[0], b[1]])[1] - 0.0003).abs() > 1e-12
+                        || (a[0] - b[0]).hypot(a[1] - b[1]) < 1e-7
+                        || a[2] <= 0.8
+                        || b[2] <= 0.8
+                    {
+                        continue;
+                    }
+                    edge_count += 1;
+                    let midpoint = [(a[0] + b[0]) / 2., (a[1] + b[1]) / 2.];
+                    let error = ((a[2] + b[2]) / 2. - l.z(&g, midpoint)).abs();
+                    assert!(error < 1e-6, "cut edge bridges ridge by {error} mm");
+                }
+            }
+            assert!(edge_count > 0);
+        }
+    }
+
     fn pocket(points: &[[f64; 2]], height_mm: f64) -> PocketSurface {
         PocketSurface {
             polygon: polygon(points),
@@ -1693,6 +1759,57 @@ fn normalized_pocket_surfaces(mut pockets: Vec<PocketSurface>) -> Vec<PocketSurf
     result
 }
 
+// Cut constraints must follow the elevation grid, even when simplification removed
+// nearby terrain samples. Include every grid crossing so an edge cannot bridge a
+// ridge, then limit segment length for bilinear relief along diagonal cuts.
+fn terrain_ring_points(ring: &LineString<f64>, g: &Grid, l: &Layout) -> Vec<[f64; 2]> {
+    let coordinates = &ring.0;
+    let count = coordinates
+        .len()
+        .saturating_sub(usize::from(coordinates.first() == coordinates.last()));
+    let mut points = vec![];
+    for index in 0..count {
+        let a = [coordinates[index].x, coordinates[index].y];
+        let b = [
+            coordinates[(index + 1) % count].x,
+            coordinates[(index + 1) % count].y,
+        ];
+        let start = l.lonlat(a);
+        let end = l.lonlat(b);
+        let mut fractions = vec![0., 1.];
+        for (axis, samples) in [(0, g.width), (1, g.height)] {
+            let to_grid = |value: f64| {
+                (value - g.bounds[axis]) / (g.bounds[axis + 2] - g.bounds[axis])
+                    * (samples - 1) as f64
+            };
+            let from = to_grid(start[axis]);
+            let to = to_grid(end[axis]);
+            if (to - from).abs() < 1e-12 {
+                continue;
+            }
+            let first = (from.min(to).ceil() as usize).min(samples - 1);
+            let last = (from.max(to).floor() as usize).min(samples - 1);
+            for crossing in first..=last {
+                let fraction = (crossing as f64 - from) / (to - from);
+                if fraction > 0. && fraction < 1. {
+                    fractions.push(fraction);
+                }
+            }
+        }
+        fractions.sort_by(f64::total_cmp);
+        fractions.dedup_by(|a, b| (*a - *b).abs() < 1e-12);
+        let length_mm = (b[0] - a[0]).hypot(b[1] - a[1]);
+        for interval in fractions.windows(2) {
+            let steps = ((length_mm * (interval[1] - interval[0]) / 0.6).ceil() as usize).max(1);
+            for step in 0..steps {
+                let f = interval[0] + (interval[1] - interval[0]) * step as f64 / steps as f64;
+                points.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f]);
+            }
+        }
+    }
+    points
+}
+
 fn feature_aware_terrain(
     base: &Terrain,
     g: &Grid,
@@ -1734,13 +1851,9 @@ fn feature_aware_terrain(
         })
     };
     let mut add_ring = |ring: &LineString<f64>| {
-        let coordinates = &ring.0;
-        let count = coordinates
-            .len()
-            .saturating_sub(usize::from(coordinates.first() == coordinates.last()));
         let mut ring_vertices = vec![];
-        for coordinate in coordinates.iter().take(count) {
-            let vertex = add_point([coordinate.x, coordinate.y], &mut vertices, &mut vertex_map);
+        for point in terrain_ring_points(ring, g, l) {
+            let vertex = add_point(point, &mut vertices, &mut vertex_map);
             if ring_vertices.last() != Some(&vertex) {
                 ring_vertices.push(vertex);
             }
