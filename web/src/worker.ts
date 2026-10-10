@@ -6,6 +6,7 @@ import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
+import { assemblePaintedSurface, paintedBuildInputs } from './painted-surface';
 import init, * as core from './wasm/contour_wasm';
 import { zipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
@@ -386,9 +387,15 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         settings.terrain_max_error_mm,
         p.memory_budget_mb,
       );
-      const buildSettings = memory.adapted
+      let buildSettings = memory.adapted
         ? { ...settings, terrain_max_error_mm: memory.terrainMaxErrorMm }
         : settings;
+      let buildFeatures = features;
+      if (settings.manufacturing_mode === 'multicolor') {
+        const inputs = paintedBuildInputs(buildSettings, features);
+        buildSettings = inputs.settings;
+        buildFeatures = inputs.features;
+      }
       progress(
         memory.adapted
           ? 'Optimizing this detailed model for your device…'
@@ -400,7 +407,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const metadata = JSON.parse(
         rust!.prepare_plan(
           JSON.stringify(buildSettings),
-          JSON.stringify(features),
+          JSON.stringify(buildFeatures),
           JSON.stringify(terrain.layout),
           150_000,
           64,
@@ -502,7 +509,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
           }
         }
         progress('Checking that the model is ready to print…', 'terrain-validation');
-        const mesh = trustedManifoldMesh(result, 'Terrain');
+        let mesh = trustedManifoldMesh(result, 'Terrain');
         result.delete();
         resultDeleted = true;
 
@@ -526,7 +533,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               progress(
                 (settings.manufacturing_mode === 'separate'
                   ? 'Preparing separate pieces… '
-                  : 'Preparing aligned color parts… ') +
+                  : 'Preparing painted surface regions… ') +
                   (pieceIndex + 1) +
                   ' of ' +
                   plan.inserts.length,
@@ -608,8 +615,19 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         if (preparedPieces !== plan.inserts.length)
           throw new Error('Model insert packet is inconsistent.');
         plan.inserts = plan.inserts.filter(piece => piece.mesh.indices.length > 0);
+        let faceMaterials: Uint8Array | undefined;
+        if (settings.manufacturing_mode === 'multicolor') {
+          progress('Merging the painted exterior…');
+          const painted = await assemblePaintedSurface(M, mesh, plan.inserts, () =>
+            checkpoint(request.id),
+          );
+          mesh = painted.mesh;
+          faceMaterials = painted.faceMaterials;
+          plan.inserts = [];
+        }
         return {
           terrain: mesh,
+          faceMaterials,
           inserts: plan.inserts,
           validation: {
             watertight: true,

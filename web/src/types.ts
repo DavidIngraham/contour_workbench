@@ -172,6 +172,8 @@ export interface Piece {
 /** Validated printable terrain and insert result. */
 export interface Asset {
   terrain: Mesh;
+  /** One surfaceMaterials index per exterior triangle, for a single painted solid. */
+  faceMaterials?: Uint8Array;
   inserts: Piece[];
   validation: {
     watertight: boolean;

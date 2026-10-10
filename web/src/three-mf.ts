@@ -2,6 +2,7 @@
 import { strToU8, zipSync } from 'fflate';
 import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project } from './types';
 import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
+import { surfaceMaterials, trianglePaintCode } from './painted-surface';
 
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
@@ -34,6 +35,7 @@ interface ObjectRecord {
   mesh: Mesh;
   kind: 'terrain' | 'insert';
   piece?: Piece;
+  faceMaterials?: Uint8Array;
 }
 interface Placement {
   object: ObjectRecord;
@@ -66,19 +68,45 @@ function transform([x, y, z]: [number, number, number]) {
   return `1 0 0 0 1 0 0 0 1 ${x.toFixed(6)} ${y.toFixed(6)} ${z.toFixed(6)}`;
 }
 
-function meshXml(mesh: Mesh) {
+function meshXml(
+  mesh: Mesh,
+  project?: Project,
+  faceMaterials?: Uint8Array,
+  kind?: ThreeMfKind,
+  materialId?: number,
+) {
+  const groups = project ? projectMaterialGroups(project) : [];
   let vertices = '';
   for (let i = 0; i < mesh.positions.length; i += 3)
     vertices += `<vertex x="${Number(mesh.positions[i]).toFixed(6)}" y="${Number(mesh.positions[i + 1]).toFixed(6)}" z="${Number(mesh.positions[i + 2]).toFixed(6)}"/>`;
   let triangles = '';
-  for (let i = 0; i < mesh.indices.length; i += 3)
-    triangles += `<triangle v1="${mesh.indices[i]}" v2="${mesh.indices[i + 1]}" v3="${mesh.indices[i + 2]}"/>`;
+  for (let i = 0; i < mesh.indices.length; i += 3) {
+    let paint = '';
+    if (faceMaterials) {
+      const index = groups.findIndex(group => group.id === surfaceMaterials[faceMaterials[i / 3]]);
+      if (index < 0) throw new Error('Painted triangle references an unknown material.');
+      const code = trianglePaintCode(groups[index].extruder);
+      paint =
+        kind === 'bambu'
+          ? ` paint_color="${code}"`
+          : kind === 'prusa'
+            ? ` slic3rpe:mmu_segmentation="${code}"`
+            : ` pid="${materialId}" p1="${index}" p2="${index}" p3="${index}"`;
+    }
+    triangles += `<triangle v1="${mesh.indices[i]}" v2="${mesh.indices[i + 1]}" v3="${mesh.indices[i + 2]}"${paint}/>`;
+  }
   return `<mesh><vertices>${vertices}</vertices><triangles>${triangles}</triangles></mesh>`;
 }
 
 function records(asset: Asset): ObjectRecord[] {
   return [
-    { id: 1, name: 'Terrain', mesh: asset.terrain, kind: 'terrain' },
+    {
+      id: 1,
+      name: asset.faceMaterials ? 'Painted terrain' : 'Terrain',
+      mesh: asset.terrain,
+      kind: 'terrain',
+      faceMaterials: asset.faceMaterials,
+    },
     ...asset.inserts.map((piece, index) => ({
       id: index + 2,
       name: piece.id,
@@ -371,7 +399,7 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
         '"><metadata name="slic3rpe:extruder_id">' +
         group.extruder +
         '</metadata>' +
-        meshXml(object.mesh) +
+        meshXml(object.mesh, project, object.faceMaterials, 'prusa') +
         '</object>'
       );
     })
@@ -427,7 +455,7 @@ function coreModel(
   const objectXml = objects
     .map(
       object =>
-        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="${materialId}" pindex="${kind === 'shapeways' ? 0 : materialIndex(project, object)}">${meshXml(object.mesh)}</object>`,
+        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="${materialId}" pindex="${kind === 'shapeways' ? 0 : materialIndex(project, object)}">${meshXml(object.mesh, project, object.faceMaterials, kind, materialId)}</object>`,
     )
     .join('');
   const build = placements
@@ -459,9 +487,10 @@ function bambuRootModel(project: Project, objects: ObjectRecord[], placements: P
 
 function bambuChildModel(project: Project, object: ObjectRecord) {
   const childId = object.id * 2 - 1;
+  const materialId = childId + 1;
   const objectUuid = bambuPartUuid(object.id, '-81cb-4c03-9d28-80fed5dfa1dc');
   const group = projectMaterialGroups(project)[materialIndex(project, object)];
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="BambuStudio:3mfVersion">1</metadata><resources><basematerials id="1"><base name="${xmlEscape(group.name)}" displaycolor="${group.color.toUpperCase()}FF"/></basematerials><object id="${childId}" name="${xmlEscape(object.name)}" p:UUID="${objectUuid}" type="model" pid="1" pindex="0">${meshXml(object.mesh)}</object></resources><build/></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="BambuStudio:3mfVersion">1</metadata><resources><basematerials id="${materialId}"><base name="${xmlEscape(group.name)}" displaycolor="${group.color.toUpperCase()}FF"/></basematerials><object id="${childId}" name="${xmlEscape(object.name)}" p:UUID="${objectUuid}" type="model" pid="${materialId}" pindex="0">${meshXml(object.mesh, project, object.faceMaterials, 'bambu')}</object></resources><build/></model>`;
 }
 
 function bambuModelRelationships(objects: ObjectRecord[]) {
@@ -552,6 +581,11 @@ export function buildThreeMf(
   projectFile?: Uint8Array,
 ): Uint8Array {
   const objects = records(asset);
+  if (
+    asset.faceMaterials &&
+    (asset.inserts.length || asset.faceMaterials.length !== asset.terrain.indices.length / 3)
+  )
+    throw new Error('Painted export must contain one exterior mesh and one material per triangle.');
   for (const object of objects) validateThreeMfMesh(object.mesh, object.name);
   const placements =
     project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
@@ -601,7 +635,11 @@ export function buildThreeMf(
     for (const object of objects)
       files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
     files['Metadata/project_settings.config'] = strToU8(
-      JSON.stringify(bambuProcessSettings(project), null, 2),
+      JSON.stringify(
+        { ...bambuProcessSettings(project), ...paintedFilamentSettings(asset, project) },
+        null,
+        2,
+      ),
     );
     files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
     files['Metadata/layer_heights_profile.txt'] = strToU8(
@@ -621,4 +659,20 @@ export function buildThreeMf(
   }
   validateThreeMfFiles(files, kind);
   return zipSync(files, { level: 6 });
+}
+
+function paintedFilamentSettings(asset: Asset, project: Project) {
+  if (!asset.faceMaterials) return {};
+  const groups = projectMaterialGroups(project);
+  const used = [...new Set(asset.faceMaterials)].map(index =>
+    groups.find(group => group.id === surfaceMaterials[index])!,
+  );
+  const count = Math.max(...used.map(group => group.extruder));
+  return {
+    filament_colour: Array.from(
+      { length: count },
+      (_, index) =>
+        used.find(group => group.extruder === index + 1)?.color.toUpperCase() ?? '#FFFFFF',
+    ),
+  };
 }

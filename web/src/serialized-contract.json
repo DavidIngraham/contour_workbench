@@ -1,5 +1,12 @@
 {
   "fields": {
+    "Asset": [
+      "terrain",
+      "faceMaterials",
+      "inserts",
+      "validation",
+      "revision"
+    ],
     "Settings": [
       "manufacturing_mode",
       "insert_relative_height_mm",

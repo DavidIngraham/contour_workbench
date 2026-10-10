@@ -2,6 +2,7 @@ import { strFromU8, unzipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { bambuProcessSettings, buildThreeMf } from '../src/three-mf';
 import { defaults, type Asset, type Mesh, type Project } from '../src/types';
+import { surfaceMaterials } from '../src/painted-surface';
 
 function box(width: number, depth: number, height: number): Mesh {
   return {
@@ -73,6 +74,50 @@ const asset: Asset = {
 };
 
 describe('3MF export', () => {
+  it.each(['bambu', 'prusa', 'portable'] as const)('preserves face painting in %s', kind => {
+    const faceMaterials = new Uint8Array(12);
+    faceMaterials[2] = surfaceMaterials.indexOf('water');
+    faceMaterials[3] = surfaceMaterials.indexOf('ski_run');
+    const painted = { ...asset, inserts: [], faceMaterials };
+    const files = unzipSync(
+      buildThreeMf(
+        painted,
+        {
+          ...project,
+          settings: { ...project.settings, manufacturing_mode: 'multicolor' },
+        },
+        kind,
+      ),
+    );
+    const model = strFromU8(
+      files[kind === 'bambu' ? '3D/Objects/object_1.model' : '3D/3dmodel.model'],
+    );
+    expect(model.match(/<mesh>/g)).toHaveLength(1);
+    if (kind === 'portable') {
+      expect(model).toMatch(/<triangle[^>]*p1="4" p2="4" p3="4"/);
+      expect(model).toMatch(/<triangle[^>]*p1="6" p2="6" p3="6"/);
+    } else {
+      const attribute = kind === 'bambu' ? 'paint_color' : 'slic3rpe:mmu_segmentation';
+      expect(model).toContain(`${attribute}="0C"`);
+      expect(model).toContain(`${attribute}="1C"`);
+      expect(model.split(`${attribute}="4"`)).toHaveLength(11);
+    }
+    if (kind === 'bambu') {
+      const resourceIds = [...model.matchAll(/<(?:object|basematerials) id="(\d+)"/g)].map(
+        match => match[1],
+      );
+      expect(new Set(resourceIds).size).toBe(resourceIds.length);
+      const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+      expect(settings.filament_colour).toEqual(['#8BAA73', '#FFFFFF', '#0055FF', '#FFFFFF']);
+    }
+  });
+
+  it('rejects incomplete painted face assignments', () => {
+    expect(() =>
+      buildThreeMf({ ...asset, inserts: [], faceMaterials: new Uint8Array(1) }, project, 'bambu'),
+    ).toThrow();
+  });
+
   it('creates a portable assembled package with standard 3MF parts', () => {
     const files = unzipSync(
       buildThreeMf(

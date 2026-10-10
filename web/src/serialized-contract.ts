@@ -1,6 +1,7 @@
 /** Compile-time and test-time parity manifest for Rust/TypeScript serialized geometry contracts. */
 import type {
   AreaPolygon,
+  Asset,
   Feature,
   Grid,
   Layout,
@@ -16,6 +17,7 @@ import type {
 
 export const serializedContract = {
   fields: {
+    Asset: ['terrain', 'faceMaterials', 'inserts', 'validation', 'revision'],
     Settings: [
       'manufacturing_mode',
       'insert_relative_height_mm',
@@ -88,6 +90,7 @@ type ExactKeys<T, Keys extends readonly PropertyKey[], Ignored extends keyof T =
 type Assert<T extends true> = T;
 
 const settingsMatch: Assert<ExactKeys<Settings, typeof serializedContract.fields.Settings>> = true;
+const assetMatch: Assert<ExactKeys<Asset, typeof serializedContract.fields.Asset>> = true;
 const gridMatch: Assert<ExactKeys<Grid, typeof serializedContract.fields.Grid>> = true;
 const areaMatch: Assert<ExactKeys<AreaPolygon, typeof serializedContract.fields.AreaPolygon>> =
   true;
@@ -109,6 +112,7 @@ const treatmentValues: readonly Treatment[] = serializedContract.enums.Treatment
 const surfaceValues: readonly ZoneSurface[] = serializedContract.enums.ZoneSurface;
 
 void [
+  assetMatch,
   settingsMatch,
   gridMatch,
   areaMatch,

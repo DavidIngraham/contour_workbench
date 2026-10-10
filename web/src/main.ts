@@ -715,7 +715,7 @@ function featureOptions(f: Feature) {
     f.class === 'ski_run' && !f.polygons?.length
       ? `<label>Run width <span class="input-wrap"><input data-width="${esc(f.id)}" type="number" min="1" max="500" step="1" value="${f.width_m ?? project.settings.ski_run_width_m}"/><span>m</span></span></label>`
       : '';
-  return `<div class="zone-options"><label>Surface <select data-surface="${esc(f.id)}"><option value="terrain" ${f.surface !== 'level' ? 'selected' : ''}>Follow terrain</option><option value="level" ${f.surface === 'level' ? 'selected' : ''}>Level surface</option></select></label><label>Insert depth <span class="input-wrap"><input data-zone-depth="${esc(f.id)}" type="number" min="0.2" max="20" step="0.1" value="${f.insert_depth_mm ?? project.settings.zone_insert_depth_mm}"/><span>mm</span></span></label>${width}<p>Shallow pocket · continuous supporting floor</p></div>`;
+  return `<div class="zone-options"><label>Surface <select data-surface="${esc(f.id)}"><option value="terrain" ${f.surface !== 'level' ? 'selected' : ''}>Follow terrain</option><option value="level" ${f.surface === 'level' ? 'selected' : ''}>Level surface</option></select></label><label>Insert depth <span class="input-wrap"><input data-zone-depth="${esc(f.id)}" ${project.settings.manufacturing_mode === 'multicolor' ? 'disabled' : ''} type="number" min="0.2" max="20" step="0.1" value="${f.insert_depth_mm ?? project.settings.zone_insert_depth_mm}"/><span>mm</span></span></label>${width}<p>${project.settings.manufacturing_mode === 'multicolor' ? 'Painted surface · color depth controlled by slicer' : 'Shallow pocket · continuous supporting floor'}</p></div>`;
 }
 function listFeatures() {
   if (!project) return;
@@ -949,14 +949,16 @@ function syncForm() {
     'insert-gap',
     'segment',
     'terrain-island-width',
+    'insert-depth',
+    'zone-depth',
   ])
     $<HTMLInputElement | HTMLSelectElement>(id).disabled = together;
   $('fit-calibration').classList.toggle('hidden', together);
   $('manufacturing-guidance').textContent = together
-    ? 'Aligned color parts share exact boundaries and a supporting terrain floor. No fit gaps, taper, segmentation, or terrain-island removal are applied.'
+    ? 'One solid carries painted surface regions. The slicer controls color penetration, walls, and infill; no fitted inserts are generated.'
     : 'Print the terrain and inserts separately, then assemble. Clearance, tapered lower edges, and optional segmentation help the pieces fit.';
   $('fit-mode-guidance').textContent = together
-    ? 'Color regions remain aligned without assembly gaps. Insert depth controls how far each color extends into the terrain; relative height controls its visible surface.'
+    ? 'Relative height controls raised or recessed details. Color depth is determined by the slicer, so insert depth and assembly settings do not apply.'
     : 'Full-bed inserts avoid unnecessary breaks. Model-edge clearance preserves a terrain border around pockets. The visible top stays full-size while buried lower layers taper inward.';
   fitGuidance();
 }
@@ -1079,6 +1081,7 @@ $('mode-review').onclick = () => {
   $('mode-design').classList.remove('active');
   $('model-caption').textContent = 'GENERATED ASSET · VALIDATED SOLID';
   $('review-controls').classList.remove('hidden');
+  $<HTMLInputElement>('explode').disabled = Boolean(asset.faceMaterials);
   setPanel('print');
 };
 $('generate').onclick = async () => {
@@ -1111,7 +1114,7 @@ $('generate').onclick = async () => {
     ($('download') as HTMLButtonElement).disabled = false;
     ($('mode-review') as HTMLButtonElement).disabled = false;
     $('asset-summary').innerHTML =
-      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.inserts.length} independently printable inserts<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
+      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.faceMaterials ? 'One painted exterior mesh · slicer-controlled color depth' : result.inserts.length + ' independently printable inserts'}<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
     $('piece-list').innerHTML = result.inserts
       .map(p => `<div class="review-piece"><span>${esc(p.id)}</span></div>`)
       .join('');
@@ -1141,14 +1144,14 @@ function syncExportOptions() {
   const slicer = $<HTMLSelectElement>('export-slicer').value;
   $('three-mf-options').classList.toggle('hidden', !threeMf);
   $('export-mode-note').textContent = together
-    ? 'Print together: aligned color parts with zero-clearance interfaces.'
+    ? 'Print together: one watertight solid with painted surface regions.'
     : 'Separate inserts: fitted parts to print individually and assemble.';
   $('export-format-note').textContent = !threeMf
     ? together
-      ? 'Import all STL files as parts of one object and preserve their positions. Assign colors in your slicer.'
+      ? 'STL exports the shape only and loses painted colors. Choose Bambu Studio or PrusaSlicer 3MF to preserve filament assignments.'
       : 'Print each STL separately. The included manifest records where every insert belongs.'
     : together
-      ? 'Keep the parts aligned and assign each material before slicing.'
+      ? 'Bambu Studio and PrusaSlicer 3MF preserve painted filament assignments. Standard 3MF stores face colors; support varies by slicer.'
       : slicer === 'bambu'
         ? 'Terrain and inserts are arranged on separate build plates.'
         : 'Parts are separated and placed flat. Arrange them on your build plates before slicing.';
@@ -1398,6 +1401,7 @@ $('manufacturing-mode').onchange = () => {
     .value as Settings['manufacturing_mode'];
   touch();
   syncForm();
+  listFeatures();
   void updateOverlays();
 };
 $('insert-relative-height').onchange = () => {

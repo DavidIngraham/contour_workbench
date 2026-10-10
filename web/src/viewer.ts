@@ -1,5 +1,6 @@
 /** Three.js terrain, overlay, map-surface, and generated-asset presentation. */
 import { topoSurface } from './topo';
+import { surfaceMaterials } from './painted-surface';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
@@ -561,6 +562,20 @@ export class Viewer {
     this.dirty = true;
     this.setTerrain(asset.terrain, layout, false, project);
     this.review = true;
+    if (asset.faceMaterials && this.surface) {
+      const original = this.surface.geometry;
+      this.surface.geometry = original.toNonIndexed();
+      original.dispose();
+      (this.surface.material as THREE.Material).dispose();
+      this.surface.material = new THREE.MeshStandardMaterial({
+        vertexColors: true,
+        roughness: 0.92,
+        clippingPlanes: [this.clip],
+        wireframe: this.wire,
+      });
+      this.surface.userData.faceMaterials = asset.faceMaterials;
+      this.paintSurface(project);
+    }
     this.clear(this.features);
     this.overlays.clear();
     for (const p of asset.inserts) {
@@ -586,7 +601,8 @@ export class Viewer {
   applyMaterials(project: Pick<Project, 'materials'>) {
     const projectColors = materialColors(project);
     const terrainColor = projectColors.get('terrain');
-    if (this.surface)
+    if (this.surface?.userData.faceMaterials) this.paintSurface(project);
+    else if (this.surface)
       (this.surface.material as THREE.MeshStandardMaterial).color.set(terrainColor || '#8baa73');
     this.features.traverse(object => {
       if (!(object instanceof THREE.Mesh)) return;
@@ -596,6 +612,20 @@ export class Viewer {
         material.color.set(projectColors.get(object.userData.featureClass) || '#f4b45e');
     });
     this.dirty = true;
+  }
+  private paintSurface(project?: Pick<Project, 'materials'>) {
+    if (!this.surface) return;
+    const faceMaterials = this.surface.userData.faceMaterials as Uint8Array;
+    const palette = materialColors(project);
+    const materialColorsByIndex = surfaceMaterials.map(
+      material => new THREE.Color(palette.get(material) || '#8baa73'),
+    );
+    const colors = new Float32Array(faceMaterials.length * 9);
+    faceMaterials.forEach((material, face) => {
+      const color = materialColorsByIndex[material];
+      for (let vertex = 0; vertex < 3; vertex++) color.toArray(colors, face * 9 + vertex * 3);
+    });
+    this.surface.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   }
   explode(value: number) {
     this.dirty = true;

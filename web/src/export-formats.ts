@@ -256,9 +256,11 @@ export function buildExport(
       ),
     );
     files['README.txt'] = strToU8(
-      project.settings.manufacturing_mode === 'multicolor'
-        ? 'Print together: import all STL files as parts of one object and preserve their coordinates. Assign materials in your slicer. These parts share zero-clearance interfaces and are not fitted removable inserts.\n'
-        : 'Separate inserts: print terrain and insert files separately, then assemble. Insert files use local coordinates; insert_manifest.json records their assembly positions.\n',
+      asset.faceMaterials
+        ? 'This STL contains the single exterior shape only. STL cannot store painted filament assignments; export Bambu Studio or PrusaSlicer 3MF to preserve those colors.\n'
+        : project.settings.manufacturing_mode === 'multicolor'
+          ? 'Print together: import all STL files as parts of one object and preserve their coordinates. Assign materials in your slicer. These parts share zero-clearance interfaces and are not fitted removable inserts.\n'
+          : 'Separate inserts: print terrain and insert files separately, then assemble. Insert files use local coordinates; insert_manifest.json records their assembly positions.\n',
     );
     return {
       bytes: zipSync(files, { level: 3 }),

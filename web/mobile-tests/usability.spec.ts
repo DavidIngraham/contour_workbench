@@ -266,7 +266,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
     await page.locator('#download').tap();
     await page.locator('input[value=stl]').check();
     await expect(page.locator('#three-mf-options')).toBeHidden();
-    await expect(page.locator('#export-format-note')).toContainText('preserve their positions');
+    await expect(page.locator('#export-format-note')).toContainText('loses painted colors');
     pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
     expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape.zip');

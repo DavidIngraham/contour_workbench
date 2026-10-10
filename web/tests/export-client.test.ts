@@ -64,4 +64,18 @@ describe('disposable export worker', () => {
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     expect(worker.terminated).toBe(true);
   });
+
+  it('copies painted face data without transferring the review asset', async () => {
+    const client = new ExportClient();
+    const faceMaterials = new Uint8Array([2]);
+    const pending = client.run('bambu', { ...asset, faceMaterials }, project);
+    const worker = FakeWorker.instances[0];
+    expect(worker.transfers).toHaveLength(4);
+    expect(worker.transfers).not.toContain(faceMaterials.buffer);
+    expect(faceMaterials[0]).toBe(2);
+    worker.onmessage?.({
+      data: { result: { bytes: new Uint8Array([1]), filename: 'test.3mf', mime: 'model/3mf' } },
+    } as MessageEvent);
+    await pending;
+  });
 });

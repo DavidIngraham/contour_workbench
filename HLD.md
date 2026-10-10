@@ -145,7 +145,7 @@ The working terrain solid is deleted immediately after export; only then is the 
 3. The worker takes and releases that terrain allocation, then applies remaining V-carve and annotation operations through Manifold. Plans whose direct pocket junctions fail topology validation include bounded fallback pocket cutters in the same streamed cutter path.
 4. Rust streams bounded insert packets. Separate mode can taper them; print-together mode keeps exact interface coordinates and zero fit clearance. Conformal intersections use a separately scoped shifted preview-terrain solid.
 5. Independent pieces receive full edge validation. The direct terrain is validated by Rust before transfer and Manifold validates any subsequent solid operation.
-6. The UI enters Review mode with the terrain and linked insert pieces. The persistent interactive worker retains preview state; final archive encoding uses a separate disposable worker.
+6. Separate mode enters Review with the terrain and linked insert pieces. Print-together uses `painted-surface.ts` to union temporary zero-clearance regions into one exterior mesh. Manifold original-face provenance becomes a compact per-triangle material array; internal partition faces are discarded. Temporary construction depth is fixed independently of insert-depth settings, and a buried 1 µm overlap prevents Float32 round trips from leaving disconnected floor shells. Raised, recessed, level, and conformal surface shapes remain geometry. The persistent interactive worker retains preview state; final archive encoding uses a separate disposable worker.
 
 ### Download
 
@@ -153,13 +153,17 @@ The UI copies generated meshes into compact typed arrays and transfers ownership
 
 - STL creates a ZIP with terrain and insert files, project data, origins, validation, and attribution.
 - The download dialog offers STL parts or 3MF, with standard, Bambu Studio, and PrusaSlicer choices nested under 3MF. Manufacturing mode is chosen before generation and is independent of file format.
-- STL bundles use local insert coordinates for separate assembly and shared assembly coordinates for print-together. The README and manifest identify the coordinate convention.
+- STL bundles use local insert coordinates for separate assembly. Print-together exports only the exterior shape; STL cannot retain painted colors, which the download dialog and bundle README explain.
 - Standard and PrusaSlicer 3MF place separate inserts flat and apart as independent build objects for the slicer to arrange; print-together retains assembly coordinates. PrusaSlicer groups print-together parts into one build object and uses per-object adaptive layer profiles for separate printing.
 - Bambu 3MF puts terrain on plate one, shelf-packs inserts onto later configured-bed plates, and includes nozzle-derived process hints without binding to a printer or filament profile.
-- Bambu Studio 3MF includes per-part extruder assignments and uses one aligned plate for print-together mode.
+- Bambu Studio print-together 3MF contains one painted mesh with native `paint_color` triangle assignments and the filament palette. PrusaSlicer uses native `mmu_segmentation` assignments; standard 3MF uses triangle base-material colors. Only the exterior is specified: slicers determine material penetration, walls, and infill. Review renders the same face-material array, and the disposable export worker receives a separate transferable copy.
 - Legacy service encoders remain internal; service-specific formats are no longer presented in the download dialog.
-- Separate manufacturing uses fit clearance, taper, segmentation, and optional enclosed terrain-pin removal. Print-together disables those controls and preserves terrain islands so the canonical zero-clearance pocket boundary never removes terrain that its color part does not fill. Both retain the supporting floor beneath inlays.
+- Separate manufacturing uses fit clearance, taper, segmentation, insert depth, and optional enclosed terrain-pin removal. Print-together disables those controls and preserves terrain islands while constructing its exterior.
 - 3MF variants validate mesh indices, required OPC parts, XML syntax, core namespace/units, object identifiers, and build references before the archive is returned.
+
+`painted-export.spec.ts` generates deterministic three-color flush, raised, and recessed fixtures. After slicing these files with Bambu Studio's CLI, `web/scripts/verify-bambu-painted.py` checks actual top-surface extrusion positions, filament usage, object count, and heights, accounting for machine nozzle offsets and layer quantization. Bambu Studio 2.5.0.66 was used for the initial integration verification. This is slicer validation, not a physical print test.
+
+Painted mesh validation also checks connected surface components. Boolean roundoff can leave microscopic closed shells at coincident interfaces; only shells with absolute volume at most 0.001 mm³ and volume/area at most 0.00005 mm are discarded. A larger detached component rejects generation instead of silently removing a real feature. Per-triangle materials remain aligned through this cleanup.
 
 ### Remaining scaling boundary
 

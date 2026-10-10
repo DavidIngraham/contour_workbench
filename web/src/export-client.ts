@@ -14,8 +14,11 @@ function compactMesh(mesh: Mesh, transfers: Transferable[]): Mesh {
 }
 
 function compactAsset(asset: Asset, transfers: Transferable[]): Asset {
+  const faceMaterials = asset.faceMaterials?.slice();
+  if (faceMaterials) transfers.push(faceMaterials.buffer);
   return {
     ...asset,
+    faceMaterials,
     terrain: compactMesh(asset.terrain, transfers),
     inserts: asset.inserts.map(piece => ({
       ...piece,
