@@ -66,6 +66,7 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 - `app-shell.ts`: static controls, dialogs, and viewport hosts.
 - `providers.ts` and `provider-registry.ts`: raster windows and mosaics, provider selection, USGS/Copernicus catalogs, persistent response caching, and bounded Overpass mirror failover.
 - `extent-map.ts` and `extent-shapes.ts`: slippy-map drawing and editable shapes.
+- `gpx.ts`: validates uploaded GPX XML and converts each track or route into an enabled trail feature with a unique import ID, its GPX name (or filename fallback), and separate lines for track segments. Multiple files append atomically to the active project; imported features use the existing tree controls, terrain clipping, preview, generation, and project persistence. GPX elevation is ignored in favor of terrain elevation; standalone waypoints are not imported.
 - `viewer.ts`: Three.js terrain, feature overlays, topographic ground imagery, selection, and review. The floor and topo imagery render first in fixed background order without depth tests or writes; terrain and feature meshes retain normal depth occlusion. This avoids depth fighting between the closely spaced ground planes while panning.
 - `annotation-editor.ts` and `annotations.ts`: text/PNG authoring and printable geometry.
 - `presets.ts`: static landing catalog and prebuilt mesh packs.

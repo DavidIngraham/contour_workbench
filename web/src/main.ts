@@ -1,6 +1,7 @@
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
+import { parseGpx } from './gpx';
 import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
 import './style.css';
 import {
@@ -1198,6 +1199,37 @@ $('file-project').onchange = async () => {
     await rebuild(true, true, false, false, true);
   } catch (e) {
     error(e);
+  }
+};
+$('upload-gpx').onclick = () => $<HTMLInputElement>('file-gpx').click();
+$('file-gpx').onchange = async () => {
+  const input = $<HTMLInputElement>('file-gpx');
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (!files.length || !project) return;
+  const target = project;
+  const button = $<HTMLButtonElement>('upload-gpx');
+  button.disabled = true;
+  try {
+    if (files.reduce((size, file) => size + file.size, 0) > 100_000_000)
+      throw new Error('Please select GPX files totaling less than 100 MB.');
+    const added: Feature[] = [];
+    for (const file of files) added.push(...parseGpx(await file.text(), file.name));
+    // A project switch during file reading must not import into the new workspace.
+    if (project !== target) return;
+    project.features.push(...added);
+    touch();
+    $<HTMLInputElement>('feature-search').value = '';
+    listFeatures();
+    refreshMetrics();
+    setPanel('features');
+    await updateOverlays();
+    if (project === target)
+      status(`Added ${added.length} GPX ${added.length === 1 ? 'feature' : 'features'}.`);
+  } catch (e) {
+    if (project === target) error(e);
+  } finally {
+    button.disabled = false;
   }
 };
 $('upload-features').onclick = () => ($('file-features') as HTMLInputElement).click();

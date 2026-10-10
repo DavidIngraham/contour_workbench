@@ -111,7 +111,7 @@ export interface AreaPolygon {
   outer: [number, number][];
   holes: [number, number][][];
 }
-/** Normalized OSM or GeoJSON feature stored in a project. */
+/** Normalized OSM, GeoJSON, or GPX feature stored in a project. */
 export interface Feature {
   treatment?: Treatment;
   id: string;

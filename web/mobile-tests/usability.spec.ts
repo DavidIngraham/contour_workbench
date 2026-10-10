@@ -1,4 +1,6 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import type { Project } from '../src/types';
 test.beforeEach(async ({ page }) => {
   const project = {
     schema_version: 2,
@@ -92,6 +94,83 @@ test.beforeEach(async ({ page }) => {
     ['topo', 'terrain', 'features'],
   );
 });
+test('GPX uploads append named features and survive project export and reopening', async ({
+  page,
+}, testInfo) => {
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: /^Features/ }).tap();
+  const track = {
+    name: 'ridge.gpx',
+    mimeType: 'application/gpx+xml',
+    buffer: Buffer.from(
+      '<gpx><trk><name>Ridge &amp; River</name><trkseg><trkpt lat="0.007" lon="0.002"/><trkpt lat="0.007" lon="0.008"/></trkseg></trk></gpx>',
+    ),
+  };
+  const route = {
+    name: 'return.gpx',
+    mimeType: 'application/gpx+xml',
+    buffer: Buffer.from(
+      '<gpx><rte><name>Return route</name><rtept lat="0.009" lon="0.002"/><rtept lat="0.009" lon="0.008"/></rte></gpx>',
+    ),
+  };
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Upload GPX', exact: true }).tap();
+  await (await chooser).setFiles([track, route]);
+  await expect(page.locator('[data-feature]')).toHaveCount(4);
+  await expect(page.locator('#upload-gpx')).toBeEnabled();
+  const ridge = page.locator('[data-feature]').filter({ hasText: 'Ridge & River' });
+  await expect(ridge).toHaveCount(1);
+  await expect(ridge.locator('[data-toggle]')).toBeChecked();
+  await ridge.locator('[data-treatment]').selectOption('v_carve');
+  await ridge.locator('[data-toggle]').uncheck();
+  await expect(ridge.locator('[data-toggle]')).not.toBeChecked();
+  await ridge.locator('[data-toggle]').check();
+
+  // The same file can be selected again and must produce an independent feature.
+  await page.locator('#file-gpx').setInputFiles(track);
+  await expect(ridge).toHaveCount(2);
+  await expect(page.locator('#upload-gpx')).toBeEnabled();
+  await page
+    .locator('#file-gpx')
+    .setInputFiles([
+      route,
+      {
+        name: 'invalid.gpx',
+        mimeType: 'application/gpx+xml',
+        buffer: Buffer.from('<gpx><wpt lat="0" lon="0"/></gpx>'),
+      },
+    ]);
+  await expect(page.locator('#status')).toContainText('No usable tracks or routes');
+  await expect(page.locator('[data-feature]')).toHaveCount(5);
+  await page.screenshot({ path: testInfo.outputPath('gpx-features.png') });
+  await page.locator('#mobile-close').tap();
+  const pendingDownload = page.waitForEvent('download');
+  await page.locator('#save-project').tap();
+  const downloaded = await pendingDownload;
+  const contents = await readFile((await downloaded.path())!, 'utf8');
+  const saved = JSON.parse(contents) as Project;
+  const imported = saved.features.filter(feature => feature.tags.source === 'gpx');
+  expect(imported).toHaveLength(3);
+  expect(new Set(imported.map(feature => feature.id)).size).toBe(3);
+  expect(imported[0].treatment).toBe('v_carve');
+  await page.locator('#file-project').setInputFiles({
+    name: 'gpx.contour.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(contents),
+  });
+  await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: /^Features/ }).tap();
+  await expect(page.locator('[data-feature]')).toHaveCount(5);
+  await expect(ridge).toHaveCount(2);
+  await page.locator('#mobile-close').tap();
+  await page.locator('#generate').tap();
+  await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
+  expect(await page.evaluate(() => (window as any).contourDiagnostics.asset?.watertight)).toBe(
+    true,
+  );
+});
+
 test('full-width model, touch controls, settings and feature editing', async ({
   page,
 }, testInfo) => {
