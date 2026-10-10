@@ -2056,3 +2056,37 @@ button.compass {
     bottom: -18px;
   }
 }
+/* Physical filament mapping and uploaded-track placement feedback. */
+.filament-slot {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.filament-slot small {
+  display: block;
+  color: var(--muted, #697668);
+  line-height: 1.5;
+}
+.filament-swatch {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid #879482;
+  flex-shrink: 0;
+}
+.gpx-placement {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 4px 10px 10px;
+  font-size: 11px;
+  color: #526b52;
+}
+.gpx-placement[data-placement='outside'],
+.gpx-placement[data-placement='partial'] {
+  color: #8a541b;
+}

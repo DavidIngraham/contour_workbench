@@ -169,6 +169,55 @@ test('GPX uploads append named features and survive project export and reopening
   );
 });
 
+test('GPX placement labels and complete-track zoom work on touch screens', async ({
+  page,
+}, testInfo) => {
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: /^Features/ }).tap();
+  await page.locator('#file-gpx').setInputFiles({
+    name: 'placement.gpx',
+    mimeType: 'application/gpx+xml',
+    buffer: Buffer.from(
+      '<gpx><trk><name>Crossing</name><trkseg><trkpt lon="-0.005" lat="0.005"/><trkpt lon="0.02" lat="0.005"/></trkseg></trk><trk><name>Beyond</name><trkseg><trkpt lon="0.02" lat="0.02"/><trkpt lon="0.03" lat="0.03"/></trkseg></trk></gpx>',
+    ),
+  });
+  const crossing = page.locator('[data-feature]').filter({ hasText: 'Crossing' });
+  const beyond = page.locator('[data-feature]').filter({ hasText: 'Beyond' });
+  await expect(crossing.locator('[data-placement]')).toHaveAttribute('data-placement', 'partial');
+  await expect(beyond.locator('[data-placement]')).toHaveAttribute('data-placement', 'outside');
+  await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
+  await beyond.getByRole('button', { name: 'Zoom to Beyond' }).tap();
+  await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#status')).toContainText('complete GPX footprint');
+  await page.screenshot({ path: testInfo.outputPath('gpx-location.png') });
+  await page.locator('#fit-view').tap();
+});
+
+test('print setup resolves conflicting colors and hides assembly controls', async ({
+  page,
+}, testInfo) => {
+  await page.locator('#mobile-settings').tap();
+  await page.getByRole('button', { name: 'Print setup', exact: true }).tap();
+  await page.locator('#manufacturing-mode').selectOption('multicolor');
+  await expect(page.locator('#filament-warning')).toContainText('Different colors share slot 2');
+  await expect(page.locator('#fit-clearance')).toBeHidden();
+  await expect(page.locator('#zone-depth')).toBeHidden();
+  await page.locator('#normalize-filaments').tap();
+  await expect(page.locator('#filament-warning')).toContainText('these same filament colors');
+  await page.locator('#material-trail-extruder').fill('3');
+  await page.locator('#material-trail-extruder').blur();
+  await page.locator('#material-trail-color').evaluate((input: HTMLInputElement) => {
+    input.value = '#11aaee';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(page.locator('#material-water-color')).toHaveValue('#e78a43');
+  await expect(page.locator('#filament-slots')).toContainText('Slot 3 · #11AAEE');
+  await page.screenshot({ path: testInfo.outputPath('filament-mapping.png') });
+  await page.locator('#manufacturing-mode').selectOption('separate');
+  await expect(page.locator('#fit-clearance')).toBeVisible();
+  await expect(page.locator('#filament-mapping')).toBeHidden();
+});
+
 test('full-width model, touch controls, settings and feature editing', async ({
   page,
 }, testInfo) => {

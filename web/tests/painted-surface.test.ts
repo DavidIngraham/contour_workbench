@@ -16,6 +16,39 @@ beforeAll(async () => {
 });
 
 describe('painted exterior', () => {
+  it('merges multiple bounded batches with progress and preserves all raised regions', async () => {
+    const base = M.Manifold.cube([20, 20, 3]);
+    const part = M.Manifold.cube([0.5, 0.5, 0.35]);
+    const terrain = compactManifoldMesh(base.getMesh());
+    const mesh = compactManifoldMesh(part.getMesh());
+    base.delete();
+    part.delete();
+    const pieces: Piece[] = Array.from({ length: 35 }, (_, index) => ({
+      id: `region-${index}`,
+      class: 'trail',
+      mesh,
+      origin: [1 + (index % 10) * 1.7, 1 + Math.floor(index / 10) * 2, 3],
+      insert_depth_mm: 1,
+    }));
+    const progress: number[] = [];
+    const result = await assemblePaintedSurface(
+      M,
+      terrain,
+      pieces,
+      async () => {},
+      completed => progress.push(completed),
+    );
+    const solid = solidFromMesh(M, result.mesh);
+    expect(solid.volume()).toBeCloseTo(1200 + 35 * 0.25 * 0.35, 3);
+    solid.delete();
+    expect(progress).toEqual([0, 32, 35]);
+    let checkpoints = 0;
+    await expect(
+      assemblePaintedSurface(M, terrain, pieces, async () => {
+        if (++checkpoints === 2) throw new Error('Canceled');
+      }),
+    ).rejects.toThrow('Canceled');
+  });
   it.each([-0.3, 0, 0.35])(
     'removes internal walls and preserves exact face boundaries at offset %s',
     async offset => {

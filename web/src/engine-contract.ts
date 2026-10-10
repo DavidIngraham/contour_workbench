@@ -33,6 +33,7 @@ export interface EngineOperationMap {
   };
   'preset-pack': { payload: { project: Project }; result: Uint8Array };
   calibration: { payload: { settings: Settings }; result: Uint8Array };
+  'color-calibration': { payload: { nozzle: number }; result: Uint8Array };
 }
 
 /** Valid operation name understood by the geometry worker. */
@@ -86,4 +87,5 @@ const operationNames: Record<EngineOperation, true> = {
   generate: true,
   'preset-pack': true,
   calibration: true,
+  'color-calibration': true,
 };

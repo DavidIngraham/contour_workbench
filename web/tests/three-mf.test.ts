@@ -110,6 +110,25 @@ describe('3MF export', () => {
       const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
       expect(settings.filament_colour).toEqual(['#8BAA73', '#FFFFFF', '#0055FF', '#FFFFFF']);
     }
+    if (kind === 'prusa')
+      expect(strFromU8(files['Metadata/Slic3r_PE.config'])).toContain(
+        '; filament_colour = #8BAA73;#FFFFFF;#0055FF;#FFFFFF',
+      );
+  });
+
+  it('exports the resolved physical slot color for conflicting class colors', () => {
+    const faceMaterials = new Uint8Array(12).fill(surfaceMaterials.indexOf('water'));
+    const conflicted = {
+      ...project,
+      materials: [{ id: 'water' as const, name: 'Water', color: '#0000ff', extruder: 2 }],
+    };
+    const files = unzipSync(
+      buildThreeMf({ ...asset, inserts: [], faceMaterials }, conflicted, 'bambu'),
+    );
+    expect(
+      JSON.parse(strFromU8(files['Metadata/project_settings.config'])).filament_colour[1],
+    ).toBe('#E78A43');
+    expect(conflicted.materials[0].color).toBe('#0000ff');
   });
 
   it('rejects incomplete painted face assignments', () => {

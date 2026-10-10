@@ -50,6 +50,7 @@ test('Post Canyon builds one painted exterior', async ({ page }) => {
   await page.locator('#manufacturing-mode').selectOption('multicolor');
   await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
   await expect(page.locator('#insert-depth')).toBeDisabled();
+  const started = Date.now();
   await page.locator('#generate').click();
   await page.waitForFunction(
     () =>
@@ -59,6 +60,7 @@ test('Post Canyon builds one painted exterior', async ({ page }) => {
     { timeout: completionTimeoutMs },
   );
   const status = await page.locator('#status').innerText();
+  console.log(`Post Canyon painted generation: ${((Date.now() - started) / 1000).toFixed(1)} s`);
   expect(await page.locator('#status.error').count(), status).toBe(0);
   const asset = await page.evaluate(() => (window as any).contourDiagnostics.asset);
   expect(asset?.watertight, status).toBe(true);

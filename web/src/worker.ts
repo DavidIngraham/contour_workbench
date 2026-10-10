@@ -8,7 +8,7 @@ import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
 import { assemblePaintedSurface, paintedBuildInputs } from './painted-surface';
 import init, * as core from './wasm/contour_wasm';
-import { zipSync, strToU8 } from 'fflate';
+import { zipSync, unzipSync, strToU8 } from 'fflate';
 import type { CrossSection, Manifold, ManifoldToplevel } from 'manifold-3d';
 import {
   combineMeshes,
@@ -618,8 +618,20 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         let faceMaterials: Uint8Array | undefined;
         if (settings.manufacturing_mode === 'multicolor') {
           progress('Merging the painted exterior…');
-          const painted = await assemblePaintedSurface(M, mesh, plan.inserts, () =>
-            checkpoint(request.id),
+          raisedTerrain?.delete();
+          raisedTerrain = undefined;
+          const painted = await assemblePaintedSurface(
+            M,
+            mesh,
+            plan.inserts,
+            () => checkpoint(request.id),
+            (completed, total) =>
+              progress(
+                `Merging painted regions… ${completed} of ${total}`,
+                'painted-union',
+                completed,
+                total,
+              ),
           );
           mesh = painted.mesh;
           faceMaterials = painted.faceMaterials;
@@ -678,6 +690,21 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         }),
       );
       return zipSync(files, { level: 6 });
+    }
+    case 'color-calibration': {
+      const M = await loadManifold(progress);
+      const { multicolorCoupon } = await import('./multicolor-coupon');
+      const { buildThreeMf } = await import('./three-mf');
+      progress('Creating the multicolor print test…');
+      const { asset, project, legend } = await multicolorCoupon(M, p.nozzle, () =>
+        checkpoint(request.id),
+      );
+      const files = unzipSync(buildThreeMf(asset, project, 'bambu'));
+      files['Metadata/multicolor_coupon.json'] = strToU8(JSON.stringify(legend, null, 2));
+      files['Metadata/coupon-instructions.txt'] = strToU8(
+        'Multicolor print test: notch marks front-left. Rows front-to-back: recessed -0.30 mm, flush, raised +0.35 mm. Four lines left-to-right: 0.75, 1, 1.5, 2 times nozzle width; the right patch uses filament 3. Base uses filament 1, lines filament 2. Assign actual filaments in Bambu Studio; retain orientation and scale. Check sliced color coverage, then print and inspect narrow lines, surface coverage, and height transitions. Sub-nozzle lines may disappear, identifying your printer limits. This calibration geometry is fixed; it is not an editable terrain project.',
+      );
+      return zipSync(files, { level: 3 });
     }
     case 'calibration': {
       const M = await loadManifold(progress);

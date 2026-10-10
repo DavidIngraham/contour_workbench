@@ -1,5 +1,5 @@
 /** Exterior-only material geometry for slicer-painted, print-together models. */
-import type { ManifoldToplevel } from 'manifold-3d';
+import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import { compactManifoldMesh, solidFromMesh, validateMesh } from './manifold-adapter';
 import { featureClasses, type Mesh, type Piece, type Settings, type Feature } from './types';
 
@@ -20,6 +20,7 @@ export async function assemblePaintedSurface(
   terrain: Mesh,
   pieces: Piece[],
   checkpoint: () => Promise<void> = async () => {},
+  onProgress: (completed: number, total: number) => void = () => {},
 ) {
   const original = (mesh: Mesh) => {
     const imported = solidFromMesh(module, mesh);
@@ -35,8 +36,10 @@ export async function assemblePaintedSurface(
   };
   let solid = original(terrain);
   const materialByOriginal = new Map<number, number>([[solid.originalID(), 0]]);
+  const pending: Manifold[] = [];
   try {
-    for (const piece of pieces) {
+    onProgress(0, pieces.length);
+    for (const [pieceIndex, piece] of pieces.entries()) {
       await checkpoint();
       // Overlap the buried floor by 1 µm so a Float32 round trip cannot leave
       // touching-but-disconnected shells. This overlap is consumed by the union.
@@ -50,15 +53,22 @@ export async function assemblePaintedSurface(
         throw new Error(`Unknown painted material: ${piece.class}`);
       }
       materialByOriginal.set(source.originalID(), material);
-      const placed = source.translate(piece.origin);
       try {
-        const next = solid.add(placed);
+        pending.push(source.translate(piece.origin));
+      } finally {
+        source.delete();
+      }
+      // One balanced native union per bounded batch avoids rescanning the full terrain
+      // for every small region. Keep cancellation checkpoints between native calls.
+      if (pending.length === 32 || pieceIndex === pieces.length - 1) {
+        const next = module.Manifold.union([solid, ...pending]);
         solid.delete();
         solid = next;
         if (solid.status() !== 'NoError') throw new Error('Could not merge the painted surface.');
-      } finally {
-        placed.delete();
-        source.delete();
+        pending.forEach(part => part.delete());
+        pending.length = 0;
+        onProgress(pieceIndex + 1, pieces.length);
+        await checkpoint();
       }
     }
     const raw = solid.getMesh();
@@ -73,6 +83,7 @@ export async function assemblePaintedSurface(
     validateMesh(exterior.mesh);
     return exterior;
   } finally {
+    pending.forEach(part => part.delete());
     solid.delete();
   }
 }

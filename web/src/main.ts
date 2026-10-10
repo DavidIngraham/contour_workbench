@@ -2,6 +2,8 @@
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
 import { parseGpx } from './gpx';
+import { filamentPlan } from './filaments';
+import { gpxPlacement, placementLabels } from './gpx-placement';
 import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
 import './style.css';
 import {
@@ -132,7 +134,7 @@ if (legacyFeatureMaterialRow)
           `<div class="material-row"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} extruder"/></div>`,
       )
       .join('') +
-    '</div>';
+    '</div><div id="filament-mapping"><p class="help">One slot represents one physical filament. Print-together previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
 createIcons({ icons });
 function mobileSettings(open: boolean) {
   document.body.classList.toggle('settings-open', open);
@@ -298,6 +300,7 @@ function updateBusy(v: boolean) {
   ($('generate') as HTMLButtonElement).disabled = v || !terrain;
   ($('load-area') as HTMLButtonElement).disabled = v;
   ($('download-calibration') as HTMLButtonElement).disabled = v;
+  $<HTMLButtonElement>('download-color-calibration').disabled = v;
   ($('area-load') as HTMLButtonElement).disabled = v || !polygonValid;
   $('cancel-job').classList.toggle('hidden', !v);
   syncOsmAction();
@@ -715,7 +718,32 @@ function featureOptions(f: Feature) {
     f.class === 'ski_run' && !f.polygons?.length
       ? `<label>Run width <span class="input-wrap"><input data-width="${esc(f.id)}" type="number" min="1" max="500" step="1" value="${f.width_m ?? project.settings.ski_run_width_m}"/><span>m</span></span></label>`
       : '';
-  return `<div class="zone-options"><label>Surface <select data-surface="${esc(f.id)}"><option value="terrain" ${f.surface !== 'level' ? 'selected' : ''}>Follow terrain</option><option value="level" ${f.surface === 'level' ? 'selected' : ''}>Level surface</option></select></label><label>Insert depth <span class="input-wrap"><input data-zone-depth="${esc(f.id)}" ${project.settings.manufacturing_mode === 'multicolor' ? 'disabled' : ''} type="number" min="0.2" max="20" step="0.1" value="${f.insert_depth_mm ?? project.settings.zone_insert_depth_mm}"/><span>mm</span></span></label>${width}<p>${project.settings.manufacturing_mode === 'multicolor' ? 'Painted surface · color depth controlled by slicer' : 'Shallow pocket · continuous supporting floor'}</p></div>`;
+  return `<div class="zone-options"><label>Surface <select data-surface="${esc(f.id)}"><option value="terrain" ${f.surface !== 'level' ? 'selected' : ''}>Follow terrain</option><option value="level" ${f.surface === 'level' ? 'selected' : ''}>Level surface</option></select></label><label class="${project.settings.manufacturing_mode === 'multicolor' ? 'hidden' : ''}">Insert depth <span class="input-wrap"><input data-zone-depth="${esc(f.id)}" ${project.settings.manufacturing_mode === 'multicolor' ? 'disabled' : ''} type="number" min="0.2" max="20" step="0.1" value="${f.insert_depth_mm ?? project.settings.zone_insert_depth_mm}"/><span>mm</span></span></label>${width}<p>${project.settings.manufacturing_mode === 'multicolor' ? 'Painted surface · color depth controlled by slicer' : 'Shallow pocket · continuous supporting floor'}</p></div>`;
+}
+function gpxFeedback(f: Feature) {
+  if (!f.id.startsWith('gpx:')) return '';
+  const placement = gpxPlacement(f, project.grid.bounds, project.settings.boundary);
+  return `<div class="gpx-placement" data-placement="${placement}"><span>${placementLabels[placement]}</span><button class="small-link" data-zoom-feature="${esc(f.id)}" aria-label="Zoom to ${esc(f.name)}">Zoom to feature</button></div>`;
+}
+function filamentSummary() {
+  const { slots } = filamentPlan(project);
+  return [...slots]
+    .map(
+      ([number, slot]) =>
+        `<div class="filament-slot"><span class="filament-swatch" style="background:${slot.color}"></span><span>Slot ${number} · ${esc(slot.color)}<small>${slot.names.map(esc).join(', ')}</small></span></div>`,
+    )
+    .join('');
+}
+function syncFilaments() {
+  const together = project.settings.manufacturing_mode === 'multicolor';
+  $('filament-mapping').classList.toggle('hidden', !together);
+  if (!together) return;
+  const conflicts = [...filamentPlan(project).slots].filter(([, slot]) => slot.conflict);
+  $('filament-slots').innerHTML = filamentSummary();
+  $('filament-warning').textContent = conflicts.length
+    ? `Different colors share ${conflicts.map(([number]) => `slot ${number}`).join(', ')}. Preview and export use the slot colors above. Choose different slots for different printed colors, or use the shared colors.`
+    : 'Preview and export use these same filament colors.';
+  $('normalize-filaments').classList.toggle('hidden', !conflicts.length);
 }
 function listFeatures() {
   if (!project) return;
@@ -730,7 +758,7 @@ function listFeatures() {
         const value = modes.size === 1 ? treatment(all[0]) : 'mixed';
         const label = classLabels[cls],
           zone = all.some(zoneFeature);
-        return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${list.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${featureOptions(f)}</div>`).join('')}</div>`;
+        return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${list.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</div>`;
       })
       .join('') || '<p class="empty-note">No matching features.</p>';
   $('feature-list')
@@ -743,6 +771,20 @@ function listFeatures() {
             input.checked,
           )),
     );
+  $('feature-list')
+    .querySelectorAll<HTMLButtonElement>('[data-zoom-feature]')
+    .forEach(button => {
+      button.onclick = () => {
+        const feature = project.features.find(f => f.id === button.dataset.zoomFeature)!;
+        selected = feature.id;
+        viewer.highlight(selected);
+        viewer.focusFeature(feature);
+        mobileSettings(false);
+        status(
+          'Showing the complete GPX footprint in orange. Only sections inside the terrain print. Use Fit model to return.',
+        );
+      };
+    });
   $('feature-list')
     .querySelectorAll<HTMLInputElement>('[data-class]')
     .forEach(input => {
@@ -954,6 +996,14 @@ function syncForm() {
   ])
     $<HTMLInputElement | HTMLSelectElement>(id).disabled = together;
   $('fit-calibration').classList.toggle('hidden', together);
+  $('color-calibration').classList.toggle('hidden', !together);
+  document
+    .querySelectorAll<HTMLElement>('[data-fit-only]')
+    .forEach(element => element.classList.toggle('hidden', together));
+  $('feature-settings-title').textContent = together
+    ? 'Feature geometry'
+    : 'Feature geometry & fit';
+  syncFilaments();
   $('manufacturing-guidance').textContent = together
     ? 'One solid carries painted surface regions. The slicer controls color penetration, walls, and infill; no fitted inserts are generated.'
     : 'Print the terrain and inserts separately, then assemble. Clearance, tapered lower edges, and optional segmentation help the pieces fit.';
@@ -1017,6 +1067,7 @@ async function rebuild(
         ? 'DESIGN PREVIEW · OPTIMIZED DETAIL'
         : 'DESIGN PREVIEW · FULL DETAIL';
     refreshMetrics();
+    listFeatures();
     status('');
     ($('generate') as HTMLButtonElement).disabled = false;
   } catch (e) {
@@ -1143,6 +1194,7 @@ function syncExportOptions() {
     '3mf';
   const slicer = $<HTMLSelectElement>('export-slicer').value;
   $('three-mf-options').classList.toggle('hidden', !threeMf);
+  $('export-filaments').innerHTML = together && threeMf ? filamentSummary() : '';
   $('export-mode-note').textContent = together
     ? 'Print together: one watertight solid with painted surface regions.'
     : 'Separate inserts: fitted parts to print individually and assemble.';
@@ -1192,6 +1244,29 @@ $('download-confirm').onclick = async () => {
     if (!(e instanceof DOMException && e.name === 'AbortError')) error(e);
   } finally {
     exportRunning = false;
+    updateBusy(false);
+  }
+};
+$('download-color-calibration').onclick = async () => {
+  if (!project || busy) return;
+  updateBusy(true);
+  try {
+    const bytes = await engine.call(
+      'color-calibration',
+      { nozzle: project.settings.nozzle_diameter_mm },
+      progressStatus,
+    );
+    downloadFile(
+      bytes as unknown as BlobPart,
+      'Contour Workbench multicolor test.3mf',
+      'model/3mf',
+    );
+    status(
+      'Multicolor test downloaded. Assign three filaments in Bambu Studio, check the slice, then print to inspect coverage.',
+    );
+  } catch (e) {
+    error(e);
+  } finally {
     updateBusy(false);
   }
 };
@@ -1270,7 +1345,9 @@ $('file-gpx').onchange = async () => {
     setPanel('features');
     await updateOverlays();
     if (project === target)
-      status(`Added ${added.length} GPX ${added.length === 1 ? 'feature' : 'features'}.`);
+      status(
+        `Added ${added.length} GPX ${added.length === 1 ? 'feature' : 'features'}. ${added.filter(f => gpxPlacement(f, project.grid.bounds, project.settings.boundary) === 'outside').length} outside terrain; ${added.filter(f => gpxPlacement(f, project.grid.bounds, project.settings.boundary) === 'partial').length} partly outside.`,
+      );
   } catch (e) {
     if (project === target) error(e);
   } finally {
@@ -1401,6 +1478,7 @@ $('manufacturing-mode').onchange = () => {
     .value as Settings['manufacturing_mode'];
   touch();
   syncForm();
+  viewer.applyMaterials(project);
   listFeatures();
   void updateOverlays();
 };
@@ -1415,6 +1493,12 @@ $('insert-relative-height').onchange = () => {
   syncForm();
   void updateOverlays();
 };
+$('normalize-filaments').onclick = () => {
+  project.materials = filamentPlan(project).groups;
+  touch();
+  syncForm();
+  viewer.applyMaterials(project);
+};
 for (const id of [
   'terrain-color',
   'terrain-extruder',
@@ -1423,6 +1507,7 @@ for (const id of [
     .flatMap(group => [`material-${group.id}-color`, `material-${group.id}-extruder`]),
 ])
   $(id).onchange = () => {
+    const previous = project.materials;
     project.materials = [
       {
         id: 'terrain',
@@ -1436,7 +1521,23 @@ for (const id of [
         extruder: Number(($(`material-${group.id}-extruder`) as HTMLInputElement).value),
       })),
     ];
+    try {
+      filamentPlan(project);
+      if (project.settings.manufacturing_mode === 'multicolor' && id.endsWith('-color')) {
+        const groupId = id === 'terrain-color' ? 'terrain' : id.slice(9, -6);
+        const edited = project.materials.find(group => group.id === groupId)!;
+        project.materials = project.materials.map(group =>
+          group.extruder === edited.extruder ? { ...group, color: edited.color } : group,
+        );
+      }
+    } catch (e) {
+      project.materials = previous;
+      syncForm();
+      error(e);
+      return;
+    }
     touch();
+    syncForm();
     viewer.applyMaterials(project);
   };
 for (const [id, k] of [['quality', 'terrain_max_error_mm']] as const)

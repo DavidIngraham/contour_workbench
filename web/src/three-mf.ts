@@ -3,6 +3,7 @@ import { strToU8, zipSync } from 'fflate';
 import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project } from './types';
 import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
 import { surfaceMaterials, trianglePaintCode } from './painted-surface';
+import { filamentPlan } from './filaments';
 
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
@@ -580,6 +581,7 @@ export function buildThreeMf(
   kind: ThreeMfKind,
   projectFile?: Uint8Array,
 ): Uint8Array {
+  if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
   const objects = records(asset);
   if (
     asset.faceMaterials &&
@@ -646,7 +648,13 @@ export function buildThreeMf(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
     );
   } else if (kind === 'prusa') {
-    files['Metadata/Slic3r_PE.config'] = strToU8(prusaPrintConfig(project));
+    const palette = paintedFilamentSettings(asset, project).filament_colour;
+    files['Metadata/Slic3r_PE.config'] = strToU8(
+      prusaPrintConfig(project) +
+        (palette
+          ? `; extruder_colour = ${palette.join(';')}\n; filament_colour = ${palette.join(';')}\n`
+          : ''),
+    );
     files['Metadata/Slic3r_PE_layer_heights_profile.txt'] = strToU8(
       project.settings.manufacturing_mode === 'multicolor'
         ? prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm)

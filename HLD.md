@@ -67,6 +67,8 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 - `providers.ts` and `provider-registry.ts`: raster windows and mosaics, provider selection, USGS/Copernicus catalogs, persistent response caching, and bounded Overpass mirror failover.
 - `extent-map.ts` and `extent-shapes.ts`: slippy-map drawing and editable shapes.
 - `gpx.ts`: validates uploaded GPX XML and converts each track or route into an enabled trail feature with a unique import ID, its GPX name (or filename fallback), and separate lines for track segments. Multiple files append atomically to the active project; imported features use the existing tree controls, terrain clipping, preview, generation, and project persistence. GPX elevation is ignored in favor of terrain elevation; standalone waypoints are not imported.
+- `gpx-placement.ts` classifies full line segments against the terrain grid and optional concave boundary. Feature-tree labels distinguish inside, partial, and outside tracks. Zoom shows a temporary unclipped geographic footprint above the terrain; it never enters exported geometry. Fit model clears the guide.
+- `filaments.ts` resolves a deterministic color per physical slot. Print-together previews and 3MF exporters share this palette. Legacy conflicting assignments are called out in Print Setup; users can choose distinct slots or normalize shared colors. Changing a slot's color updates its assigned classes together. Separate printing retains class colors.
 - `viewer.ts`: Three.js terrain, feature overlays, topographic ground imagery, selection, and review. The floor and topo imagery render first in fixed background order without depth tests or writes; terrain and feature meshes retain normal depth occlusion. This avoids depth fighting between the closely spaced ground planes while panning.
 - `annotation-editor.ts` and `annotations.ts`: text/PNG authoring and printable geometry.
 - `presets.ts`: static landing catalog and prebuilt mesh packs.
@@ -164,6 +166,10 @@ The UI copies generated meshes into compact typed arrays and transfers ownership
 `painted-export.spec.ts` generates deterministic three-color flush, raised, and recessed fixtures. After slicing these files with Bambu Studio's CLI, `web/scripts/verify-bambu-painted.py` checks actual top-surface extrusion positions, filament usage, object count, and heights, accounting for machine nozzle offsets and layer quantization. Bambu Studio 2.5.0.66 was used for the initial integration verification. This is slicer validation, not a physical print test.
 
 Painted mesh validation also checks connected surface components. Boolean roundoff can leave microscopic closed shells at coincident interfaces; only shells with absolute volume at most 0.001 mm³ and volume/area at most 0.00005 mm are discarded. A larger detached component rejects generation instead of silently removing a real feature. Per-triangle materials remain aligned through this cleanup.
+
+Painted assembly uses balanced native unions in batches of at most 32 regions, with progress and cancellation checkpoints between batches. The conformal fitting solid is released before assembly. This avoids repeating a full-terrain union for every small feature while bounding temporary solid ownership.
+
+Print Setup hides assembly-only controls in print-together mode and shows the physical filament mapping before export. `multicolor-coupon.ts` constructs a fixed 60 × 42 mm three-filament coupon with a front-left notch, recessed/flush/raised rows, four nozzle-scaled line widths, and area patches. The bounded `color-calibration` worker operation returns a Bambu 3MF with a dimensional legend and print-inspection instructions; it does not modify the active project. Like the existing fit coupon, this tiny calibration archive is encoded within its worker operation rather than the large-model export worker.
 
 ### Remaining scaling boundary
 

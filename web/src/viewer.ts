@@ -1,11 +1,12 @@
 /** Three.js terrain, overlay, map-surface, and generated-asset presentation. */
 import { topoSurface } from './topo';
 import { surfaceMaterials } from './painted-surface';
+import { displayMaterials } from './filaments';
+import { previewBoundary } from './preview-layout';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   defaultMaterialGroups,
-  projectMaterialGroups,
   type Mesh,
   type Layout,
   type Overlay,
@@ -24,9 +25,11 @@ export const colors = {
   ski_run: 0xffffff,
   ski_lift: 0x5b5148,
 };
-function materialColors(project?: Pick<Project, 'materials'>): Map<string, string> {
+function materialColors(
+  project?: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>,
+): Map<string, string> {
   return new Map(
-    (project ? projectMaterialGroups(project) : defaultMaterialGroups).map(group => [
+    (project ? displayMaterials(project) : defaultMaterialGroups).map(group => [
       group.id,
       group.color,
     ]),
@@ -145,6 +148,7 @@ export class Viewer {
   land = new THREE.Group();
   features = new THREE.Group();
   frame = new THREE.Group();
+  private focusGuide = new THREE.Group();
   private surface?: THREE.Mesh;
   layout?: Layout;
   onNorthAngle?: (angle: number) => void;
@@ -344,6 +348,7 @@ export class Viewer {
     return m;
   }
   setTerrain(mesh: Mesh, layout: Layout, fit = false, project?: Pick<Project, 'materials'>) {
+    this.clear(this.focusGuide);
     this.dirty = true;
     this.review = false;
     this.layout = layout;
@@ -548,6 +553,7 @@ export class Viewer {
     this.overlays.get(id)?.forEach(o => (o.visible = enabled));
   }
   highlight(id: string | null) {
+    this.clear(this.focusGuide);
     this.dirty = true;
     for (const [key, objects] of this.overlays) {
       for (const o of objects) {
@@ -598,7 +604,7 @@ export class Viewer {
       m.userData.featureClass = p.class;
     }
   }
-  applyMaterials(project: Pick<Project, 'materials'>) {
+  applyMaterials(project: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>) {
     const projectColors = materialColors(project);
     const terrainColor = projectColors.get('terrain');
     if (this.surface?.userData.faceMaterials) this.paintSurface(project);
@@ -613,7 +619,7 @@ export class Viewer {
     });
     this.dirty = true;
   }
-  private paintSurface(project?: Pick<Project, 'materials'>) {
+  private paintSurface(project?: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>) {
     if (!this.surface) return;
     const faceMaterials = this.surface.userData.faceMaterials as Uint8Array;
     const palette = materialColors(project);
@@ -751,6 +757,11 @@ export class Viewer {
   }
 
   fit() {
+    this.clear(this.focusGuide);
+    this.camera.near = 0.1;
+    this.camera.far = 4000;
+    this.controls.maxDistance = 1400;
+    this.camera.updateProjectionMatrix();
     this.dirty = true;
     const pose = this.presentationPose();
     this.surface?.geometry.computeBoundingBox();
@@ -774,6 +785,39 @@ export class Viewer {
     this.controls.target.copy(pose.target);
     this.camera.position.copy(pose.target).addScaledVector(direction, distance);
     this.controls.update();
+  }
+  /** Show the entire GPX footprint, including portions clipped out of the printable model. */
+  focusFeature(feature: Feature) {
+    if (!this.layout) return;
+    this.clear(this.focusGuide);
+    this.surface?.geometry.computeBoundingBox();
+    const z = (this.surface?.geometry.boundingBox?.max.z ?? this.layout.base_height) + 1;
+    for (const line of feature.lines) {
+      if (line.length < 2) continue;
+      const points = previewBoundary(this.layout, line).map(([x, y]) => new THREE.Vector3(x, y, z));
+      const guide = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(points),
+        new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false, depthWrite: false }),
+      );
+      guide.renderOrder = 100;
+      this.focusGuide.add(guide);
+    }
+    if (!this.focusGuide.children.length) return;
+    this.model.add(this.focusGuide);
+    this.model.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(this.focusGuide);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const radius = Math.max(3, bounds.getSize(new THREE.Vector3()).length() / 2);
+    const distance = perspectiveFitDistance(radius, this.camera.aspect, this.camera.fov);
+    const direction = this.camera.position.clone().sub(this.controls.target).normalize();
+    this.controls.maxDistance = Math.max(1400, distance * 4);
+    this.camera.near = Math.max(0.1, distance / 100000);
+    this.camera.far = Math.max(4000, distance * 10);
+    this.camera.updateProjectionMatrix();
+    this.controls.target.copy(center);
+    this.camera.position.copy(center).addScaledVector(direction, distance);
+    this.controls.update();
+    this.dirty = true;
   }
   private updateNorth() {
     if (!this.layout) return;
