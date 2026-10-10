@@ -175,6 +175,22 @@ function packedPlacement(objects: ObjectRecord[], bed: [number, number]): Placem
   });
 }
 
+// Standard 3MF has no portable multi-plate layout. Keep separate parts grounded
+// and non-overlapping so the receiving slicer can arrange them onto its plates.
+function separatePlacement(objects: ObjectRecord[]): Placement[] {
+  let x = 0;
+  return objects.map(object => {
+    const b = bounds(object.mesh);
+    const placement: Placement = {
+      object,
+      plate: 1,
+      translation: [x - b.min[0], -b.min[1], -b.min[2]],
+    };
+    x += b.width + 5;
+    return placement;
+  });
+}
+
 interface AdaptiveFace {
   minZ: number;
   maxZ: number;
@@ -337,6 +353,7 @@ function bambuLayerHeightProfiles(placements: Placement[], nozzle: number) {
 }
 
 function prusaModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+  const materialId = objects.length + 2;
   const materials = projectMaterialGroups(project);
   const meshObjects = objects
     .map(object => {
@@ -347,7 +364,9 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
         object.id +
         '" name="' +
         xmlEscape(object.name) +
-        '" type="model" pid="1" pindex="' +
+        '" type="model" pid="' +
+        materialId +
+        '" pindex="' +
         index +
         '"><metadata name="slic3rpe:extruder_id">' +
         group.extruder +
@@ -358,6 +377,14 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
     })
     .join('');
   const assemblyId = objects.length + 1;
+  if (project.settings.manufacturing_mode === 'separate') {
+    const build = placements
+      .map(
+        item => `<item objectid="${item.object.id}" transform="${transform(item.translation)}"/>`,
+      )
+      .join('');
+    return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="${coreNamespace}" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="slic3rpe:Version3mf">1</metadata><resources><basematerials id="${materialId}">${baseMaterialsXml(project)}</basematerials>${meshObjects}</resources><build>${build}</build></model>`;
+  }
   const components = placements
     .map(
       item =>
@@ -371,7 +398,9 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
   return (
     '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><metadata name="Title">' +
     xmlEscape(project.name) +
-    '</metadata><resources><basematerials id="1">' +
+    '</metadata><resources><basematerials id="' +
+    materialId +
+    '">' +
     baseMaterialsXml(project) +
     '</basematerials>' +
     meshObjects +
@@ -394,10 +423,11 @@ function coreModel(
   kind: ThreeMfKind,
 ) {
   if (kind === 'prusa') return prusaModel(project, objects, placements);
+  const materialId = objects.length + 2;
   const objectXml = objects
     .map(
       object =>
-        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="1" pindex="${kind === 'shapeways' ? 0 : materialIndex(project, object)}">${meshXml(object.mesh)}</object>`,
+        `<object id="${object.id}" name="${xmlEscape(object.name)}" type="model" pid="${materialId}" pindex="${kind === 'shapeways' ? 0 : materialIndex(project, object)}">${meshXml(object.mesh)}</object>`,
     )
     .join('');
   const build = placements
@@ -407,7 +437,7 @@ function coreModel(
     )
     .join('');
   const title = xmlEscape(project.name);
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="1">${baseMaterialsXml(project)}</basematerials>${objectXml}</resources><build>${build}</build></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="${materialId}">${baseMaterialsXml(project)}</basematerials>${objectXml}</resources><build>${build}</build></model>`;
 }
 
 function bambuRootModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
@@ -524,9 +554,11 @@ export function buildThreeMf(
   const objects = records(asset);
   for (const object of objects) validateThreeMfMesh(object.mesh, object.name);
   const placements =
-    kind !== 'bambu' || project.settings.manufacturing_mode === 'multicolor'
+    project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
       ? assembledPlacement(objects)
-      : packedPlacement(objects, project.settings.max_print_size_mm);
+      : kind === 'bambu'
+        ? packedPlacement(objects, project.settings.max_print_size_mm)
+        : separatePlacement(objects);
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
@@ -578,7 +610,13 @@ export function buildThreeMf(
   } else if (kind === 'prusa') {
     files['Metadata/Slic3r_PE.config'] = strToU8(prusaPrintConfig(project));
     files['Metadata/Slic3r_PE_layer_heights_profile.txt'] = strToU8(
-      prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm),
+      project.settings.manufacturing_mode === 'multicolor'
+        ? prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm)
+        : placements
+            .map((placement, index) =>
+              layerHeightProfileLine(index + 1, [placement], project.settings.nozzle_diameter_mm),
+            )
+            .join(''),
     );
   }
   validateThreeMfFiles(files, kind);

@@ -72,6 +72,7 @@ fn connected_zone_is_one_supported_watertight_insert() {
         max_print_size_mm: [240.0, 200.0],
         zone_insert_depth_mm: 0.8,
         zone_floor_mm: 0.8,
+        minimum_terrain_island_width_mm: Some(20.0),
         ..Default::default()
     };
     let feature = Feature {
@@ -105,6 +106,7 @@ fn connected_zone_is_one_supported_watertight_insert() {
     let terrain = terrain(&g, &s).unwrap();
     let plan = plan(&g, &s, std::slice::from_ref(&feature), &terrain.layout).unwrap();
     assert_eq!(plan.inserts.len(), 1);
+    assert!(plan.removed_terrain_islands > 0);
     assert!(plan.cutters.is_empty());
     plan.terrain.validate().unwrap();
     assert!(plan.inserts[0].origin[2] >= s.zone_floor_mm);
@@ -132,6 +134,8 @@ fn connected_zone_is_one_supported_watertight_insert() {
     let together_plan =
         contour_core::plan(&g, &together, &[feature], &together_terrain.layout).unwrap();
     assert_eq!(together_plan.inserts.len(), 1);
+    assert_eq!(together_plan.removed_terrain_islands, 0);
+    assert_eq!(together.effective_minimum_terrain_island_width_mm(), 0.0);
     let interface = interface_bounds(&together_plan.terrain).expect("print-together interface");
     let insert = &together_plan.inserts[0];
     let insert_bounds = insert.mesh.positions.chunks_exact(3).fold(

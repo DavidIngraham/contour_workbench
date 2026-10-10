@@ -32,6 +32,48 @@ const asset: Asset = {
 };
 
 describe('target export formats', () => {
+  it('keeps STL parts aligned only for print-together mode', () => {
+    for (const mode of ['separate', 'multicolor'] as const) {
+      const files = unzipSync(
+        buildExport('stl', asset, {
+          ...project,
+          settings: { ...project.settings, manufacturing_mode: mode },
+        }).bytes,
+      );
+      const mesh = strFromU8(files['inserts/lake one.stl']);
+      expect(mesh).toContain(mode === 'multicolor' ? 'vertex 3 4 2\n' : 'vertex 0 0 0\n');
+      const manifest = JSON.parse(strFromU8(files['insert_manifest.json']));
+      expect(manifest.coordinates).toBe(mode === 'multicolor' ? 'assembly' : 'part-local');
+      expect(manifest.pieces[0].assembly_origin_mm).toEqual([3, 4, 2]);
+      expect(strFromU8(files['README.txt'])).toContain(
+        mode === 'multicolor'
+          ? 'preserve their coordinates'
+          : 'print terrain and insert files separately',
+      );
+    }
+  });
+
+  it.each(['portable', 'prusa'] as const)(
+    'exports separate inserts as independent grounded objects in %s',
+    format => {
+      const files = unzipSync(
+        buildExport(format, asset, {
+          ...project,
+          settings: { ...project.settings, manufacturing_mode: 'separate' },
+        }).bytes,
+      );
+      const model = strFromU8(files['3D/3dmodel.model']);
+      expect(model.match(/<item /g)).toHaveLength(2);
+      expect(model).not.toContain('<component ');
+      expect(model).toContain('7.000000 0.000000 0.000000');
+      expect(model).not.toContain('3.000000 4.000000 2.000000');
+      if (format === 'prusa')
+        expect(strFromU8(files['Metadata/Slic3r_PE_layer_heights_profile.txt'])).toContain(
+          'object_id=2|',
+        );
+    },
+  );
+
   it('creates the exact Shapeways color archive with linked material and texture files', () => {
     const result = buildExport('shapeways-color', asset, project);
     const files = unzipSync(result.bytes);
@@ -52,6 +94,10 @@ describe('target export formats', () => {
     const model = strFromU8(files['3D/3dmodel.model']);
     expect(model.match(/<item /g)).toHaveLength(1);
     expect(model.match(/<component /g)).toHaveLength(2);
+    const resourceIds = [...model.matchAll(/<(?:object|basematerials)\b[^>]*\bid="(\d+)"/g)].map(
+      match => match[1],
+    );
+    expect(new Set(resourceIds).size).toBe(resourceIds.length);
     expect(model).toContain('3.000000 4.000000 2.000000');
     expect(model).toContain('<metadata name="slic3rpe:extruder_id">3</metadata>');
     expect(model).toContain('<metadata name="slic3rpe:Version3mf">1</metadata>');

@@ -219,6 +219,11 @@ impl Settings {
     }
     /// Return the configured island width or the nozzle-derived default.
     pub fn effective_minimum_terrain_island_width_mm(&self) -> f64 {
+        // Print-together regions share an exact boundary. Removing a terrain island
+        // only from its pocket would leave a void that neither material fills.
+        if self.manufacturing_mode == ManufacturingMode::Multicolor {
+            return 0.;
+        }
         self.minimum_terrain_island_width_mm
             .unwrap_or(self.nozzle_diameter_mm * 1.125 * 3.)
     }

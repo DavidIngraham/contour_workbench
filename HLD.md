@@ -152,10 +152,13 @@ The working terrain solid is deleted immediately after export; only then is the 
 The UI copies generated meshes into compact typed arrays and transfers ownership to a newly created export worker. The worker encodes one selected target, transfers the completed bytes back, and closes. The client also terminates it after success, failure, or cancellation. This keeps archive strings, texture data, and duplicate geometry out of the persistent preview/generation worker.
 
 - STL creates a ZIP with terrain and insert files, project data, origins, validation, and attribution.
-- Portable 3MF places terrain and inserts in assembly coordinates.
+- The download dialog offers STL parts or 3MF, with standard, Bambu Studio, and PrusaSlicer choices nested under 3MF. Manufacturing mode is chosen before generation and is independent of file format.
+- STL bundles use local insert coordinates for separate assembly and shared assembly coordinates for print-together. The README and manifest identify the coordinate convention.
+- Standard and PrusaSlicer 3MF place separate inserts flat and apart as independent build objects for the slicer to arrange; print-together retains assembly coordinates. PrusaSlicer groups print-together parts into one build object and uses per-object adaptive layer profiles for separate printing.
 - Bambu 3MF puts terrain on plate one, shelf-packs inserts onto later configured-bed plates, and includes nozzle-derived process hints without binding to a printer or filament profile.
-- Bambu Studio 3MF includes per-part extruder assignments and uses one aligned plate for print-together mode. PrusaSlicer 3MF uses one build object with aligned terrain/feature components and extruder metadata.
-- Shapeways full-color export contains exactly OBJ, MTL, PNG texture, and a short README, with watertight and conservative triangle/archive-size guards. Single-material output is available as assembled STL or 3MF.
+- Bambu Studio 3MF includes per-part extruder assignments and uses one aligned plate for print-together mode.
+- Legacy service encoders remain internal; service-specific formats are no longer presented in the download dialog.
+- Separate manufacturing uses fit clearance, taper, segmentation, and optional enclosed terrain-pin removal. Print-together disables those controls and preserves terrain islands so the canonical zero-clearance pocket boundary never removes terrain that its color part does not fill. Both retain the supporting floor beneath inlays.
 - 3MF variants validate mesh indices, required OPC parts, XML syntax, core namespace/units, object identifiers, and build references before the archive is returned.
 
 ### Remaining scaling boundary

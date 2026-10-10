@@ -890,11 +890,13 @@ function fitGuidance() {
   $('fit-guidance').textContent =
     `${s.nozzle_diameter_mm.toFixed(2)} mm nozzle · approximately ${extrusion.toFixed(2)} mm extrusion · recommended line insert width ≥ ${recommended.toFixed(2)} mm`;
   $('terrain-island-guidance').textContent =
-    s.minimum_terrain_island_width_mm === null
-      ? `Auto: ${island.toFixed(2)} mm (three extrusion widths). Smaller enclosed terrain pins are removed; insert gaps stay unchanged.`
-      : s.minimum_terrain_island_width_mm === 0
-        ? 'Terrain pin removal is disabled.'
-        : `Enclosed terrain pins narrower than ${island.toFixed(2)} mm are removed; insert gaps stay unchanged.`;
+    s.manufacturing_mode === 'multicolor'
+      ? 'Terrain islands are preserved so color parts meet without unfilled gaps.'
+      : s.minimum_terrain_island_width_mm === null
+        ? `Auto: ${island.toFixed(2)} mm (three extrusion widths). Smaller enclosed terrain pins are removed; insert gaps stay unchanged.`
+        : s.minimum_terrain_island_width_mm === 0
+          ? 'Terrain pin removal is disabled.'
+          : `Enclosed terrain pins narrower than ${island.toFixed(2)} mm are removed; insert gaps stay unchanged.`;
 }
 function syncForm() {
   const s = project.settings;
@@ -938,8 +940,24 @@ function syncForm() {
     ($(`material-${group.id}-color`) as HTMLInputElement).value = group.color;
     ($(`material-${group.id}-extruder`) as HTMLInputElement).value = String(group.extruder);
   }
-  for (const id of ['fit-clearance', 'foot-relief', 'foot-height', 'draft-angle'])
-    ($(id) as HTMLInputElement).disabled = s.manufacturing_mode === 'multicolor';
+  const together = s.manufacturing_mode === 'multicolor';
+  for (const id of [
+    'fit-clearance',
+    'foot-relief',
+    'foot-height',
+    'draft-angle',
+    'insert-gap',
+    'segment',
+    'terrain-island-width',
+  ])
+    $<HTMLInputElement | HTMLSelectElement>(id).disabled = together;
+  $('fit-calibration').classList.toggle('hidden', together);
+  $('manufacturing-guidance').textContent = together
+    ? 'Aligned color parts share exact boundaries and a supporting terrain floor. No fit gaps, taper, segmentation, or terrain-island removal are applied.'
+    : 'Print the terrain and inserts separately, then assemble. Clearance, tapered lower edges, and optional segmentation help the pieces fit.';
+  $('fit-mode-guidance').textContent = together
+    ? 'Color regions remain aligned without assembly gaps. Insert depth controls how far each color extends into the terrain; relative height controls its visible surface.'
+    : 'Full-bed inserts avoid unnecessary breaks. Model-edge clearance preserves a terrain border around pockets. The visible top stays full-size while buried lower layers taper inward.';
   fitGuidance();
 }
 function projectLabels() {
@@ -1115,14 +1133,36 @@ $('generate').onclick = async () => {
     updateBusy(false);
   }
 };
+function syncExportOptions() {
+  const together = project.settings.manufacturing_mode === 'multicolor';
+  const threeMf =
+    document.querySelector<HTMLInputElement>('input[name="download-format"]:checked')?.value ===
+    '3mf';
+  const slicer = $<HTMLSelectElement>('export-slicer').value;
+  $('three-mf-options').classList.toggle('hidden', !threeMf);
+  $('export-mode-note').textContent = together
+    ? 'Print together: aligned color parts with zero-clearance interfaces.'
+    : 'Separate inserts: fitted parts to print individually and assemble.';
+  $('export-format-note').textContent = !threeMf
+    ? together
+      ? 'Import all STL files as parts of one object and preserve their positions. Assign colors in your slicer.'
+      : 'Print each STL separately. The included manifest records where every insert belongs.'
+    : together
+      ? 'Keep the parts aligned and assign each material before slicing.'
+      : slicer === 'bambu'
+        ? 'Terrain and inserts are arranged on separate build plates.'
+        : 'Parts are separated and placed flat. Arrange them on your build plates before slicing.';
+}
+document.querySelectorAll<HTMLInputElement>('input[name="download-format"]').forEach(input => {
+  input.onchange = syncExportOptions;
+});
+$('export-slicer').onchange = syncExportOptions;
 function downloadDialog(open: boolean) {
   $('download-dialog').classList.toggle('hidden', !open);
   document.querySelector<HTMLElement>('.workspace')!.inert = open;
   document.querySelector<HTMLElement>('header')!.inert = open;
   if (open) {
-    const layer = Math.max(0.08, Math.min(0.32, project.settings.nozzle_diameter_mm * 0.5));
-    $('bambu-export-note').textContent =
-      `Bambu defaults: ${layer.toFixed(2)} mm layers, adaptive layer heights, 3 walls, 4 top/bottom layers, 5% gyroid infill, and automatic brim. Elephant-foot compensation follows your slicer preset.`;
+    syncExportOptions();
     ($('download-confirm') as HTMLButtonElement).focus();
   }
 }
@@ -1132,9 +1172,11 @@ $('download').onclick = () => {
 $('download-cancel').onclick = () => downloadDialog(false);
 $('download-confirm').onclick = async () => {
   if (!asset || asset.revision !== revision) return;
-  const format =
-    (document.querySelector<HTMLInputElement>('input[name=\"download-format\"]:checked')
-      ?.value as ExportFormat) || 'stl';
+  const format: ExportFormat =
+    document.querySelector<HTMLInputElement>('input[name="download-format"]:checked')?.value ===
+    '3mf'
+      ? ($<HTMLSelectElement>('export-slicer').value as ExportFormat)
+      : 'stl';
   downloadDialog(false);
   updateBusy(true);
   exportRunning = true;

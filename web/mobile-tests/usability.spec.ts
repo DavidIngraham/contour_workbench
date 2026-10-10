@@ -130,16 +130,14 @@ test('GPX uploads append named features and survive project export and reopening
   await page.locator('#file-gpx').setInputFiles(track);
   await expect(ridge).toHaveCount(2);
   await expect(page.locator('#upload-gpx')).toBeEnabled();
-  await page
-    .locator('#file-gpx')
-    .setInputFiles([
-      route,
-      {
-        name: 'invalid.gpx',
-        mimeType: 'application/gpx+xml',
-        buffer: Buffer.from('<gpx><wpt lat="0" lon="0"/></gpx>'),
-      },
-    ]);
+  await page.locator('#file-gpx').setInputFiles([
+    route,
+    {
+      name: 'invalid.gpx',
+      mimeType: 'application/gpx+xml',
+      buffer: Buffer.from('<gpx><wpt lat="0" lon="0"/></gpx>'),
+    },
+  ]);
   await expect(page.locator('#status')).toContainText('No usable tracks or routes');
   await expect(page.locator('[data-feature]')).toHaveCount(5);
   await page.screenshot({ path: testInfo.outputPath('gpx-features.png') });
@@ -226,6 +224,10 @@ test('full-width model, touch controls, settings and feature editing', async ({
   );
   await page.locator('#manufacturing-mode').selectOption('multicolor');
   await expect(page.locator('#fit-clearance')).toBeDisabled();
+  await expect(page.locator('#segment')).toBeDisabled();
+  await expect(page.locator('#insert-gap')).toBeDisabled();
+  await expect(page.locator('#terrain-island-width')).toBeDisabled();
+  await expect(page.locator('#fit-calibration')).toBeHidden();
   await page.locator('#material-trail-extruder').fill('3');
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
@@ -243,29 +245,31 @@ test('full-width model, touch controls, settings and feature editing', async ({
   );
   if (testInfo.project.name === 'phone') {
     await page.locator('#download').tap();
-    await expect(page.locator('.format-option')).toHaveCount(7);
-    await expect(page.locator('#bambu-export-note')).toContainText('0.20 mm layers');
-    await page.locator('input[value=portable]').check();
+    await expect(page.locator('.format-option')).toHaveCount(2);
+    await expect(page.locator('#export-mode-note')).toContainText('Print together');
+    await page.locator('input[value="3mf"]').check();
+    await page.locator('#export-slicer').selectOption('portable');
+    await page.screenshot({ path: testInfo.outputPath('export-options.png') });
     let pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
     expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape.3mf');
     await page.locator('#download').tap();
-    await page.locator('input[value=bambu]').check();
+    await page.locator('#export-slicer').selectOption('bambu');
     pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
     expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape-bambu.3mf');
     await page.locator('#download').tap();
-    await page.locator('input[value=prusa]').check();
+    await page.locator('#export-slicer').selectOption('prusa');
     pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
     expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape-prusa.3mf');
     await page.locator('#download').tap();
-    await page.locator('input[value=shapeways-color]').check();
+    await page.locator('input[value=stl]').check();
+    await expect(page.locator('#three-mf-options')).toBeHidden();
+    await expect(page.locator('#export-format-note')).toContainText('preserve their positions');
     pendingDownload = page.waitForEvent('download');
     await page.locator('#download-confirm').tap();
-    expect((await pendingDownload).suggestedFilename()).toBe(
-      'Mobile landscape-shapeways-color.zip',
-    );
+    expect((await pendingDownload).suggestedFilename()).toBe('Mobile landscape.zip');
   }
 });
 test('polygon picker and annotation controls stay reachable', async ({ page }) => {

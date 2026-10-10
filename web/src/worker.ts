@@ -435,7 +435,9 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             const batch = decodeMeshPacket<MeshBatchPacketMetadata>(rust!.take_plan_cutter_batch());
             if (!batch.meshes.length) break;
             progress(
-              'Making spaces for separate pieces… ' +
+              (settings.manufacturing_mode === 'separate'
+                ? 'Making spaces for separate pieces… '
+                : 'Separating material regions… ') +
                 batch.metadata.batch_index +
                 ' of ' +
                 batch.metadata.batch_total +
@@ -522,7 +524,12 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             piece.mesh = insertBatch.meshes[batchIndex];
             if (pieceIndex % 10 === 0)
               progress(
-                'Preparing separate pieces… ' + (pieceIndex + 1) + ' of ' + plan.inserts.length,
+                (settings.manufacturing_mode === 'separate'
+                  ? 'Preparing separate pieces… '
+                  : 'Preparing aligned color parts… ') +
+                  (pieceIndex + 1) +
+                  ' of ' +
+                  plan.inserts.length,
                 'inserts',
                 pieceIndex + 1,
                 plan.inserts.length,

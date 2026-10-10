@@ -74,7 +74,13 @@ const asset: Asset = {
 
 describe('3MF export', () => {
   it('creates a portable assembled package with standard 3MF parts', () => {
-    const files = unzipSync(buildThreeMf(asset, project, 'portable'));
+    const files = unzipSync(
+      buildThreeMf(
+        asset,
+        { ...project, settings: { ...project.settings, manufacturing_mode: 'multicolor' } },
+        'portable',
+      ),
+    );
     expect(files['[Content_Types].xml']).toBeDefined();
     expect(files['_rels/.rels']).toBeDefined();
     expect(files['3D/3dmodel.model']).toBeDefined();

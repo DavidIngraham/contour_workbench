@@ -233,13 +233,18 @@ export function buildExport(
     };
     for (const piece of asset.inserts)
       files['inserts/' + safeName(piece.id) + '.stl'] = stl([
-        { mesh: piece.mesh, origin: [0, 0, 0] },
+        {
+          mesh: piece.mesh,
+          origin: project.settings.manufacturing_mode === 'multicolor' ? piece.origin : [0, 0, 0],
+        },
       ]);
     files['insert_manifest.json'] = strToU8(
       JSON.stringify(
         {
           units: 'mm',
           manufacturing_mode: project.settings.manufacturing_mode,
+          coordinates:
+            project.settings.manufacturing_mode === 'multicolor' ? 'assembly' : 'part-local',
           pieces: asset.inserts.map(piece => ({
             file: safeName(piece.id) + '.stl',
             class: piece.class,
@@ -249,6 +254,11 @@ export function buildExport(
         null,
         2,
       ),
+    );
+    files['README.txt'] = strToU8(
+      project.settings.manufacturing_mode === 'multicolor'
+        ? 'Print together: import all STL files as parts of one object and preserve their coordinates. Assign materials in your slicer. These parts share zero-clearance interfaces and are not fitted removable inserts.\n'
+        : 'Separate inserts: print terrain and insert files separately, then assemble. Insert files use local coordinates; insert_manifest.json records their assembly positions.\n',
     );
     return {
       bytes: zipSync(files, { level: 3 }),

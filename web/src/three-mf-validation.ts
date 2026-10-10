@@ -82,6 +82,11 @@ export function validateThreeMfFiles(
   if (!objectIds.length || new Set(objectIds).size !== objectIds.length)
     throw new Error('3MF object identifiers are empty or duplicated.');
   const known = new Set(objectIds);
+  const resourceIds = [...model.matchAll(/<(?:object|basematerials)\b[^>]*\bid="(\d+)"/g)].map(
+    match => match[1],
+  );
+  if (new Set(resourceIds).size !== resourceIds.length)
+    throw new Error('3MF resource identifiers are duplicated.');
   const buildReferences = [...model.matchAll(/<item\b[^>]*\bobjectid="(\d+)"/g)].map(
     match => match[1],
   );
@@ -145,7 +150,7 @@ export function validateThreeMfFiles(
     validLayerHeightProfiles(
       'Prusa 3MF',
       decode(files, 'Metadata/Slic3r_PE_layer_heights_profile.txt'),
-      [1],
+      buildReferences.map((_, index) => index + 1),
     );
   }
   JSON.parse(decode(files, 'Metadata/project.contour.json'));
