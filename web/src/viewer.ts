@@ -210,9 +210,16 @@ export class Viewer {
     this.scene.add(sun);
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(2500, 2500),
-      new THREE.MeshStandardMaterial({ color: 0xe9ede6, roughness: 1 }),
+      new THREE.MeshStandardMaterial({
+        color: 0xe9ede6,
+        roughness: 1,
+        depthTest: false,
+        depthWrite: false,
+      }),
     );
     floor.position.z = -0.7;
+    // Background layers draw before the model without competing for depth precision.
+    floor.renderOrder = -2;
     floor.receiveShadow = true;
     this.scene.add(floor);
     const grid = new THREE.GridHelper(1000, 100, 0xc3cec2, 0xd7dfd4);
@@ -802,8 +809,14 @@ export class Viewer {
       texture.colorSpace = THREE.SRGBColorSpace;
       this.topo = new THREE.Mesh(
         g,
-        new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide }),
+        new THREE.MeshBasicMaterial({
+          map: texture,
+          side: THREE.DoubleSide,
+          depthTest: false,
+          depthWrite: false,
+        }),
       );
+      this.topo.renderOrder = -1;
       this.topo.visible = this.topoEnabled;
       this.scene.add(this.topo);
       this.onTopoStatus?.(data.attribution);

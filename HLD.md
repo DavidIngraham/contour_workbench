@@ -66,7 +66,7 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 - `app-shell.ts`: static controls, dialogs, and viewport hosts.
 - `providers.ts` and `provider-registry.ts`: raster windows and mosaics, provider selection, USGS/Copernicus catalogs, persistent response caching, and bounded Overpass mirror failover.
 - `extent-map.ts` and `extent-shapes.ts`: slippy-map drawing and editable shapes.
-- `viewer.ts`: Three.js terrain, feature overlays, topographic ground imagery, selection, and review.
+- `viewer.ts`: Three.js terrain, feature overlays, topographic ground imagery, selection, and review. The floor and topo imagery render first in fixed background order without depth tests or writes; terrain and feature meshes retain normal depth occlusion. This avoids depth fighting between the closely spaced ground planes while panning.
 - `annotation-editor.ts` and `annotations.ts`: text/PNG authoring and printable geometry.
 - `presets.ts`: static landing catalog and prebuilt mesh packs.
 - `three-mf.ts` and `three-mf-validation.ts`: portable, Bambu Studio, PrusaSlicer, and service 3MF packages plus mesh, OPC-part, XML, identifier, and build-reference validation.
