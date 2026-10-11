@@ -14,6 +14,8 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
   await page.getByRole('button', { name: 'Print setup', exact: true }).click();
   const pending = page.waitForEvent('download');
   await page.locator('#download-calibration').click();
+  await page.locator('#fit-download-format').selectOption('stl');
+  await page.locator('#fit-download-confirm').click();
   const download = await pending,
     path = await download.path();
   expect(path).toBeTruthy();
@@ -32,6 +34,43 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     expect(facets, `${name} should retain detailed switchback geometry`).toBeGreaterThan(500);
   }
 });
+
+for (const format of ['portable', 'bambu', 'prusa']) {
+  test(`landing fit test downloads a single ${format} 3MF without a project`, async ({ page }) => {
+    await page.goto('/');
+    await page.locator('#landing-calibration').click();
+    await expect(page.locator('#fit-download-format')).toHaveValue('portable');
+    await page.locator('#fit-download-cancel').click();
+    await expect(page.locator('#landing-calibration')).toBeFocused();
+    await page.locator('#landing-calibration').click();
+    await page.locator('#fit-download-format').selectOption(format);
+    const pending = page.waitForEvent('download');
+    await page.locator('#fit-download-confirm').click();
+    const download = await pending;
+    expect(download.suggestedFilename()).toBe('Contour Workbench fit test.3mf');
+    const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
+    expect(files['3D/3dmodel.model']).toBeTruthy();
+    const manifest = JSON.parse(strFromU8(files['Metadata/calibration_manifest.json']));
+    expect(manifest.pieces).toHaveLength(4);
+    expect(files['Metadata/fit-test-instructions.txt']).toBeTruthy();
+    expect(Object.keys(files).some(name => name.endsWith('.stl'))).toBe(false);
+    const models = Object.entries(files).filter(([name]) => name.endsWith('.model'));
+    expect(
+      models.reduce(
+        (count, [, bytes]) => count + (strFromU8(bytes).match(/<mesh>/g) || []).length,
+        0,
+      ),
+    ).toBe(5);
+    await expect(page.locator('#landing-dialog')).toBeVisible();
+    if (format === 'portable') {
+      await mkdir('../temp', { recursive: true });
+      await page.screenshot({ path: '../temp/fit-test-landing.png' });
+      await page.locator('#landing-calibration').click();
+      await expect(page.locator('#fit-download-dialog')).toBeVisible();
+      await page.screenshot({ path: '../temp/fit-test-formats.png' });
+    }
+  });
+}
 
 test('multicolor coupon downloads three painted filaments and a dimensional legend', async ({
   page,

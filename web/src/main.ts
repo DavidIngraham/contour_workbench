@@ -305,6 +305,7 @@ function updateBusy(v: boolean) {
   ($('generate') as HTMLButtonElement).disabled = v || !terrain;
   ($('load-area') as HTMLButtonElement).disabled = v;
   ($('download-calibration') as HTMLButtonElement).disabled = v;
+  $<HTMLButtonElement>('landing-calibration').disabled = v;
   $<HTMLButtonElement>('download-color-calibration').disabled = v;
   ($('area-load') as HTMLButtonElement).disabled = v || !polygonValid;
   $('cancel-job').classList.toggle('hidden', !v);
@@ -1278,17 +1279,61 @@ $('download-color-calibration').onclick = async () => {
     updateBusy(false);
   }
 };
-$('download-calibration').onclick = async () => {
-  if (!project || busy) return;
+let fitDownloadFromLanding = false;
+function fitDownloadDialog(open: boolean) {
+  $('fit-download-dialog').classList.toggle('hidden', !open);
+  $('landing-dialog').inert = open;
+  const blocked = open || !$('landing-dialog').classList.contains('hidden');
+  document.querySelector<HTMLElement>('.workspace')!.inert = blocked;
+  document.querySelector<HTMLElement>('header')!.inert = blocked;
+  if (open) {
+    $('fit-download-settings').textContent = fitDownloadFromLanding
+      ? 'Uses default printer and clearance settings. Customize them in Print setup for your printer.'
+      : 'Uses your current Print setup settings.';
+    $('fit-download-format').focus();
+  } else {
+    $(fitDownloadFromLanding ? 'landing-calibration' : 'download-calibration').focus();
+  }
+}
+function openFitDownload(fromLanding: boolean) {
+  if (busy) return;
+  fitDownloadFromLanding = fromLanding;
+  fitDownloadDialog(true);
+}
+$('landing-calibration').onclick = () => openFitDownload(true);
+$('download-calibration').onclick = () => openFitDownload(false);
+$('fit-download-cancel').onclick = () => fitDownloadDialog(false);
+$('fit-download-dialog').onkeydown = event => {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    fitDownloadDialog(false);
+  }
+};
+$('fit-download-confirm').onclick = async () => {
+  if (busy) return;
+  const format = $<HTMLSelectElement>('fit-download-format').value as
+    'stl' | 'portable' | 'bambu' | 'prusa';
+  const settings = fitDownloadFromLanding ? defaults : project.settings;
+  const fitStatus = (message: string) => {
+    if (fitDownloadFromLanding) $('landing-fit-status').textContent = message;
+  };
+  fitDownloadDialog(false);
   updateBusy(true);
+  fitStatus('Creating your fit test…');
   try {
-    const zip = await engine.call('calibration', { settings: project.settings }, progressStatus);
-    downloadFile(zip as unknown as BlobPart, 'Contour Workbench fit test.zip', 'application/zip');
-    status(
-      'Fit-test bundle downloaded. Print the numbered base and inserts before the full model.',
+    const bytes = await engine.call('calibration', { settings, format }, progressStatus);
+    downloadFile(
+      bytes as unknown as BlobPart,
+      `Contour Workbench fit test.${format === 'stl' ? 'zip' : '3mf'}`,
+      format === 'stl' ? 'application/zip' : 'model/3mf',
     );
+    const message =
+      'Fit test downloaded. Print the numbered base and inserts before the full model.';
+    status(message);
+    fitStatus(message);
   } catch (e) {
     error(e);
+    fitStatus(userErrorMessage(e));
   } finally {
     updateBusy(false);
   }

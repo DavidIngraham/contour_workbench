@@ -2,6 +2,8 @@
 
 Status: implemented architecture, October 2026.
 
+Fit calibration is available from the landing page without loading terrain, using default settings, and from Print setup using current project settings. Both entry points prompt for standard, Bambu Studio, or PrusaSlicer 3MF (defaulting to standard 3MF), or an STL ZIP. The geometry worker generates the coupon and passes its validated meshes to the shared 3MF packager; each single-file 3MF embeds the clearance manifest and instructions under Metadata.
+
 ## Purpose
 
 Contour Workbench is a static, client-side application for designing printable terrain models. It combines elevation rasters and map features, previews the effective design in Three.js, and creates validated terrain, insert, and carved geometry without a backend.

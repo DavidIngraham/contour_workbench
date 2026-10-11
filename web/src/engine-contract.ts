@@ -32,7 +32,10 @@ export interface EngineOperationMap {
     result: Asset;
   };
   'preset-pack': { payload: { project: Project }; result: Uint8Array };
-  calibration: { payload: { settings: Settings }; result: Uint8Array };
+  calibration: {
+    payload: { settings: Settings; format?: 'stl' | 'portable' | 'bambu' | 'prusa' };
+    result: Uint8Array;
+  };
   'color-calibration': { payload: { nozzle: number }; result: Uint8Array };
 }
 

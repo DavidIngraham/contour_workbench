@@ -1586,6 +1586,10 @@ button.compass {
 }
 
 /* Reusable model catalog and guided new-project flow. */
+#fit-download-dialog {
+  z-index: 31;
+}
+
 #landing-dialog {
   z-index: 30;
   background: #172a20d9;

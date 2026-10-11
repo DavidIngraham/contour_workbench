@@ -237,6 +237,7 @@ function calibrationFiles(
   M: ManifoldToplevel,
   s: Settings,
   prefix = 'calibration/',
+  meshes?: Mesh[],
 ): Record<string, Uint8Array> {
   const clearances = calibrationClearances(s),
     centers = [14, 38, 62, 86],
@@ -253,8 +254,10 @@ function calibrationFiles(
     base.delete();
     base = cut;
     combined.delete();
+    const baseMesh = validatedMesh(base, 'Calibration coupon base');
+    meshes?.push(baseMesh);
     const files: Record<string, Uint8Array> = {
-        [prefix + 'coupon-base.stl']: stl(validatedMesh(base, 'Calibration coupon base')),
+        [prefix + 'coupon-base.stl']: stl(baseMesh),
       },
       pieces: {
         label: number;
@@ -266,9 +269,9 @@ function calibrationFiles(
     clearances.forEach((clearance, index) => {
       const prism = switchbackSolid(M, 8, 6.2, pathWidth, 2, 0),
         tapered = safeTaperedSolid(M, prism, 'trail', s, 2);
-      files[`${prefix}insert-${index + 1}-clearance-${clearance.toFixed(2)}mm.stl`] = stl(
-        validatedMesh(tapered.solid, `Calibration switchback insert ${index + 1}`),
-      );
+      const mesh = validatedMesh(tapered.solid, `Calibration switchback insert ${index + 1}`);
+      meshes?.push(mesh);
+      files[`${prefix}insert-${index + 1}-clearance-${clearance.toFixed(2)}mm.stl`] = stl(mesh);
       if (tapered.solid !== prism) tapered.solid.delete();
       prism.delete();
       pieces.push({
@@ -709,7 +712,45 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
     case 'calibration': {
       const M = await loadManifold(progress);
       progress('Creating fit-test pieces for your printer…');
-      return zipSync(calibrationFiles(M, p.settings as Settings, ''), { level: 3 });
+      const meshes: Mesh[] = [];
+      const files = calibrationFiles(M, p.settings, '', meshes);
+      if (!p.format || p.format === 'stl') return zipSync(files, { level: 3 });
+      const { buildThreeMf } = await import('./three-mf');
+      const clearances = calibrationClearances(p.settings);
+      const asset: Asset = {
+        terrain: meshes[0],
+        inserts: meshes.slice(1).map((mesh, index) => ({
+          id: `insert-${index + 1}-clearance-${clearances[index].toFixed(2)}mm`,
+          class: 'trail',
+          mesh,
+          origin: [0, 0, 0],
+          insert_depth_mm: 2,
+        })),
+        revision: 0,
+        validation: {
+          watertight: true,
+          triangles: meshes[0].indices.length / 3,
+          pieces: 4,
+          removed_terrain_islands: 0,
+        },
+      };
+      const project: Project = {
+        schema_version: 2,
+        name: 'Contour Workbench fit test',
+        grid: { bounds: [0, 0, 0.001, 0.001], width: 2, height: 2, elevations: [0, 0, 0, 0] },
+        source: {
+          product: 'calibration',
+          name: 'Fit test',
+          attribution: 'Contour Workbench',
+          retrieved: 'generated',
+        },
+        features: [],
+        settings: { ...p.settings, manufacturing_mode: 'separate' },
+      };
+      const packageFiles = unzipSync(buildThreeMf(asset, project, p.format));
+      packageFiles['Metadata/calibration_manifest.json'] = files['calibration_manifest.json'];
+      packageFiles['Metadata/fit-test-instructions.txt'] = files['README.txt'];
+      return zipSync(packageFiles, { level: 3 });
     }
     default:
       throw new Error('Unknown operation');
