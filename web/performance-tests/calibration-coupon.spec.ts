@@ -53,6 +53,21 @@ for (const format of ['portable', 'bambu', 'prusa']) {
     const manifest = JSON.parse(strFromU8(files['Metadata/calibration_manifest.json']));
     expect(manifest.pieces).toHaveLength(4);
     expect(files['Metadata/fit-test-instructions.txt']).toBeTruthy();
+    if (format === 'bambu') {
+      expect(strFromU8(files['3D/3dmodel.model'])).toContain('BambuStudio-2.0.0');
+      expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
+        'by object',
+      );
+      expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
+      expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+        'key="print_sequence" value="by object"',
+      );
+      expect(
+        strFromU8(files['Metadata/layer_heights_profile.txt']).trim().split('\n'),
+      ).toHaveLength(5);
+      await mkdir('../temp', { recursive: true });
+      await download.saveAs('../temp/fit-test-bambu.3mf');
+    }
     expect(Object.keys(files).some(name => name.endsWith('.stl'))).toBe(false);
     const models = Object.entries(files).filter(([name]) => name.endsWith('.model'));
     expect(

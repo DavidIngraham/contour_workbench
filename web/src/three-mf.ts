@@ -8,6 +8,11 @@ import { filamentPlan } from './filaments';
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
 
+/** Packaging overrides for small calibration parts, independent of terrain project settings. */
+export interface ThreeMfOptions {
+  sequentialSinglePlate?: boolean;
+}
+
 const coreNamespace = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
 const productionNamespace = 'http://schemas.microsoft.com/3dmanufacturing/production/2015/06';
 const bambuNamespace = 'http://schemas.bambulab.com/package/2021';
@@ -201,6 +206,36 @@ function packedPlacement(objects: ObjectRecord[], bed: [number, number]): Placem
         item.translation[2],
       ],
     };
+  });
+}
+
+function sequentialPlacement(objects: ObjectRecord[], bed: [number, number]): Placement[] {
+  // Leave room between low calibration pieces for the toolhead and brim. The
+  // receiving slicer still validates clearance against the selected printer.
+  const margin = 8,
+    gap = 40;
+  let x = margin,
+    y = margin,
+    rowDepth = 0;
+  return objects.map(object => {
+    const b = bounds(object.mesh);
+    if (x + b.width > bed[0] - margin) {
+      x = margin;
+      y += rowDepth + gap;
+      rowDepth = 0;
+    }
+    if (b.width > bed[0] - 2 * margin || y + b.depth > bed[1] - margin)
+      throw new Error(
+        'The fit test does not fit on one plate with sequential-print spacing. Increase the print bed size in Print setup.',
+      );
+    const placement: Placement = {
+      object,
+      plate: 1,
+      translation: [x - b.min[0], y - b.min[1], -b.min[2]],
+    };
+    x += b.width + gap;
+    rowDepth = Math.max(rowDepth, b.depth);
+    return placement;
   });
 }
 
@@ -470,6 +505,8 @@ function coreModel(
 }
 
 function bambuRootModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+  // Bambu gates native project import on this Application prefix (bbs_3mf.cpp).
+  // Designer and the embedded manifest retain Contour Workbench provenance.
   const title = xmlEscape(project.name);
   const resourceXml = objects
     .map(
@@ -483,7 +520,7 @@ function bambuRootModel(project: Project, objects: ObjectRecord[], placements: P
         `<item objectid="${object.id * 2}" p:UUID="${bambuUuid(object.id * 2, '-b1ec-4553-aec9-835e5b724bb4')}" transform="${transform(translation)}" printable="1"/>`,
     )
     .join('');
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">Contour Workbench</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">Bambu Studio multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">BambuStudio-2.0.0</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">Bambu Studio multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
 }
 
 function bambuChildModel(project: Project, object: ObjectRecord) {
@@ -504,7 +541,12 @@ function bambuModelRelationships(objects: ObjectRecord[]) {
   return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries}</Relationships>`;
 }
 
-function modelSettings(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+function modelSettings(
+  project: Project,
+  objects: ObjectRecord[],
+  placements: Placement[],
+  sequential = false,
+) {
   const materials = projectMaterialGroups(project);
   const byPlate = new Map<number, Placement[]>();
   for (const placement of placements)
@@ -518,7 +560,7 @@ function modelSettings(project: Project, objects: ObjectRecord[], placements: Pl
   const plateXml = [...byPlate.entries()]
     .map(
       ([plate, items]) =>
-        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${plate === 1 ? 'Terrain' : 'Inserts ' + (plate - 1)}"/><metadata key="locked" value="false"/>${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
+        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${plate === 1 ? 'Terrain' : 'Inserts ' + (plate - 1)}"/><metadata key="locked" value="false"/>${sequential ? '<metadata key="print_sequence" value="by object"/>' : ''}${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
     )
     .join('');
   return `<?xml version="1.0" encoding="UTF-8"?><config>${objectXml}${plateXml}<assemble/></config>`;
@@ -580,6 +622,7 @@ export function buildThreeMf(
   project: Project,
   kind: ThreeMfKind,
   projectFile?: Uint8Array,
+  options: ThreeMfOptions = {},
 ): Uint8Array {
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
   const objects = records(asset);
@@ -593,7 +636,9 @@ export function buildThreeMf(
     project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
       ? assembledPlacement(objects)
       : kind === 'bambu'
-        ? packedPlacement(objects, project.settings.max_print_size_mm)
+        ? options.sequentialSinglePlate
+          ? sequentialPlacement(objects, project.settings.max_print_size_mm)
+          : packedPlacement(objects, project.settings.max_print_size_mm)
         : separatePlacement(objects);
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
@@ -638,12 +683,18 @@ export function buildThreeMf(
       files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
     files['Metadata/project_settings.config'] = strToU8(
       JSON.stringify(
-        { ...bambuProcessSettings(project), ...paintedFilamentSettings(asset, project) },
+        {
+          ...bambuProcessSettings(project),
+          ...paintedFilamentSettings(asset, project),
+          ...(options.sequentialSinglePlate ? { print_sequence: 'by object' } : {}),
+        },
         null,
         2,
       ),
     );
-    files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
+    files['Metadata/model_settings.config'] = strToU8(
+      modelSettings(project, objects, placements, options.sequentialSinglePlate),
+    );
     files['Metadata/layer_heights_profile.txt'] = strToU8(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
     );

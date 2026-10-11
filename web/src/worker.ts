@@ -747,7 +747,11 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         features: [],
         settings: { ...p.settings, manufacturing_mode: 'separate' },
       };
-      const packageFiles = unzipSync(buildThreeMf(asset, project, p.format));
+      const packageFiles = unzipSync(
+        buildThreeMf(asset, project, p.format, undefined, {
+          sequentialSinglePlate: true,
+        }),
+      );
       packageFiles['Metadata/calibration_manifest.json'] = files['calibration_manifest.json'];
       packageFiles['Metadata/fit-test-instructions.txt'] = files['README.txt'];
       return zipSync(packageFiles, { level: 3 });

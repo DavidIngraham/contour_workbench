@@ -2,7 +2,7 @@
 
 Status: implemented architecture, October 2026.
 
-Fit calibration is available from the landing page without loading terrain, using default settings, and from Print setup using current project settings. Both entry points prompt for standard, Bambu Studio, or PrusaSlicer 3MF (defaulting to standard 3MF), or an STL ZIP. The geometry worker generates the coupon and passes its validated meshes to the shared 3MF packager; each single-file 3MF embeds the clearance manifest and instructions under Metadata.
+Fit calibration is available from the landing page without loading terrain, using default settings, and from Print setup using current project settings. Both entry points prompt for standard, Bambu Studio, or PrusaSlicer 3MF (defaulting to standard 3MF), or an STL ZIP. The geometry worker generates the coupon and passes its validated meshes to the shared 3MF packager; each single-file 3MF embeds the clearance manifest and instructions under Metadata. Bambu fit tests use a single plate with spaced, grounded objects and explicit by-object sequencing at both project and plate level. The shared Bambu encoder supplies the Application compatibility marker required by the native importer while retaining Contour Workbench attribution, plus a per-object variable layer-height profile.
 
 ## Purpose
 

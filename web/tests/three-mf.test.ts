@@ -184,6 +184,7 @@ describe('3MF export', () => {
 
     const model = strFromU8(files['3D/3dmodel.model']);
     expect(model).toContain('BambuStudio:3mfVersion');
+    expect(model).toContain('<metadata name="Application">BambuStudio-2.0.0</metadata>');
     expect(model).toContain('requiredextensions="p"');
     expect(model.match(/<component /g)).toHaveLength(3);
     expect(model).toContain('<object id="2"');
@@ -222,6 +223,33 @@ describe('3MF export', () => {
     expect(manifest.plates.map((plate: { plate: number }) => plate.plate)).toEqual([1, 2]);
     expect(manifest.plates[0].objects).toEqual(['Terrain']);
     expect(manifest.plates[1].objects).toEqual(['lake & one', 'ski run']);
+  });
+  it('packs sequential calibration onto one bed and rejects beds that cannot fit it', () => {
+    const roomy = {
+      ...project,
+      settings: { ...project.settings, max_print_size_mm: [248, 198] as [number, number] },
+    };
+    const files = unzipSync(
+      buildThreeMf(asset, roomy, 'bambu', undefined, { sequentialSinglePlate: true }),
+    );
+    expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
+      'by object',
+    );
+    const config = strFromU8(files['Metadata/model_settings.config']);
+    expect(config.match(/<plate>/g)).toHaveLength(1);
+    expect(config).toContain('key="print_sequence" value="by object"');
+    const model = strFromU8(files['3D/3dmodel.model']);
+    const translations = [...model.matchAll(/<item[^>]*transform="([^"]+)"/g)].map(match =>
+      match[1].split(' ').map(Number).slice(9),
+    );
+    expect(translations).toEqual([
+      [8, 8, 0],
+      [98, 8, 0],
+      [163, 8, 0],
+    ]);
+    expect(() =>
+      buildThreeMf(asset, project, 'bambu', undefined, { sequentialSinglePlate: true }),
+    ).toThrow('does not fit');
   });
   it('rejects invalid triangle references before creating an archive', () => {
     const broken: Asset = {
