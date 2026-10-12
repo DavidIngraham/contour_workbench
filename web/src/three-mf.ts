@@ -4,13 +4,15 @@ import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project 
 import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
 import { surfaceMaterials, trianglePaintCode } from './painted-surface';
 import { filamentPlan } from './filaments';
+import { bambuPrinter, type BambuPrinterId } from './bambu-printers';
 
 /** Supported 3MF packaging variants. */
 export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
 
-/** Packaging overrides for small calibration parts, independent of terrain project settings. */
+/** Printer/layout options, independent of serialized terrain project settings. */
 export interface ThreeMfOptions {
   sequentialSinglePlate?: boolean;
+  bambuPrinter?: BambuPrinterId;
 }
 
 const coreNamespace = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
@@ -18,7 +20,6 @@ const productionNamespace = 'http://schemas.microsoft.com/3dmanufacturing/produc
 const bambuNamespace = 'http://schemas.bambulab.com/package/2021';
 const modelRelationship = 'http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel';
 const bambuBuildUuid = '2c7c17d8-22b5-4d84-8835-1976022ea369';
-const bambuDefaultPlateStrideMm = 256;
 
 function bambuUuid(id: number, suffix: string) {
   return String(id).padStart(8, '0') + suffix;
@@ -146,99 +147,127 @@ function assembledPlacement(objects: ObjectRecord[]): Placement[] {
   }));
 }
 
-function packedPlacement(objects: ObjectRecord[], bed: [number, number]): Placement[] {
-  const margin = Math.max(3, Math.min(8, Math.min(...bed) * 0.025)),
-    usableW = bed[0] - 2 * margin,
-    usableD = bed[1] - 2 * margin;
-  if (usableW <= 0 || usableD <= 0)
-    throw new Error('The configured print bed is too small for 3MF plate layout.');
-  const terrain = objects[0],
-    tb = bounds(terrain.mesh);
-  if (tb.width > bed[0] + 0.05 || tb.depth > bed[1] + 0.05)
-    throw new Error(
-      `Terrain is ${tb.width.toFixed(1)} x ${tb.depth.toFixed(1)} mm, larger than the configured ${bed[0]} x ${bed[1]} mm bed.`,
-    );
-  const result: Placement[] = [
-    {
-      object: terrain,
-      plate: 1,
-      translation: [
-        (bed[0] - tb.width) / 2 - tb.min[0],
-        (bed[1] - tb.depth) / 2 - tb.min[1],
-        -tb.min[2],
-      ],
-    },
-  ];
-  let plate = 2,
-    x = margin,
-    y = margin,
-    rowDepth = 0;
-  for (const object of objects.slice(1)) {
-    const b = bounds(object.mesh);
-    if (b.width > usableW + 0.05 || b.depth > usableD + 0.05)
+function packedPlacement(
+  objects: ObjectRecord[],
+  printerId: BambuPrinterId,
+  singlePlate: boolean,
+): Placement[] {
+  const printer = bambuPrinter(printerId);
+  const margin = 4; // Includes the explicit 3 mm brim and rounding tolerance.
+  type Packed = { object: ObjectRecord; b: Bounds3; x: number; y: number };
+  const entries = objects.map(object => ({ object, b: bounds(object.mesh) }));
+  for (const { object, b } of entries) {
+    if (
+      b.width > printer.bedMm - 2 * margin ||
+      b.depth > printer.bedMm - 2 * margin ||
+      b.height > printer.heightMm
+    )
       throw new Error(
-        `Insert "${object.name}" is ${b.width.toFixed(1)} x ${b.depth.toFixed(1)} mm and does not fit the configured print bed.`,
+        `"${object.name}" does not fit ${printer.name}. Choose a larger printer or reduce the model size in Print setup.`,
       );
-    if (x + b.width > bed[0] - margin + 0.05) {
-      x = margin;
-      y += rowDepth + margin;
-      rowDepth = 0;
-    }
-    if (y + b.depth > bed[1] - margin + 0.05) {
-      plate++;
-      x = margin;
-      y = margin;
-      rowDepth = 0;
-    }
-    result.push({ object, plate, translation: [x - b.min[0], y - b.min[1], -b.min[2]] });
-    x += b.width + margin;
-    rowDepth = Math.max(rowDepth, b.depth);
   }
-  return result.map(item => {
-    const plateIndex = item.plate - 1;
-    const column = plateIndex % 2;
-    const row = Math.floor(plateIndex / 2);
-    return {
-      ...item,
-      translation: [
-        item.translation[0] + column * Math.max(bambuDefaultPlateStrideMm, bed[0]),
-        item.translation[1] - row * Math.max(bambuDefaultPlateStrideMm, bed[1]),
-        item.translation[2],
-      ],
-    };
-  });
-}
-
-function sequentialPlacement(objects: ObjectRecord[], bed: [number, number]): Placement[] {
-  // Leave room between low calibration pieces for the toolhead and brim. The
-  // receiving slicer still validates clearance against the selected printer.
-  const margin = 8,
-    gap = 40;
-  let x = margin,
-    y = margin,
-    rowDepth = 0;
-  return objects.map(object => {
-    const b = bounds(object.mesh);
-    if (x + b.width > bed[0] - margin) {
-      x = margin;
-      y += rowDepth + gap;
-      rowDepth = 0;
+  // Try several deterministic first-fit orders. Bounding rectangles deliberately
+  // overestimate irregular outlines; never trade clearance for fewer plates.
+  const orders = [
+    [...entries].sort(
+      (a, b) => b.b.width * b.b.depth - a.b.width * a.b.depth || a.object.id - b.object.id,
+    ),
+    [...entries].sort(
+      (a, b) => b.b.depth - a.b.depth || b.b.width - a.b.width || a.object.id - b.object.id,
+    ),
+    [...entries].sort(
+      (a, b) => b.b.width - a.b.width || b.b.depth - a.b.depth || a.object.id - b.object.id,
+    ),
+  ];
+  let best: Packed[][] | undefined;
+  for (const order of orders) {
+    const plates: Packed[][] = [];
+    for (const entry of order) {
+      let placed = false;
+      for (let index = 0; index <= plates.length; index++) {
+        const plate = plates[index] ?? [];
+        // A single tall object may print last; two tall objects cannot share a
+        // plate without printer-specific gantry/order analysis.
+        if (
+          entry.b.height > printer.rodHeightMm &&
+          plate.some(p => p.b.height > printer.rodHeightMm)
+        )
+          continue;
+        const short = [entry, ...plate].every(p => p.b.height < printer.nozzleHeightMm - 1.5);
+        const gap = (short ? 4 : printer.clearanceMm) + 6; // two 3 mm brims
+        const xs = [
+          ...new Set([
+            margin,
+            printer.excludedBedMm[0] + margin,
+            ...plate.map(p => p.x + p.b.width + gap),
+          ]),
+        ].sort((a, b) => a - b);
+        const ys = [
+          ...new Set([
+            margin,
+            printer.excludedBedMm[1] + margin,
+            ...plate.map(p => p.y + p.b.depth + gap),
+          ]),
+        ].sort((a, b) => a - b);
+        // Adding a taller object changes the clearance tier for the whole plate.
+        const separated = (a: Packed, b: Packed) =>
+          a.x + a.b.width + gap <= b.x ||
+          b.x + b.b.width + gap <= a.x ||
+          a.y + a.b.depth + gap <= b.y ||
+          b.y + b.b.depth + gap <= a.y;
+        if (plate.some((p, i) => plate.slice(i + 1).some(q => !separated(p, q)))) continue;
+        for (const y of ys) {
+          for (const x of xs) {
+            const candidate = { ...entry, x, y };
+            if (
+              x + entry.b.width > printer.bedMm - margin ||
+              y + entry.b.depth > printer.bedMm - margin
+            )
+              continue;
+            if (x < printer.excludedBedMm[0] + margin && y < printer.excludedBedMm[1] + margin)
+              continue;
+            if (!plate.every(p => separated(p, candidate))) continue;
+            if (!plates[index]) plates.push(plate);
+            plate.push(candidate);
+            placed = true;
+            break;
+          }
+          if (placed) break;
+        }
+        if (placed) break;
+        if (index === plates.length)
+          throw new Error(
+            `"${entry.object.name}" does not fit outside ${printer.name}'s excluded bed area.`,
+          );
+      }
     }
-    if (b.width > bed[0] - 2 * margin || y + b.depth > bed[1] - margin)
-      throw new Error(
-        'The fit test does not fit on one plate with sequential-print spacing. Increase the print bed size in Print setup.',
-      );
-    const placement: Placement = {
-      object,
-      plate: 1,
-      translation: [x - b.min[0], y - b.min[1], -b.min[2]],
-    };
-    x += b.width + gap;
-    rowDepth = Math.max(rowDepth, b.depth);
-    return placement;
-  });
+    if (!best || plates.length < best.length) best = plates;
+  }
+  if (singlePlate && best!.length !== 1)
+    throw new Error(
+      'The fit test does not fit on one plate with sequential-print spacing. Choose a larger printer.',
+    );
+  if (best!.length > 36)
+    throw new Error(
+      'This export exceeds Bambu Studio’s 36-plate limit. Reduce the number of parts.',
+    );
+  const columns = Math.ceil(Math.sqrt(best!.length));
+  return best!.flatMap((plate, index) =>
+    // Native sequential order follows resource order. Short objects first keeps
+    // the rod clear; the one object above rod/lid height is always last.
+    plate
+      .sort((a, b) => a.b.height - b.b.height || a.object.id - b.object.id)
+      .map(({ object, b, x, y }) => ({
+        object,
+        plate: index + 1,
+        translation: [
+          x - b.min[0] + (index % columns) * printer.bedMm * 1.2,
+          y - b.min[1] - Math.floor(index / columns) * printer.bedMm * 1.2,
+          -b.min[2],
+        ] as [number, number, number],
+      })),
+  );
 }
-
 // Standard 3MF has no portable multi-plate layout. Keep separate parts grounded
 // and non-overlapping so the receiving slicer can arrange them onto its plates.
 function separatePlacement(objects: ObjectRecord[]): Placement[] {
@@ -560,7 +589,7 @@ function modelSettings(
   const plateXml = [...byPlate.entries()]
     .map(
       ([plate, items]) =>
-        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${plate === 1 ? 'Terrain' : 'Inserts ' + (plate - 1)}"/><metadata key="locked" value="false"/>${sequential ? '<metadata key="print_sequence" value="by object"/>' : ''}${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
+        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${'Plate ' + plate}"/><metadata key="locked" value="false"/>${sequential ? '<metadata key="print_sequence" value="by object"/>' : ''}${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
     )
     .join('');
   return `<?xml version="1.0" encoding="UTF-8"?><config>${objectXml}${plateXml}<assemble/></config>`;
@@ -625,7 +654,9 @@ export function buildThreeMf(
   options: ThreeMfOptions = {},
 ): Uint8Array {
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
-  const objects = records(asset);
+  let objects = records(asset);
+  const printerId = options.bambuPrinter ?? 'p1s';
+  const sequential = kind === 'bambu' && project.settings.manufacturing_mode === 'separate';
   if (
     asset.faceMaterials &&
     (asset.inserts.length || asset.faceMaterials.length !== asset.terrain.indices.length / 3)
@@ -636,10 +667,14 @@ export function buildThreeMf(
     project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
       ? assembledPlacement(objects)
       : kind === 'bambu'
-        ? options.sequentialSinglePlate
-          ? sequentialPlacement(objects, project.settings.max_print_size_mm)
-          : packedPlacement(objects, project.settings.max_print_size_mm)
+        ? packedPlacement(objects, printerId, !!options.sequentialSinglePlate)
         : separatePlacement(objects);
+  if (sequential) {
+    placements.forEach((p, index) => {
+      p.object = { ...p.object, id: index + 1 };
+    });
+    objects = placements.map(p => p.object);
+  }
   const files: Record<string, Uint8Array> = {
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
@@ -658,7 +693,13 @@ export function buildThreeMf(
           units: 'mm',
           source: project.source,
           validation: asset.validation,
-          bed_size_mm: project.settings.max_print_size_mm,
+          bed_size_mm:
+            kind === 'bambu'
+              ? [bambuPrinter(printerId).bedMm, bambuPrinter(printerId).bedMm]
+              : project.settings.max_print_size_mm,
+          ...(kind === 'bambu'
+            ? { printer: printerId, print_sequence: sequential ? 'by object' : 'by layer' }
+            : {}),
           plates: [...new Set(placements.map(item => item.plate))].map(plate => ({
             plate,
             objects: placements.filter(item => item.plate === plate).map(item => item.object.name),
@@ -682,18 +723,10 @@ export function buildThreeMf(
     for (const object of objects)
       files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
     files['Metadata/project_settings.config'] = strToU8(
-      JSON.stringify(
-        {
-          ...bambuProcessSettings(project),
-          ...paintedFilamentSettings(asset, project),
-          ...(options.sequentialSinglePlate ? { print_sequence: 'by object' } : {}),
-        },
-        null,
-        2,
-      ),
+      JSON.stringify(bambuProjectSettings(asset, project, objects, printerId, sequential), null, 2),
     );
     files['Metadata/model_settings.config'] = strToU8(
-      modelSettings(project, objects, placements, options.sequentialSinglePlate),
+      modelSettings(project, objects, placements, sequential),
     );
     files['Metadata/layer_heights_profile.txt'] = strToU8(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
@@ -733,5 +766,61 @@ function paintedFilamentSettings(asset: Asset, project: Project) {
       (_, index) =>
         used.find(group => group.extruder === index + 1)?.color.toUpperCase() ?? '#FFFFFF',
     ),
+  };
+}
+
+function bambuProjectSettings(
+  asset: Asset,
+  project: Project,
+  objects: ObjectRecord[],
+  printerId: BambuPrinterId,
+  sequential: boolean,
+) {
+  const printer = bambuPrinter(printerId);
+  const nozzle = project.settings.nozzle_diameter_mm;
+  if (![0.2, 0.4, 0.6, 0.8].includes(nozzle))
+    throw new Error('Bambu exports support 0.2, 0.4, 0.6, and 0.8 mm nozzles.');
+  const family = printerId === 'a1' ? 'A1' : printerId === 'a1-mini' ? 'A1M' : 'X1C';
+  const printId = `${(nozzle / 2).toFixed(2)}mm Standard @BBL ${family}${nozzle === 0.4 ? '' : ` ${nozzle} nozzle`}`;
+  const machineId = `${printer.name} ${nozzle} nozzle`;
+  const filamentId = `Bambu PLA Basic @BBL ${printerId === 'p1s' && (nozzle === 0.4 || nozzle === 0.6) ? `P1S ${nozzle} nozzle` : family + (nozzle === 0.2 || (family === 'X1C' && nozzle !== 0.4) ? ` ${nozzle} nozzle` : '')}`;
+  const groups = projectMaterialGroups(project);
+  const slots = Math.max(...objects.map(o => groups[materialIndex(project, o)].extruder));
+  const colors =
+    paintedFilamentSettings(asset, project).filament_colour ??
+    Array.from(
+      { length: slots },
+      (_, i) => groups.find(g => g.extruder === i + 1)?.color.toUpperCase() ?? '#FFFFFF',
+    );
+  const overrides = {
+    ...bambuProcessSettings(project),
+    ...(sequential
+      ? { print_sequence: 'by object', brim_width: '3', skirt_loops: '0' }
+      : { print_sequence: 'by layer' }),
+  };
+  // 2.5 dereferences filament_colour before backfilling defaults. Preset IDs
+  // plus an explicit difference list make omitted values inherit the installed
+  // machine/process/filament presets, rather than generic FullPrintConfig values.
+  return {
+    ...overrides,
+    printer_model: printer.name,
+    printer_variant: String(nozzle),
+    printer_settings_id: machineId,
+    print_settings_id: printId,
+    filament_settings_id: colors.map(() => filamentId),
+    filament_colour: colors,
+    nozzle_diameter: [String(nozzle)],
+    printable_area: [
+      '0x0',
+      `${printer.bedMm}x0`,
+      `${printer.bedMm}x${printer.bedMm}`,
+      `0x${printer.bedMm}`,
+    ],
+    inherits_group: [printId, ...colors.map(() => filamentId), machineId],
+    different_settings_to_system: [
+      Object.keys(overrides).join(';'),
+      ...colors.map(() => 'filament_colour'),
+      '',
+    ],
   };
 }

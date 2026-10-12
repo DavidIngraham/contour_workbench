@@ -163,92 +163,135 @@ describe('3MF export', () => {
     expect(manifest.format).toBe('portable');
     expect(manifest.plates).toHaveLength(1);
   });
-  it('creates a Bambu multi-plate package and nozzle-derived process settings', () => {
+  it('packs separate parts together with sparse process overrides and matching profile order', () => {
     const files = unzipSync(buildThreeMf(asset, project, 'bambu'));
     const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
-    expect(settings).toEqual(bambuProcessSettings(project));
-    expect(settings.layer_height).toBe('0.20');
-    expect(settings.elefant_foot_compensation).toBeUndefined();
-    expect(settings.enable_prime_tower).toBe('0');
-    expect(settings.sparse_infill_density).toBe('5%');
-    expect(settings.sparse_infill_pattern).toBe('gyroid');
-    const adaptiveProfiles = strFromU8(files['Metadata/layer_heights_profile.txt'])
-      .trim()
-      .split('\n');
-    expect(adaptiveProfiles).toHaveLength(3);
-    expect(adaptiveProfiles[0]).toMatch(/^object_id=1\|/);
-    expect(adaptiveProfiles[1]).toMatch(/^object_id=2\|/);
-    expect(adaptiveProfiles[2]).toMatch(/^object_id=3\|/);
-    expect(files['[Content_Types].xml']).toBeDefined();
-    expect(strFromU8(files['[Content_Types].xml'])).toContain('Extension="txt"');
-
-    const model = strFromU8(files['3D/3dmodel.model']);
-    expect(model).toContain('BambuStudio:3mfVersion');
-    expect(model).toContain('<metadata name="Application">BambuStudio-2.0.0</metadata>');
-    expect(model).toContain('requiredextensions="p"');
-    expect(model.match(/<component /g)).toHaveLength(3);
-    expect(model).toContain('<object id="2"');
-    expect(model).toContain('<object id="4"');
-    expect(model).toContain('<object id="6"');
-    expect(model.match(/<item /g)).toHaveLength(3);
-    expect(model).not.toContain('<mesh>');
-    expect(model).toContain('259.000000 3.000000 0.000000');
-    const childPaths = Object.keys(files).filter(path =>
-      /^3D\/Objects\/object_\d+\.model$/.test(path),
-    );
-    expect(childPaths).toHaveLength(3);
-    expect(model).toContain('object_2.model" objectid="3"');
-    expect(strFromU8(files['3D/Objects/object_2.model'])).toContain('displaycolor="#0055FFFF"');
-    expect(strFromU8(files['3D/Objects/object_2.model'])).toContain('<object id="3"');
-    const relationships = strFromU8(files['3D/_rels/3dmodel.model.rels']);
-    for (const path of childPaths) {
-      expect(relationships).toContain(`Target="/${path}"`);
-      expect(strFromU8(files[path])).toContain('<mesh>');
-      expect(strFromU8(files[path])).toContain('<build/>');
-    }
-
-    const modelSettings = strFromU8(files['Metadata/model_settings.config']);
-    expect(modelSettings).toContain('object_id" value="2"');
-    expect(modelSettings).toContain('object_id" value="4"');
-    expect(modelSettings).toContain('object_id" value="6"');
-    expect(modelSettings.match(/<plate>/g)).toHaveLength(2);
-    expect(modelSettings).toMatch(/object id="2".*?key="extruder" value="1"/);
-    expect(modelSettings).toMatch(/object id="4".*?key="extruder" value="3"/);
-    expect(modelSettings).toMatch(/object id="6".*?key="extruder" value="4"/);
-    expect(modelSettings).toContain('plater_name" value="Terrain');
-    expect(modelSettings).toContain('plater_name" value="Inserts 1');
-    expect(modelSettings).not.toContain('<assemble_item');
-    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
-    expect(manifest.format).toBe('bambu');
-    expect(manifest.plates.map((plate: { plate: number }) => plate.plate)).toEqual([1, 2]);
-    expect(manifest.plates[0].objects).toEqual(['Terrain']);
-    expect(manifest.plates[1].objects).toEqual(['lake & one', 'ski run']);
-  });
-  it('packs sequential calibration onto one bed and rejects beds that cannot fit it', () => {
-    const roomy = {
-      ...project,
-      settings: { ...project.settings, max_print_size_mm: [248, 198] as [number, number] },
-    };
-    const files = unzipSync(
-      buildThreeMf(asset, roomy, 'bambu', undefined, { sequentialSinglePlate: true }),
-    );
-    expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
-      'by object',
-    );
-    const config = strFromU8(files['Metadata/model_settings.config']);
-    expect(config.match(/<plate>/g)).toHaveLength(1);
-    expect(config).toContain('key="print_sequence" value="by object"');
-    const model = strFromU8(files['3D/3dmodel.model']);
-    const translations = [...model.matchAll(/<item[^>]*transform="([^"]+)"/g)].map(match =>
-      match[1].split(' ').map(Number).slice(9),
-    );
-    expect(translations).toEqual([
-      [8, 8, 0],
-      [98, 8, 0],
-      [163, 8, 0],
+    expect(settings).toMatchObject({
+      ...bambuProcessSettings(project),
+      brim_width: '3',
+      print_sequence: 'by object',
+      printer_settings_id: 'Bambu Lab P1S 0.4 nozzle',
+    });
+    expect(settings.machine_start_gcode).toBeUndefined();
+    expect(settings.nozzle_temperature).toBeUndefined();
+    // Bambu reads the palette before applying defaults. Missing it crashes the
+    // native project loader; sparse extruder slots still need palette entries.
+    expect(settings.filament_colour).toEqual(['#8BAA73', '#E78A43', '#0055FF', '#FFFFFF']);
+    expect(settings.filament_settings_id).toHaveLength(4);
+    expect(settings.inherits_group).toEqual([
+      settings.print_settings_id,
+      ...settings.filament_settings_id,
+      settings.printer_settings_id,
     ]);
+    expect(settings.different_settings_to_system).toHaveLength(6);
+    expect(settings.different_settings_to_system[0].split(';')).toEqual(
+      expect.arrayContaining([
+        'print_sequence',
+        'brim_width',
+        'layer_height',
+        'enable_prime_tower',
+      ]),
+    );
+    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.plates).toHaveLength(1);
+    expect(manifest.plates[0].objects).toEqual(['ski run', 'lake & one', 'Terrain']);
+    const root = strFromU8(files['3D/3dmodel.model']);
+    expect(root).toContain('BambuStudio-2.0.0');
+    expect(root.match(/<item /g)).toHaveLength(3);
+    const profiles = strFromU8(files['Metadata/layer_heights_profile.txt']).trim().split('\n');
+    expect(profiles).toHaveLength(3);
+    for (let i = 0; i < profiles.length; i++) {
+      expect(profiles[i]).toMatch(new RegExp(`^object_id=${i + 1}\\|`));
+      const model = strFromU8(files[`3D/Objects/object_${i + 1}.model`]);
+      const heights = [...model.matchAll(/<vertex[^>]*z="([^"]+)"/g)].map(m => Number(m[1]));
+      const values = profiles[i].split('|')[1].split(';').map(Number);
+      expect(values.at(-2)).toBeCloseTo(Math.max(...heights) - Math.min(...heights));
+    }
+  });
+
+  it.each(['p1s', 'x1c', 'a1', 'a1-mini'] as const)(
+    'keeps low coupons on one %s plate',
+    printer => {
+      const coupon = {
+        ...asset,
+        terrain: box(100, 78, 3.2),
+        inserts: Array.from({ length: 4 }, (_, i) => ({
+          ...asset.inserts[0],
+          id: `insert-${i}`,
+          mesh: box(14, 12, 2),
+        })),
+      };
+      const files = unzipSync(
+        buildThreeMf(coupon, project, 'bambu', undefined, {
+          sequentialSinglePlate: true,
+          bambuPrinter: printer,
+        }),
+      );
+      expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
+      expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
+        'by object',
+      );
+    },
+  );
+
+  it('uses native plate strides, keeps tall objects last, and never overlaps clearance envelopes', () => {
+    const many = {
+      ...asset,
+      terrain: box(80, 70, 100),
+      inserts: Array.from({ length: 12 }, (_, i) => ({
+        ...asset.inserts[0],
+        id: `part-${i}`,
+        mesh: box(40, 40, i < 2 ? 60 : 10),
+      })),
+    };
+    const files = unzipSync(buildThreeMf(many, project, 'bambu'));
+    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.plates.length).toBeGreaterThan(1);
+    const cols = Math.ceil(Math.sqrt(manifest.plates.length));
+    const items = [
+      ...strFromU8(files['3D/3dmodel.model']).matchAll(
+        /<item objectid="(\d+)"[^>]*transform="([^"]+)"/g,
+      ),
+    ];
+    let index = 0;
+    for (const plate of manifest.plates) {
+      const rectangles: { x: number; y: number; w: number; d: number; h: number }[] = [];
+      for (const name of plate.objects) {
+        const item = items[index++];
+        const t = item[2].split(' ').map(Number);
+        const x = t[9] - ((plate.plate - 1) % cols) * 307.2;
+        const y = t[10] + Math.floor((plate.plate - 1) / cols) * 307.2;
+        const mesh =
+          name === 'Terrain' ? many.terrain : many.inserts.find(p => p.id === name)!.mesh;
+        const w = Math.max(...mesh.positions.filter((_, i) => i % 3 === 0));
+        const d = Math.max(...mesh.positions.filter((_, i) => i % 3 === 1));
+        const h = Math.max(...mesh.positions.filter((_, i) => i % 3 === 2));
+        expect(x).toBeGreaterThanOrEqual(3.999);
+        expect(y).toBeGreaterThanOrEqual(3.999);
+        expect(x + w).toBeLessThanOrEqual(252.001);
+        expect(y + d).toBeLessThanOrEqual(252.001);
+        expect(x >= 21.999 || y >= 31.999).toBe(true);
+        for (const other of rectangles)
+          expect(
+            x + w + 73.999 <= other.x ||
+              other.x + other.w + 73.999 <= x ||
+              y + d + 73.999 <= other.y ||
+              other.y + other.d + 73.999 <= y,
+          ).toBe(true);
+        rectangles.push({ x, y, w, d, h });
+      }
+      expect(rectangles.slice(0, -1).every(r => r.h <= 34)).toBe(true);
+    }
     expect(() =>
-      buildThreeMf(asset, project, 'bambu', undefined, { sequentialSinglePlate: true }),
+      buildThreeMf(many, project, 'bambu', undefined, { sequentialSinglePlate: true }),
+    ).toThrow('does not fit');
+  });
+
+  it('rejects oversized models for the selected printer without scaling geometry', () => {
+    expect(() =>
+      buildThreeMf({ ...asset, terrain: box(200, 100, 5) }, project, 'bambu', undefined, {
+        bambuPrinter: 'a1-mini',
+      }),
     ).toThrow('does not fit');
   });
   it('rejects invalid triangle references before creating an archive', () => {

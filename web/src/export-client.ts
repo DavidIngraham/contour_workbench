@@ -1,4 +1,5 @@
 /** Starts one worker per final download and always releases it after completion. */
+import type { ThreeMfOptions } from './three-mf';
 import type { EngineProgress } from './engine-contract';
 import type { ExportFormat, ExportResult } from './export-formats';
 import type { ExportProject, ExportRequest, ExportResponse } from './export-contract';
@@ -37,6 +38,7 @@ export class ExportClient {
     project: Project,
     progress?: (progress: EngineProgress) => void,
     signal?: AbortSignal,
+    options?: ThreeMfOptions,
   ): Promise<ExportResult> {
     if (this.worker) return Promise.reject(new Error('An export is already running.'));
     if (signal?.aborted) return Promise.reject(canceled());
@@ -64,6 +66,7 @@ export class ExportClient {
       asset: compactAsset(asset, transfers),
       project: compactProject,
       projectFile,
+      options,
     };
     return new Promise((resolve, reject) => {
       const finish = () => {

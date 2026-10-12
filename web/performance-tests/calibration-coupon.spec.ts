@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 
 test('fit coupon contains detailed switchback trail inserts', async ({ page }) => {
-  await page.goto('/?preset=post-canyon');
+  await page.goto('/?preset=post-canyon', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(
     () =>
       Boolean((window as any).contourDiagnostics?.triangles) &&
@@ -25,6 +25,7 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     geometry: 'trail_switchback',
     path_width_mm: 0.9,
     nozzle_diameter_mm: 0.4,
+    terrain: { name: 'Mt. Hood Meadows', relief_mm: 2.6 },
   });
   expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
     0.1, 0.15, 0.2, 0.25,
@@ -33,10 +34,19 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     const facets = (strFromU8(files[name]).match(/facet normal/g) || []).length;
     expect(facets, `${name} should retain detailed switchback geometry`).toBeGreaterThan(500);
   }
+  const terrainVertices = [
+    ...strFromU8(files['coupon-base.stl']).matchAll(/vertex ([\d.e+-]+) ([\d.e+-]+) ([\d.e+-]+)/g),
+  ]
+    .map(match => match.slice(1).map(Number))
+    .filter(([, y, z]) => y > 40 && z > 0.6);
+  expect(terrainVertices.length).toBeGreaterThan(1000);
+  expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
+  expect(Math.max(...terrainVertices.map(([, , z]) => z))).toBeCloseTo(3.2, 2);
 });
 
-for (const format of ['portable', 'bambu', 'prusa']) {
-  test(`landing fit test downloads a single ${format} 3MF without a project`, async ({ page }) => {
+for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
+  const format = variant === 'bambu-mini' ? 'bambu' : variant;
+  test(`landing fit test downloads a single ${variant} 3MF without a project`, async ({ page }) => {
     await page.goto('/');
     await page.locator('#landing-calibration').click();
     await expect(page.locator('#fit-download-format')).toHaveValue('portable');
@@ -44,6 +54,7 @@ for (const format of ['portable', 'bambu', 'prusa']) {
     await expect(page.locator('#landing-calibration')).toBeFocused();
     await page.locator('#landing-calibration').click();
     await page.locator('#fit-download-format').selectOption(format);
+    if (variant === 'bambu-mini') await page.locator('#fit-bambu-printer').selectOption('a1-mini');
     const pending = page.waitForEvent('download');
     await page.locator('#fit-download-confirm').click();
     const download = await pending;
@@ -55,9 +66,12 @@ for (const format of ['portable', 'bambu', 'prusa']) {
     expect(files['Metadata/fit-test-instructions.txt']).toBeTruthy();
     if (format === 'bambu') {
       expect(strFromU8(files['3D/3dmodel.model'])).toContain('BambuStudio-2.0.0');
-      expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
-        'by object',
-      );
+      expect(JSON.parse(strFromU8(files['Metadata/project_settings.config']))).toMatchObject({
+        print_sequence: 'by object',
+        printer_settings_id:
+          variant === 'bambu-mini' ? 'Bambu Lab A1 mini 0.4 nozzle' : 'Bambu Lab P1S 0.4 nozzle',
+        filament_colour: ['#8BAA73', '#E78A43'],
+      });
       expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
       expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
         'key="print_sequence" value="by object"',
@@ -66,7 +80,7 @@ for (const format of ['portable', 'bambu', 'prusa']) {
         strFromU8(files['Metadata/layer_heights_profile.txt']).trim().split('\n'),
       ).toHaveLength(5);
       await mkdir('../temp', { recursive: true });
-      await download.saveAs('../temp/fit-test-bambu.3mf');
+      await download.saveAs(`../temp/fit-test-${variant}.3mf`);
     }
     expect(Object.keys(files).some(name => name.endsWith('.stl'))).toBe(false);
     const models = Object.entries(files).filter(([name]) => name.endsWith('.model'));
@@ -90,7 +104,7 @@ for (const format of ['portable', 'bambu', 'prusa']) {
 test('multicolor coupon downloads three painted filaments and a dimensional legend', async ({
   page,
 }) => {
-  await page.goto('/?preset=post-canyon');
+  await page.goto('/?preset=post-canyon', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(
     () => (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
   );

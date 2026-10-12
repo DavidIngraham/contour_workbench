@@ -27,6 +27,7 @@ self.onmessage = (event: MessageEvent<ExportRequest>) => {
       request.asset,
       request.project as Project,
       request.projectFile,
+      request.options,
     );
     const response: ExportResponse = { result };
     self.postMessage(response, { transfer: [result.bytes.buffer] });

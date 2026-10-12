@@ -1982,6 +1982,8 @@ button.compass {
 
 .download-modal {
   width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
 }
 .format-options {
   display: grid;

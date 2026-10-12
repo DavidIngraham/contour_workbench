@@ -44,8 +44,11 @@ describe('disposable export worker', () => {
 
   it('transfers compact copies and terminates after success', async () => {
     const client = new ExportClient();
-    const pending = client.run('portable', asset, project);
+    const pending = client.run('bambu', asset, project, undefined, undefined, {
+      bambuPrinter: 'a1-mini',
+    });
     const worker = FakeWorker.instances[0];
+    expect(worker.message).toMatchObject({ options: { bambuPrinter: 'a1-mini' } });
     expect(worker.transfers).toHaveLength(3);
     expect(asset.terrain.positions).toEqual([0, 0, 0]);
     worker.onmessage?.({

@@ -1,4 +1,5 @@
 /** Typed messages exchanged between the UI and the geometry worker. */
+import type { BambuPrinterId } from './bambu-printers';
 import type { Annotation } from './annotations';
 import type { Asset, Bounds, Feature, Overlay, Project, Settings, Terrain, Grid } from './types';
 
@@ -33,7 +34,11 @@ export interface EngineOperationMap {
   };
   'preset-pack': { payload: { project: Project }; result: Uint8Array };
   calibration: {
-    payload: { settings: Settings; format?: 'stl' | 'portable' | 'bambu' | 'prusa' };
+    payload: {
+      settings: Settings;
+      format?: 'stl' | 'portable' | 'bambu' | 'prusa';
+      bambuPrinter?: BambuPrinterId;
+    };
     result: Uint8Array;
   };
   'color-calibration': { payload: { nozzle: number }; result: Uint8Array };

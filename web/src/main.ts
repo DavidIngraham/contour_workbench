@@ -47,6 +47,7 @@ import { Viewer } from './viewer';
 import { Engine } from './client';
 import { ExportClient } from './export-client';
 import { browserBuildMemoryBudgetMb } from './memory-plan';
+import type { BambuPrinterId } from './bambu-printers';
 import type { ExportFormat } from './export-formats';
 import { automaticProduct } from './source-resolution';
 import {
@@ -1203,6 +1204,7 @@ function syncExportOptions() {
     '3mf';
   const slicer = $<HTMLSelectElement>('export-slicer').value;
   $('three-mf-options').classList.toggle('hidden', !threeMf);
+  $('export-bambu-options').classList.toggle('hidden', !threeMf || slicer !== 'bambu');
   $('export-filaments').innerHTML = together && threeMf ? filamentSummary() : '';
   $('export-mode-note').textContent = together
     ? 'Print together: one watertight solid with painted surface regions.'
@@ -1214,7 +1216,7 @@ function syncExportOptions() {
     : together
       ? 'Bambu Studio and PrusaSlicer 3MF preserve painted filament assignments. Standard 3MF stores face colors; support varies by slicer.'
       : slicer === 'bambu'
-        ? 'Terrain and inserts are arranged on separate build plates.'
+        ? 'Parts are packed onto as few plates as practical for by-object printing. Check the slice with your selected printer and filament.'
         : 'Parts are separated and placed flat. Arrange them on your build plates before slicing.';
 }
 document.querySelectorAll<HTMLInputElement>('input[name="download-format"]').forEach(input => {
@@ -1246,7 +1248,9 @@ $('download-confirm').onclick = async () => {
   exportRunning = true;
   abort = new AbortController();
   try {
-    const result = await exportClient.run(format, asset, project, progressStatus, abort.signal);
+    const result = await exportClient.run(format, asset, project, progressStatus, abort.signal, {
+      bambuPrinter: $<HTMLSelectElement>('export-bambu-printer').value as BambuPrinterId,
+    });
     downloadFile(result.bytes as unknown as BlobPart, result.filename, result.mime);
     status(result.filename + ' downloaded.');
   } catch (e) {
@@ -1280,6 +1284,12 @@ $('download-color-calibration').onclick = async () => {
   }
 };
 let fitDownloadFromLanding = false;
+$('fit-download-format').onchange = () => {
+  $('fit-bambu-options').classList.toggle(
+    'hidden',
+    $<HTMLSelectElement>('fit-download-format').value !== 'bambu',
+  );
+};
 function fitDownloadDialog(open: boolean) {
   $('fit-download-dialog').classList.toggle('hidden', !open);
   $('landing-dialog').inert = open;
@@ -1321,7 +1331,15 @@ $('fit-download-confirm').onclick = async () => {
   updateBusy(true);
   fitStatus('Creating your fit test…');
   try {
-    const bytes = await engine.call('calibration', { settings, format }, progressStatus);
+    const bytes = await engine.call(
+      'calibration',
+      {
+        settings,
+        format,
+        bambuPrinter: $<HTMLSelectElement>('fit-bambu-printer').value as BambuPrinterId,
+      },
+      progressStatus,
+    );
     downloadFile(
       bytes as unknown as BlobPart,
       `Contour Workbench fit test.${format === 'stl' ? 'zip' : '3mf'}`,

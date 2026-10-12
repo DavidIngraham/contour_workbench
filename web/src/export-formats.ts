@@ -1,6 +1,6 @@
 /** Target-specific archive encoders used only by the disposable export worker. */
 import { strToU8, zipSync, zlibSync } from 'fflate';
-import { buildThreeMf, type ThreeMfKind } from './three-mf';
+import { buildThreeMf, type ThreeMfOptions, type ThreeMfKind } from './three-mf';
 import {
   featureClasses,
   projectMaterialGroups,
@@ -233,6 +233,7 @@ export function buildExport(
   asset: Asset,
   project: Project,
   projectFile?: Uint8Array,
+  options?: ThreeMfOptions,
 ): ExportResult {
   const stem = safeName(project.name);
   if (format === 'marketiger') return marketigerColor(asset, project, stem);
@@ -310,7 +311,7 @@ export function buildExport(
           ? 'shapeways'
           : 'portable';
   return {
-    bytes: buildThreeMf(asset, project, kind, projectFile),
+    bytes: buildThreeMf(asset, project, kind, projectFile, options),
     filename: stem + (kind === 'portable' ? '.3mf' : '-' + kind + '.3mf'),
     mime: 'model/3mf',
   };

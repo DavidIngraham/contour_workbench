@@ -2,6 +2,7 @@
 /// <reference lib="webworker" />
 import { annotationGeometry, type Annotation } from './annotations';
 import { calibrationSwitchbackCenterlineMm } from './calibration-path';
+import calibrationTerrain from './calibration-terrain.json';
 import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
@@ -243,6 +244,49 @@ function calibrationFiles(
     centers = [14, 38, 62, 86],
     pathWidth = Math.max(0.05, s.path_width_mm);
   let base = M.Manifold.cube([100, 38, 3]);
+  // A private Rust session avoids replacing the user's active terrain/grid.
+  // Real USGS relief is scaled to 2.6 mm above a 0.6 mm backing so the coupon
+  // remains a short, inexpensive print while exposing shallow slope stepping.
+  const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
+  try {
+    const packet = decodeMeshPacket<TerrainPacketMetadata>(
+      terrainSession.build_terrain(
+        JSON.stringify({
+          ...s,
+          boundary: [],
+          max_print_size_mm: [96, 36],
+          base_height_mm: 0.6,
+          height_factor: 1,
+          terrain_max_error_mm: 0,
+        }),
+      ),
+    );
+    const mesh = packet.meshes[0];
+    let top = 0;
+    for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
+    const xOffset = (100 - packet.metadata.layout.width) / 2;
+    for (let i = 0; i < mesh.positions.length; i += 3) {
+      mesh.positions[i] += xOffset;
+      mesh.positions[i + 1] += 40;
+      if (mesh.positions[i + 2] > 0.6)
+        mesh.positions[i + 2] = 0.6 + ((mesh.positions[i + 2] - 0.6) * 2.6) / (top - 0.6);
+    }
+    const relief = solidFromMesh(M, mesh);
+    const backing = M.Manifold.cube([100, 78, 0.6]);
+    try {
+      const joined = M.Manifold.union([base, backing, relief]);
+      base.delete();
+      base = joined;
+    } finally {
+      relief.delete();
+      backing.delete();
+    }
+  } catch (error) {
+    base.delete();
+    throw error;
+  } finally {
+    terrainSession.free();
+  }
   const cutters: Manifold[] = [];
   try {
     clearances.forEach((clearance, index) => {
@@ -287,6 +331,12 @@ function calibrationFiles(
         {
           units: 'mm',
           geometry: 'trail_switchback',
+          terrain: {
+            name: calibrationTerrain.name,
+            attribution: calibrationTerrain.attribution,
+            source_url: calibrationTerrain.source_url,
+            relief_mm: 2.6,
+          },
           path_width_mm: pathWidth,
           nozzle_diameter_mm: s.nozzle_diameter_mm,
           elephant_foot_relief_mm: s.insert_elephant_foot_relief_mm,
@@ -299,7 +349,7 @@ function calibrationFiles(
       ),
     );
     files[prefix + 'README.txt'] = strToU8(
-      'CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThis coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: ' +
+      'CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThe rear terrain sample reproduces Mt. Hood Meadows using USGS 3D Elevation Program data, with 2.6 mm relief on a 0.6 mm backing. Inspect its ridges, valleys, and shallow slopes for visible layer stepping; compare layer-height settings using the same sample. The terrain and numbered fit pockets form one base. This coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: ' +
         pathWidth.toFixed(2) +
         ' mm\nConfigured nozzle: ' +
         s.nozzle_diameter_mm.toFixed(2) +
@@ -750,6 +800,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const packageFiles = unzipSync(
         buildThreeMf(asset, project, p.format, undefined, {
           sequentialSinglePlate: true,
+          bambuPrinter: p.bambuPrinter,
         }),
       );
       packageFiles['Metadata/calibration_manifest.json'] = files['calibration_manifest.json'];

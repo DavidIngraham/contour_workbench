@@ -1,5 +1,6 @@
 /** Messages for one disposable final-export worker. */
 import type { ExportFormat, ExportResult } from './export-formats';
+import type { ThreeMfOptions } from './three-mf';
 import type { Asset, Project } from './types';
 
 export type ExportProject = Pick<Project, 'name' | 'source' | 'settings' | 'materials'>;
@@ -8,6 +9,7 @@ export interface ExportRequest {
   asset: Asset;
   project: ExportProject;
   projectFile: Uint8Array;
+  options?: ThreeMfOptions;
 }
 export type ExportResponse =
   | { progress: { message: string; completed?: number; total?: number } }
