@@ -214,7 +214,7 @@ describe('3MF export', () => {
     printer => {
       const coupon = {
         ...asset,
-        terrain: box(100, 78, 3.2),
+        terrain: box(100, 38, 3.2),
         inserts: Array.from({ length: 4 }, (_, i) => ({
           ...asset.inserts[0],
           id: `insert-${i}`,

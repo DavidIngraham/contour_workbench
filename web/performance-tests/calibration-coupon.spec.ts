@@ -25,7 +25,7 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     geometry: 'trail_switchback',
     path_width_mm: 0.9,
     nozzle_diameter_mm: 0.4,
-    terrain: { name: 'Mt. Hood Meadows', relief_mm: 2.6 },
+    terrain: { name: 'Mt. Hood Meadows', relief_mm: 1.2 },
   });
   expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
     0.1, 0.15, 0.2, 0.25,
@@ -34,14 +34,29 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     const facets = (strFromU8(files[name]).match(/facet normal/g) || []).length;
     expect(facets, `${name} should retain detailed switchback geometry`).toBeGreaterThan(500);
   }
-  const terrainVertices = [
+  const vertices = [
     ...strFromU8(files['coupon-base.stl']).matchAll(/vertex ([\d.e+-]+) ([\d.e+-]+) ([\d.e+-]+)/g),
-  ]
-    .map(match => match.slice(1).map(Number))
-    .filter(([, y, z]) => y > 40 && z > 0.6);
+  ].map(match => match.slice(1).map(Number));
+  for (const [axis, size] of [
+    [0, 100],
+    [1, 38],
+  ]) {
+    expect(Math.min(...vertices.map(v => v[axis]))).toBeCloseTo(0, 3);
+    expect(Math.max(...vertices.map(v => v[axis]))).toBeCloseTo(size, 3);
+  }
+  const terrainVertices = vertices.filter(([, y, z]) => y < 28 && z > 2);
   expect(terrainVertices.length).toBeGreaterThan(1000);
   expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
-  expect(Math.max(...terrainVertices.map(([, , z]) => z))).toBeCloseTo(3.2, 2);
+  expect(Math.max(...vertices.map(([, , z]) => z))).toBeLessThanOrEqual(3.201);
+  expect(Math.max(...vertices.filter(([, y]) => y > 28).map(([, , z]) => z))).toBeCloseTo(3, 3);
+  // Relief must span every insert region, rather than occupy a separate patch.
+  for (const center of [14, 38, 62, 86]) {
+    const region = terrainVertices.filter(([x, y]) => Math.abs(x - center) < 8 && y > 5 && y < 23);
+    expect(new Set(region.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(10);
+    expect(
+      vertices.some(([x, y, z]) => Math.abs(x - center) < 8 && y < 23 && Math.abs(z - 1) < 1e-5),
+    ).toBe(true);
+  }
 });
 
 for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {

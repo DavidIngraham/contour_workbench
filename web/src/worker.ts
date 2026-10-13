@@ -243,10 +243,11 @@ function calibrationFiles(
   const clearances = calibrationClearances(s),
     centers = [14, 38, 62, 86],
     pathWidth = Math.max(0.05, s.path_width_mm);
-  let base = M.Manifold.cube([100, 38, 3]);
+  let base = M.Manifold.cube([100, 10, 3]).translate([0, 28, 0]);
   // A private Rust session avoids replacing the user's active terrain/grid.
-  // Real USGS relief is scaled to 2.6 mm above a 0.6 mm backing so the coupon
-  // remains a short, inexpensive print while exposing shallow slope stepping.
+  // Normalize the real relief into the original footprint, beneath all four
+  // pockets. A 2 mm minimum surface leaves at least 1 mm of pocket wall above
+  // their shared floor; the flat rear strip keeps the engraved labels legible.
   const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
   try {
     const packet = decodeMeshPacket<TerrainPacketMetadata>(
@@ -264,22 +265,20 @@ function calibrationFiles(
     const mesh = packet.meshes[0];
     let top = 0;
     for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
-    const xOffset = (100 - packet.metadata.layout.width) / 2;
     for (let i = 0; i < mesh.positions.length; i += 3) {
-      mesh.positions[i] += xOffset;
-      mesh.positions[i + 1] += 40;
+      mesh.positions[i] *= 100 / packet.metadata.layout.width;
+      mesh.positions[i + 1] *= 28 / packet.metadata.layout.depth;
       if (mesh.positions[i + 2] > 0.6)
-        mesh.positions[i + 2] = 0.6 + ((mesh.positions[i + 2] - 0.6) * 2.6) / (top - 0.6);
+        mesh.positions[i + 2] = 2 + ((mesh.positions[i + 2] - 0.6) * 1.2) / (top - 0.6);
+      else if (mesh.positions[i + 2] > 0) mesh.positions[i + 2] = 2;
     }
     const relief = solidFromMesh(M, mesh);
-    const backing = M.Manifold.cube([100, 78, 0.6]);
     try {
-      const joined = M.Manifold.union([base, backing, relief]);
+      const joined = M.Manifold.union([base, relief]);
       base.delete();
       base = joined;
     } finally {
       relief.delete();
-      backing.delete();
     }
   } catch (error) {
     base.delete();
@@ -290,7 +289,7 @@ function calibrationFiles(
   const cutters: Manifold[] = [];
   try {
     clearances.forEach((clearance, index) => {
-      cutters.push(switchbackSolid(M, centers[index], 12, pathWidth + 2 * clearance, 2.2, 1));
+      cutters.push(switchbackSolid(M, centers[index], 12, pathWidth + 2 * clearance, 3, 1));
       cutters.push(...digitCutters(M, String(index + 1), centers[index], 32, 2.7));
     });
     const combined = M.Manifold.union(cutters),
@@ -335,7 +334,7 @@ function calibrationFiles(
             name: calibrationTerrain.name,
             attribution: calibrationTerrain.attribution,
             source_url: calibrationTerrain.source_url,
-            relief_mm: 2.6,
+            relief_mm: 1.2,
           },
           path_width_mm: pathWidth,
           nozzle_diameter_mm: s.nozzle_diameter_mm,
@@ -349,7 +348,7 @@ function calibrationFiles(
       ),
     );
     files[prefix + 'README.txt'] = strToU8(
-      'CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThe rear terrain sample reproduces Mt. Hood Meadows using USGS 3D Elevation Program data, with 2.6 mm relief on a 0.6 mm backing. Inspect its ridges, valleys, and shallow slopes for visible layer stepping; compare layer-height settings using the same sample. The terrain and numbered fit pockets form one base. This coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: ' +
+      'CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThe 100 × 38 mm coupon reproduces Mt. Hood Meadows using USGS 3D Elevation Program data, normalized to its footprint with 1.2 mm relief. The fit pockets cut directly into the terrain, with a shared flat floor and a flat strip for the numbered labels. Inspect its ridges, valleys, and shallow slopes for visible layer stepping; compare layer-height settings using the same sample. The terrain and numbered fit pockets form one base. This coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: ' +
         pathWidth.toFixed(2) +
         ' mm\nConfigured nozzle: ' +
         s.nozzle_diameter_mm.toFixed(2) +
