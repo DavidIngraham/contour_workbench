@@ -47,6 +47,7 @@ interface ObjectRecord {
 interface Placement {
   object: ObjectRecord;
   plate: number;
+  printSequence?: 'by layer' | 'by object';
   translation: [number, number, number];
 }
 
@@ -131,6 +132,35 @@ function materialIndex(project: Project, object: ObjectRecord) {
   return index < 0 ? (object.kind === 'terrain' ? 0 : 1) : index;
 }
 
+// Separate-part previews retain class colors even in older projects whose
+// feature groups all share slot 2. Split conflicting colors into free slots;
+// preserve existing distinct slots and intentionally shared matching colors.
+function separateFilamentGroups(project: Project, objects: ObjectRecord[]) {
+  const groups = projectMaterialGroups(project);
+  const used = new Set(objects.map(object => materialIndex(project, object)));
+  const reserved = new Set(groups.filter((_, i) => used.has(i)).map(g => g.extruder));
+  const assigned = new Map<number, string>();
+  const splitSlots = new Map<string, number>();
+  return groups.map((group, i) => {
+    if (!used.has(i)) return group;
+    const color = group.color.toUpperCase();
+    let extruder = group.extruder;
+    if (assigned.has(extruder) && assigned.get(extruder) !== color) {
+      const key = `${extruder}:${color}`;
+      if (splitSlots.has(key)) extruder = splitSlots.get(key)!;
+      else {
+        extruder = 1;
+        while (reserved.has(extruder)) extruder++;
+        if (extruder > 16) throw new Error('Separate colors require more than 16 filament slots.');
+        reserved.add(extruder);
+        splitSlots.set(key, extruder);
+      }
+    }
+    assigned.set(extruder, color);
+    return { ...group, extruder };
+  });
+}
+
 function baseMaterialsXml(project: Project) {
   return projectMaterialGroups(project)
     .map(
@@ -149,6 +179,7 @@ function assembledPlacement(objects: ObjectRecord[]): Placement[] {
 
 function packedPlacement(
   objects: ObjectRecord[],
+  project: Project,
   printerId: BambuPrinterId,
   singlePlate: boolean,
 ): Placement[] {
@@ -156,6 +187,10 @@ function packedPlacement(
   const margin = 4; // Includes the explicit 3 mm brim and rounding tolerance.
   type Packed = { object: ObjectRecord; b: Bounds3; x: number; y: number };
   const entries = objects.map(object => ({ object, b: bounds(object.mesh) }));
+  const groups = projectMaterialGroups(project);
+  const slot = (object: ObjectRecord) => groups[materialIndex(project, object)].extruder;
+  const mixed = (plate: { object: ObjectRecord }[]) =>
+    new Set(plate.map(p => slot(p.object))).size > 1;
   for (const { object, b } of entries) {
     if (
       b.width > printer.bedMm - 2 * margin ||
@@ -179,6 +214,9 @@ function packedPlacement(
       (a, b) => b.b.width - a.b.width || b.b.depth - a.b.depth || a.object.id - b.object.id,
     ),
   ];
+  // Also try grouping filaments first: dense single-filament plates can use
+  // fewer beds than a mixed layout that needs toolhead clearance everywhere.
+  orders.push(...orders.map(order => [...order].sort((a, b) => slot(a.object) - slot(b.object))));
   let best: Packed[][] | undefined;
   for (const order of orders) {
     const plates: Packed[][] = [];
@@ -186,15 +224,16 @@ function packedPlacement(
       let placed = false;
       for (let index = 0; index <= plates.length; index++) {
         const plate = plates[index] ?? [];
+        const sequential = mixed([entry, ...plate]);
         // A single tall object may print last; two tall objects cannot share a
         // plate without printer-specific gantry/order analysis.
         if (
-          entry.b.height > printer.rodHeightMm &&
-          plate.some(p => p.b.height > printer.rodHeightMm)
+          sequential &&
+          [entry, ...plate].filter(p => p.b.height > printer.rodHeightMm).length > 1
         )
           continue;
         const short = [entry, ...plate].every(p => p.b.height < printer.nozzleHeightMm - 1.5);
-        const gap = (short ? 4 : printer.clearanceMm) + 6; // two 3 mm brims
+        const gap = (sequential ? (short ? 4 : printer.clearanceMm) : 2) + 6; // two 3 mm brims
         const xs = [
           ...new Set([
             margin,
@@ -209,7 +248,8 @@ function packedPlacement(
             ...plate.map(p => p.y + p.b.depth + gap),
           ]),
         ].sort((a, b) => a - b);
-        // Adding a taller object changes the clearance tier for the whole plate.
+        // Adding another filament or a taller object changes the clearance tier
+        // for the whole plate. Recheck every existing pair before accepting it.
         const separated = (a: Packed, b: Packed) =>
           a.x + a.b.width + gap <= b.x ||
           b.x + b.b.width + gap <= a.x ||
@@ -260,6 +300,7 @@ function packedPlacement(
       .map(({ object, b, x, y }) => ({
         object,
         plate: index + 1,
+        printSequence: mixed(plate) ? ('by object' as const) : ('by layer' as const),
         translation: [
           x - b.min[0] + (index % columns) * printer.bedMm * 1.2,
           y - b.min[1] - Math.floor(index / columns) * printer.bedMm * 1.2,
@@ -570,12 +611,7 @@ function bambuModelRelationships(objects: ObjectRecord[]) {
   return `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entries}</Relationships>`;
 }
 
-function modelSettings(
-  project: Project,
-  objects: ObjectRecord[],
-  placements: Placement[],
-  sequential = false,
-) {
+function modelSettings(project: Project, objects: ObjectRecord[], placements: Placement[]) {
   const materials = projectMaterialGroups(project);
   const byPlate = new Map<number, Placement[]>();
   for (const placement of placements)
@@ -589,7 +625,7 @@ function modelSettings(
   const plateXml = [...byPlate.entries()]
     .map(
       ([plate, items]) =>
-        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${'Plate ' + plate}"/><metadata key="locked" value="false"/>${sequential ? '<metadata key="print_sequence" value="by object"/>' : ''}${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
+        `<plate><metadata key="plater_id" value="${plate}"/><metadata key="plater_name" value="${'Plate ' + plate}"/><metadata key="locked" value="false"/><metadata key="print_sequence" value="${items[0].printSequence ?? 'by layer'}"/>${items.map(item => `<model_instance><metadata key="object_id" value="${item.object.id * 2}"/><metadata key="instance_id" value="0"/><metadata key="identify_id" value="${item.object.id}"/></model_instance>`).join('')}</plate>`,
     )
     .join('');
   return `<?xml version="1.0" encoding="UTF-8"?><config>${objectXml}${plateXml}<assemble/></config>`;
@@ -655,8 +691,14 @@ export function buildThreeMf(
 ): Uint8Array {
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
   let objects = records(asset);
+  if (
+    kind === 'bambu' &&
+    !asset.faceMaterials &&
+    project.settings.manufacturing_mode === 'separate'
+  )
+    project = { ...project, materials: separateFilamentGroups(project, objects) };
   const printerId = options.bambuPrinter ?? 'p1s';
-  const sequential = kind === 'bambu' && project.settings.manufacturing_mode === 'separate';
+  const separateParts = kind === 'bambu' && project.settings.manufacturing_mode === 'separate';
   if (
     asset.faceMaterials &&
     (asset.inserts.length || asset.faceMaterials.length !== asset.terrain.indices.length / 3)
@@ -667,9 +709,9 @@ export function buildThreeMf(
     project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
       ? assembledPlacement(objects)
       : kind === 'bambu'
-        ? packedPlacement(objects, printerId, !!options.sequentialSinglePlate)
+        ? packedPlacement(objects, project, printerId, !!options.sequentialSinglePlate)
         : separatePlacement(objects);
-  if (sequential) {
+  if (separateParts) {
     placements.forEach((p, index) => {
       p.object = { ...p.object, id: index + 1 };
     });
@@ -697,11 +739,15 @@ export function buildThreeMf(
             kind === 'bambu'
               ? [bambuPrinter(printerId).bedMm, bambuPrinter(printerId).bedMm]
               : project.settings.max_print_size_mm,
-          ...(kind === 'bambu'
-            ? { printer: printerId, print_sequence: sequential ? 'by object' : 'by layer' }
-            : {}),
+          ...(kind === 'bambu' ? { printer: printerId, print_sequence: 'by layer' } : {}),
           plates: [...new Set(placements.map(item => item.plate))].map(plate => ({
             plate,
+            ...(kind === 'bambu'
+              ? {
+                  print_sequence:
+                    placements.find(p => p.plate === plate)!.printSequence ?? 'by layer',
+                }
+              : {}),
             objects: placements.filter(item => item.plate === plate).map(item => item.object.name),
           })),
           inserts: asset.inserts.map(piece => ({
@@ -723,11 +769,13 @@ export function buildThreeMf(
     for (const object of objects)
       files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
     files['Metadata/project_settings.config'] = strToU8(
-      JSON.stringify(bambuProjectSettings(asset, project, objects, printerId, sequential), null, 2),
+      JSON.stringify(
+        bambuProjectSettings(asset, project, objects, printerId, separateParts),
+        null,
+        2,
+      ),
     );
-    files['Metadata/model_settings.config'] = strToU8(
-      modelSettings(project, objects, placements, sequential),
-    );
+    files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
     files['Metadata/layer_heights_profile.txt'] = strToU8(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
     );
@@ -774,7 +822,7 @@ function bambuProjectSettings(
   project: Project,
   objects: ObjectRecord[],
   printerId: BambuPrinterId,
-  sequential: boolean,
+  separateParts: boolean,
 ) {
   const printer = bambuPrinter(printerId);
   const nozzle = project.settings.nozzle_diameter_mm;
@@ -790,12 +838,18 @@ function bambuProjectSettings(
     paintedFilamentSettings(asset, project).filament_colour ??
     Array.from(
       { length: slots },
-      (_, i) => groups.find(g => g.extruder === i + 1)?.color.toUpperCase() ?? '#FFFFFF',
+      (_, i) =>
+        objects
+          .map(o => groups[materialIndex(project, o)])
+          .find(g => g.extruder === i + 1)
+          ?.color.toUpperCase() ??
+        groups.find(g => g.extruder === i + 1)?.color.toUpperCase() ??
+        '#FFFFFF',
     );
   const overrides = {
     ...bambuProcessSettings(project),
-    ...(sequential
-      ? { print_sequence: 'by object', brim_width: '3', skirt_loops: '0' }
+    ...(separateParts
+      ? { print_sequence: 'by layer', brim_width: '3', skirt_loops: '0' }
       : { print_sequence: 'by layer' }),
   };
   // 2.5 dereferences filament_colour before backfilling defaults. Preset IDs

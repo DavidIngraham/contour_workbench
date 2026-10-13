@@ -169,7 +169,7 @@ describe('3MF export', () => {
     expect(settings).toMatchObject({
       ...bambuProcessSettings(project),
       brim_width: '3',
-      print_sequence: 'by object',
+      print_sequence: 'by layer',
       printer_settings_id: 'Bambu Lab P1S 0.4 nozzle',
     });
     expect(settings.machine_start_gcode).toBeUndefined();
@@ -195,6 +195,10 @@ describe('3MF export', () => {
     const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
     expect(manifest.plates).toHaveLength(1);
     expect(manifest.plates[0].objects).toEqual(['ski run', 'lake & one', 'Terrain']);
+    expect(manifest.plates[0].print_sequence).toBe('by object');
+    expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+      'key="print_sequence" value="by object"',
+    );
     const root = strFromU8(files['3D/3dmodel.model']);
     expect(root).toContain('BambuStudio-2.0.0');
     expect(root.match(/<item /g)).toHaveLength(3);
@@ -229,7 +233,10 @@ describe('3MF export', () => {
       );
       expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
       expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
-        'by object',
+        'by layer',
+      );
+      expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+        'key="print_sequence" value="by object"',
       );
     },
   );
@@ -255,6 +262,7 @@ describe('3MF export', () => {
     ];
     let index = 0;
     for (const plate of manifest.plates) {
+      const gap = plate.print_sequence === 'by object' ? 73.999 : 7.999;
       const rectangles: { x: number; y: number; w: number; d: number; h: number }[] = [];
       for (const name of plate.objects) {
         const item = items[index++];
@@ -273,18 +281,71 @@ describe('3MF export', () => {
         expect(x >= 21.999 || y >= 31.999).toBe(true);
         for (const other of rectangles)
           expect(
-            x + w + 73.999 <= other.x ||
-              other.x + other.w + 73.999 <= x ||
-              y + d + 73.999 <= other.y ||
-              other.y + other.d + 73.999 <= y,
+            x + w + gap <= other.x ||
+              other.x + other.w + gap <= x ||
+              y + d + gap <= other.y ||
+              other.y + other.d + gap <= y,
           ).toBe(true);
         rectangles.push({ x, y, w, d, h });
       }
-      expect(rectangles.slice(0, -1).every(r => r.h <= 34)).toBe(true);
+      if (plate.print_sequence === 'by object')
+        expect(rectangles.slice(0, -1).every(r => r.h <= 34)).toBe(true);
     }
     expect(() =>
       buildThreeMf(many, project, 'bambu', undefined, { sequentialSinglePlate: true }),
     ).toThrow('does not fit');
+  });
+
+  it('packs matching filaments densely by layer even with multiple tall objects', () => {
+    const same = {
+      ...project,
+      materials: [
+        { id: 'terrain' as const, name: 'Terrain', color: '#123456', extruder: 1 },
+        { id: 'water' as const, name: 'Water', color: '#123456', extruder: 1 },
+      ],
+    };
+    const dense = {
+      ...asset,
+      terrain: box(80, 80, 60),
+      inserts: Array.from({ length: 3 }, (_, i) => ({
+        ...asset.inserts[0],
+        id: `same-${i}`,
+        mesh: box(80, 80, 60),
+      })),
+    };
+    const files = unzipSync(
+      buildThreeMf(dense, same, 'bambu', undefined, { bambuPrinter: 'a1-mini' }),
+    );
+    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.plates).toHaveLength(1);
+    expect(manifest.plates[0].print_sequence).toBe('by layer');
+    expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+      'key="print_sequence" value="by layer"',
+    );
+    expect(
+      JSON.parse(strFromU8(files['Metadata/project_settings.config'])).filament_colour,
+    ).toEqual(['#123456']);
+  });
+
+  it('preserves the four default Post Canyon colors despite legacy shared feature slots', () => {
+    const canyon = { ...project, materials: undefined };
+    const pieces = {
+      ...asset,
+      inserts: (['trail', 'road', 'stream'] as const).map((cls, i) => ({
+        ...asset.inserts[0],
+        id: cls,
+        class: cls,
+        mesh: box(12, 12, 2 + i),
+      })),
+    };
+    const files = unzipSync(buildThreeMf(pieces, canyon, 'bambu'));
+    const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+    expect(settings.filament_colour).toEqual(['#8BAA73', '#E78A43', '#C2B17A', '#609CA7']);
+    expect(settings.filament_settings_id).toHaveLength(4);
+    const modelSettings = strFromU8(files['Metadata/model_settings.config']);
+    for (const slot of [1, 2, 3, 4])
+      expect(modelSettings).toContain(`key="extruder" value="${slot}"`);
+    expect(canyon.materials).toBeUndefined();
   });
 
   it('rejects oversized models for the selected printer without scaling geometry', () => {

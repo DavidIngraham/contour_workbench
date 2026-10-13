@@ -1216,7 +1216,7 @@ function syncExportOptions() {
     : together
       ? 'Bambu Studio and PrusaSlicer 3MF preserve painted filament assignments. Standard 3MF stores face colors; support varies by slicer.'
       : slicer === 'bambu'
-        ? 'Parts are packed onto as few plates as practical for by-object printing. Check the slice with your selected printer and filament.'
+        ? 'Single-filament plates print by layer with compact spacing. Mixed-filament plates print by object with printer clearance. Check the slice with your selected printer and filament.'
         : 'Parts are separated and placed flat. Arrange them on your build plates before slicing.';
 }
 document.querySelectorAll<HTMLInputElement>('input[name="download-format"]').forEach(input => {

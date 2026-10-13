@@ -82,7 +82,7 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
     if (format === 'bambu') {
       expect(strFromU8(files['3D/3dmodel.model'])).toContain('BambuStudio-2.0.0');
       expect(JSON.parse(strFromU8(files['Metadata/project_settings.config']))).toMatchObject({
-        print_sequence: 'by object',
+        print_sequence: 'by layer',
         printer_settings_id:
           variant === 'bambu-mini' ? 'Bambu Lab A1 mini 0.4 nozzle' : 'Bambu Lab P1S 0.4 nozzle',
         filament_colour: ['#8BAA73', '#E78A43'],

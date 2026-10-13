@@ -8,7 +8,7 @@ for (const preset of [
   { id: 'mt-hood-meadows', name: 'Mt. Hood Meadows' },
 ]) {
   test(`${preset.name} builds a watertight asset`, async ({ page }) => {
-    await page.goto('/?preset=' + preset.id);
+    await page.goto('/?preset=' + preset.id, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(
       () =>
         Boolean((window as any).contourDiagnostics?.triangles) &&
@@ -36,11 +36,41 @@ for (const preset of [
     console.log(
       `${preset.name}: ${(elapsedMs / 1000).toFixed(1)} s, ${asset.pieces} insert pieces, ${asset.triangles} terrain triangles, ${asset.removed_terrain_islands} terrain pins removed`,
     );
+    if (preset.id === 'post-canyon') {
+      await page.locator('#download').click();
+      await page.locator('input[value="3mf"]').check();
+      await page.locator('#export-slicer').selectOption('bambu');
+      const pending = page.waitForEvent('download');
+      await page.locator('#download-confirm').click();
+      const download = await pending;
+      const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
+      const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+      expect(settings.filament_colour).toEqual(['#8BAA73', '#E78A43', '#C2B17A', '#609CA7']);
+      expect(settings.filament_settings_id).toHaveLength(4);
+      const xml = strFromU8(files['Metadata/model_settings.config']);
+      const slots = new Map(
+        [...xml.matchAll(/<object id="(\d+)">([\s\S]*?)<\/object>/g)].map(m => [
+          m[1],
+          m[2].match(/key="extruder" value="(\d+)"/)![1],
+        ]),
+      );
+      for (const [, plate] of xml.matchAll(/<plate>([\s\S]*?)<\/plate>/g)) {
+        const used = new Set(
+          [...plate.matchAll(/key="object_id" value="(\d+)"/g)].map(m => slots.get(m[1])),
+        );
+        expect(used.has(undefined)).toBe(false);
+        expect(plate).toContain(
+          `key="print_sequence" value="${used.size > 1 ? 'by object' : 'by layer'}"`,
+        );
+      }
+      await mkdir('../temp', { recursive: true });
+      await download.saveAs('../temp/post-canyon-bambu.3mf');
+    }
   });
 }
 
 test('Post Canyon builds one painted exterior', async ({ page }) => {
-  await page.goto('/?preset=post-canyon');
+  await page.goto('/?preset=post-canyon', { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(
     () => (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
     null,
