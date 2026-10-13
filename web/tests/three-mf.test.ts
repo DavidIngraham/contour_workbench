@@ -74,6 +74,33 @@ const asset: Asset = {
 };
 
 describe('3MF export', () => {
+  it.each(['separate', 'multicolor'] as const)(
+    'writes native Prusa %s volume assignments',
+    mode => {
+      const files = unzipSync(
+        buildThreeMf(
+          asset,
+          {
+            ...project,
+            settings: { ...project.settings, manufacturing_mode: mode },
+          },
+          'prusa',
+        ),
+      );
+      const config = strFromU8(files['Metadata/Slic3r_PE.config']);
+      expect(config).toContain('; filament_colour = #8BAA73;#E78A43;#0055FF;#FFFFFF');
+      const model = strFromU8(files['Metadata/Slic3r_PE_model.config']);
+      expect(model.match(/<object /g)).toHaveLength(mode === 'separate' ? 3 : 1);
+      for (const [i, slot] of [1, 3, 4].entries()) {
+        const first = mode === 'separate' ? 0 : i * 12;
+        expect(model).toContain(`<volume firstid="${first}" lastid="${first + 11}">`);
+        expect(model).toContain(`key="extruder" value="${slot}"`);
+      }
+      expect(model).toContain('lake &amp; one');
+      expect(strFromU8(files['3D/3dmodel.model'])).toContain('PrusaSlicer-2.9.0');
+    },
+  );
+
   it.each(['bambu', 'prusa', 'portable'] as const)('preserves face painting in %s', kind => {
     const faceMaterials = new Uint8Array(12);
     faceMaterials[2] = surfaceMaterials.indexOf('water');
@@ -327,7 +354,7 @@ describe('3MF export', () => {
     ).toEqual(['#123456']);
   });
 
-  it('preserves the four default Post Canyon colors despite legacy shared feature slots', () => {
+  it.each(['bambu', 'prusa'] as const)('preserves four Post Canyon colors in %s', kind => {
     const canyon = { ...project, materials: undefined };
     const pieces = {
       ...asset,
@@ -338,7 +365,18 @@ describe('3MF export', () => {
         mesh: box(12, 12, 2 + i),
       })),
     };
-    const files = unzipSync(buildThreeMf(pieces, canyon, 'bambu'));
+    const files = unzipSync(buildThreeMf(pieces, canyon, kind));
+    if (kind === 'prusa') {
+      const config = strFromU8(files['Metadata/Slic3r_PE.config']);
+      expect(config).toContain('; filament_colour = #8BAA73;#E78A43;#C2B17A;#609CA7');
+      expect(config).toContain('; nozzle_diameter = 0.4,0.4,0.4,0.4');
+      const model = strFromU8(files['Metadata/Slic3r_PE_model.config']);
+      expect(model.match(/<object /g)).toHaveLength(4);
+      for (const slot of [1, 2, 3, 4])
+        expect(model).toContain('key="extruder" value="' + slot + '"');
+      expect(canyon.materials).toBeUndefined();
+      return;
+    }
     const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
     expect(settings.filament_colour).toEqual(['#8BAA73', '#E78A43', '#C2B17A', '#609CA7']);
     expect(settings.filament_settings_id).toHaveLength(4);

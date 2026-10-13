@@ -65,6 +65,21 @@ for (const preset of [
       }
       await mkdir('../temp', { recursive: true });
       await download.saveAs('../temp/post-canyon-bambu.3mf');
+      await page.locator('#download').click();
+      await page.locator('#export-slicer').selectOption('prusa');
+      const prusaPending = page.waitForEvent('download');
+      await page.locator('#download-confirm').click();
+      const prusa = await prusaPending;
+      const prusaFiles = unzipSync(new Uint8Array(await readFile((await prusa.path())!)));
+      expect(strFromU8(prusaFiles['Metadata/Slic3r_PE.config'])).toContain(
+        '; filament_colour = #8BAA73;#E78A43;#C2B17A;#609CA7',
+      );
+      const assignments = strFromU8(prusaFiles['Metadata/Slic3r_PE_model.config']);
+      expect(assignments.match(/<object /g)).toHaveLength(asset.pieces + 1);
+      expect(
+        new Set([...assignments.matchAll(/key="extruder" value="(\d+)"/g)].map(m => m[1])),
+      ).toEqual(new Set(['1', '2', '3', '4']));
+      await prusa.saveAs('../temp/post-canyon-prusa.3mf');
     }
   });
 }

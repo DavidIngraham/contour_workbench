@@ -517,7 +517,7 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
         item => `<item objectid="${item.object.id}" transform="${transform(item.translation)}"/>`,
       )
       .join('');
-    return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="${coreNamespace}" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="slic3rpe:Version3mf">1</metadata><resources><basematerials id="${materialId}">${baseMaterialsXml(project)}</basematerials>${meshObjects}</resources><build>${build}</build></model>`;
+    return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="${coreNamespace}" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">PrusaSlicer-2.9.0</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><resources><basematerials id="${materialId}">${baseMaterialsXml(project)}</basematerials>${meshObjects}</resources><build>${build}</build></model>`;
   }
   const components = placements
     .map(
@@ -530,7 +530,7 @@ function prusaModel(project: Project, objects: ObjectRecord[], placements: Place
     )
     .join('');
   return (
-    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><metadata name="Title">' +
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"><metadata name="Application">PrusaSlicer-2.9.0</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="slic3rpe:Version3mf">1</metadata><metadata name="Title">' +
     xmlEscape(project.name) +
     '</metadata><resources><basematerials id="' +
     materialId +
@@ -667,6 +667,27 @@ export function prusaProcessSettings(project: Project) {
   };
 }
 
+// Prusa reads object/volume assignments from this sidecar, not mesh metadata.
+function prusaModelSettings(project: Project, objects: ObjectRecord[]) {
+  const groups = projectMaterialGroups(project);
+  const separate = project.settings.manufacturing_mode === 'separate';
+  const sets = separate ? objects.map(object => [object]) : [objects];
+  return `<?xml version="1.0" encoding="UTF-8"?><config>${sets
+    .map(parts => {
+      let first = 0;
+      const volumes = parts
+        .map(object => {
+          const last = first + object.mesh.indices.length / 3 - 1;
+          const volume = `<volume firstid="${first}" lastid="${last}"><metadata type="volume" key="name" value="${xmlEscape(object.name)}"/><metadata type="volume" key="extruder" value="${groups[materialIndex(project, object)].extruder}"/></volume>`;
+          first = last + 1;
+          return volume;
+        })
+        .join('');
+      const id = separate ? parts[0].id : objects.length + 1;
+      return `<object id="${id}" instances_count="1">${volumes}</object>`;
+    })
+    .join('')}</config>`;
+}
 function prusaPrintConfig(project: Project) {
   return (
     Object.entries(prusaProcessSettings(project))
@@ -692,7 +713,7 @@ export function buildThreeMf(
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
   let objects = records(asset);
   if (
-    kind === 'bambu' &&
+    (kind === 'bambu' || kind === 'prusa') &&
     !asset.faceMaterials &&
     project.settings.manufacturing_mode === 'separate'
   )
@@ -780,13 +801,13 @@ export function buildThreeMf(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
     );
   } else if (kind === 'prusa') {
-    const palette = paintedFilamentSettings(asset, project).filament_colour;
+    const palette = exportFilamentColors(asset, project, objects);
     files['Metadata/Slic3r_PE.config'] = strToU8(
       prusaPrintConfig(project) +
-        (palette
-          ? `; extruder_colour = ${palette.join(';')}\n; filament_colour = ${palette.join(';')}\n`
-          : ''),
+        `; extruder_colour = ${palette.join(';')}\n; filament_colour = ${palette.join(';')}\n` +
+        `; nozzle_diameter = ${palette.map(() => project.settings.nozzle_diameter_mm).join(',')}\n`,
     );
+    files['Metadata/Slic3r_PE_model.config'] = strToU8(prusaModelSettings(project, objects));
     files['Metadata/Slic3r_PE_layer_heights_profile.txt'] = strToU8(
       project.settings.manufacturing_mode === 'multicolor'
         ? prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm)
@@ -817,6 +838,24 @@ function paintedFilamentSettings(asset: Asset, project: Project) {
   };
 }
 
+function exportFilamentColors(asset: Asset, project: Project, objects: ObjectRecord[]) {
+  const groups = projectMaterialGroups(project);
+  const slots = Math.max(...objects.map(o => groups[materialIndex(project, o)].extruder));
+  return (
+    paintedFilamentSettings(asset, project).filament_colour ??
+    Array.from(
+      { length: slots },
+      (_, i) =>
+        objects
+          .map(o => groups[materialIndex(project, o)])
+          .find(g => g.extruder === i + 1)
+          ?.color.toUpperCase() ??
+        groups.find(g => g.extruder === i + 1)?.color.toUpperCase() ??
+        '#FFFFFF',
+    )
+  );
+}
+
 function bambuProjectSettings(
   asset: Asset,
   project: Project,
@@ -832,20 +871,7 @@ function bambuProjectSettings(
   const printId = `${(nozzle / 2).toFixed(2)}mm Standard @BBL ${family}${nozzle === 0.4 ? '' : ` ${nozzle} nozzle`}`;
   const machineId = `${printer.name} ${nozzle} nozzle`;
   const filamentId = `Bambu PLA Basic @BBL ${printerId === 'p1s' && (nozzle === 0.4 || nozzle === 0.6) ? `P1S ${nozzle} nozzle` : family + (nozzle === 0.2 || (family === 'X1C' && nozzle !== 0.4) ? ` ${nozzle} nozzle` : '')}`;
-  const groups = projectMaterialGroups(project);
-  const slots = Math.max(...objects.map(o => groups[materialIndex(project, o)].extruder));
-  const colors =
-    paintedFilamentSettings(asset, project).filament_colour ??
-    Array.from(
-      { length: slots },
-      (_, i) =>
-        objects
-          .map(o => groups[materialIndex(project, o)])
-          .find(g => g.extruder === i + 1)
-          ?.color.toUpperCase() ??
-        groups.find(g => g.extruder === i + 1)?.color.toUpperCase() ??
-        '#FFFFFF',
-    );
+  const colors = exportFilamentColors(asset, project, objects);
   const overrides = {
     ...bambuProcessSettings(project),
     ...(separateParts

@@ -97,6 +97,16 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
       await mkdir('../temp', { recursive: true });
       await download.saveAs(`../temp/fit-test-${variant}.3mf`);
     }
+    if (format === 'prusa') {
+      expect(strFromU8(files['Metadata/Slic3r_PE.config'])).toContain(
+        '; filament_colour = #8BAA73;#E78A43',
+      );
+      const assignments = strFromU8(files['Metadata/Slic3r_PE_model.config']);
+      expect(assignments.match(/<object /g)).toHaveLength(5);
+      expect(assignments.match(/key="extruder" value="2"/g)).toHaveLength(4);
+      await mkdir('../temp', { recursive: true });
+      await download.saveAs('../temp/fit-test-prusa.3mf');
+    }
     expect(Object.keys(files).some(name => name.endsWith('.stl'))).toBe(false);
     const models = Object.entries(files).filter(([name]) => name.endsWith('.model'));
     expect(

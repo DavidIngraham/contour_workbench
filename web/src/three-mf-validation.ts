@@ -139,6 +139,7 @@ export function validateThreeMfFiles(
     );
   }
   if (kind === 'prusa') {
+    validXml('Metadata/Slic3r_PE_model.config', decode(files, 'Metadata/Slic3r_PE_model.config'));
     if (
       !model.includes('xmlns:slic3rpe="http://schemas.slic3r.org/3mf/2017/06"') ||
       !model.includes('<metadata name="slic3rpe:Version3mf">1</metadata>')
