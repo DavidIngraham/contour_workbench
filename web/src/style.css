@@ -1,4 +1,35 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+.source-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0;
+}
+#source-editor summary {
+  cursor: pointer;
+  font-size: 12px;
+  margin: 12px 0;
+}
+#source-form label {
+  display: block;
+  font-size: 12px;
+  margin: 12px 0 6px;
+}
+#source-form input,
+#source-form select,
+#feature-source {
+  width: 100%;
+  min-width: 0;
+}
+#source-form input {
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+#source-message,
+#source-description {
+  overflow-wrap: anywhere;
+}
 :root {
   font-family: 'DM Sans', sans-serif;
   color: #24392f;

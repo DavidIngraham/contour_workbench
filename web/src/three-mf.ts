@@ -1,5 +1,6 @@
 /** Portable and Bambu-oriented 3MF package generation. All model coordinates are millimeters. */
 import { strToU8, zipSync } from 'fflate';
+import { featureSourceAttribution } from './feature-sources';
 import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project } from './types';
 import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation';
 import { surfaceMaterials, trianglePaintCode } from './painted-surface';
@@ -739,6 +740,9 @@ export function buildThreeMf(
     objects = placements.map(p => p.object);
   }
   const files: Record<string, Uint8Array> = {
+    'Metadata/attribution.txt': strToU8(
+      project.source.attribution + '\n' + featureSourceAttribution(project.features),
+    ),
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
     '3D/3dmodel.model': strToU8(

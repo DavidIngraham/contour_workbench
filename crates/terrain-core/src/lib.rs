@@ -468,13 +468,52 @@ fn default_surface(class: &str) -> ZoneSurface {
         ZoneSurface::Terrain
     }
 }
+fn county_trail_name(p: &Value) -> Option<&str> {
+    p.get("Trail_Name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            // Recent county exports leave Trail_Name empty and use the full Name field.
+            p.get("Difficulty")?;
+            p.get("Trail_Type")?;
+            p.get("Name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.trim().is_empty())
+        })
+}
+
 /// Classify source properties into a supported Contour Workbench feature class.
 pub fn classify(p: &Value) -> Option<&'static str> {
     let p = p.get("tags").filter(|x| x.is_object()).unwrap_or(p);
-    if p.get("Trail_Name")
-        .and_then(Value::as_str)
-        .is_some_and(|s| !s.trim().is_empty())
+    // OpenSkiData uses typed properties instead of raw OSM tags. Do not treat
+    // non-ski piste uses (sledding, winter hiking) as ski runs.
+    if p.get("sources").is_some_and(Value::is_array)
+        && matches!(p.get("type").and_then(Value::as_str), Some("run" | "lift"))
     {
+        if p.get("status")
+            .and_then(Value::as_str)
+            .is_some_and(|s| s != "operating")
+        {
+            return None;
+        }
+        return match p["type"].as_str() {
+            Some("lift") => Some("ski_lift"),
+            Some("run")
+                if p["uses"].as_array().is_some_and(|uses| {
+                    uses.iter().any(|u| {
+                        matches!(
+                            u.as_str(),
+                            Some("downhill" | "nordic" | "skitour" | "snow_park")
+                        )
+                    })
+                }) =>
+            {
+                Some("ski_run")
+            }
+            _ => None,
+        };
+    }
+    if county_trail_name(p).is_some() {
         let d = p.get("Difficulty").and_then(Value::as_str).unwrap_or("");
         return if ["Closed", "Future", "Concept"]
             .iter()
@@ -747,13 +786,20 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
             ));
         }
     } else {
+        // Endpoint imports can explicitly map an untagged dataset to a supported class.
+        let source_class = input["feature_class"].as_str().filter(|class| {
+            matches!(
+                *class,
+                "trail" | "road" | "stream" | "water" | "glacier" | "ski_run" | "ski_lift"
+            )
+        });
         for (i, f) in input["features"]
             .as_array()
             .into_iter()
             .flatten()
             .enumerate()
         {
-            let Some(class) = classify(&f["properties"]) else {
+            let Some(class) = source_class.or_else(|| classify(&f["properties"])) else {
                 continue;
             };
             let g = &f["geometry"];
@@ -771,9 +817,13 @@ pub fn normalize(input: &Value) -> Vec<Feature> {
             if polygons.is_empty() && lines.iter().all(|l| l.len() < 2) {
                 continue;
             }
-            let name = f["properties"]["Trail_Name"]
+            let name = input["name_field"]
                 .as_str()
+                .and_then(|field| f["properties"][field].as_str())
+                .filter(|name| !name.trim().is_empty())
+                .or_else(|| county_trail_name(&f["properties"]))
                 .or(f["properties"]["name"].as_str())
+                .or(f["properties"]["Name"].as_str())
                 .or(f["properties"]["tags"]["name"].as_str())
                 .unwrap_or(class)
                 .to_string();

@@ -3,6 +3,14 @@ import { PrintOrderDialog } from './print-order-dialog';
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
 import { parseGpx } from './gpx';
+import { FeatureSourcePanel } from './feature-source-panel';
+import {
+  defaultFeatureSources,
+  downloadFeatureSource,
+  identifySourceFeatures,
+  mergeSourceFeatures,
+  type FeatureSource,
+} from './feature-sources';
 import { filamentPlan } from './filaments';
 import { gpxPlacement, placementLabels } from './gpx-placement';
 import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
@@ -191,6 +199,7 @@ let osmAbort: AbortController | undefined;
 let osmLoadSerial = 0;
 let osmLoading = false;
 let osmRetryAvailable = false;
+let sourcePanel: FeatureSourcePanel | undefined;
 let overlayTimer: ReturnType<typeof setTimeout>;
 let overlayRunning = false;
 let overlayAgain = false;
@@ -286,12 +295,21 @@ function showProjectLoadingPreview() {
 }
 function syncOsmAction() {
   const button = $('fetch-osm') as HTMLButtonElement;
+  const isOsm = !sourcePanel || sourcePanel.selected().kind === 'overpass';
   button.disabled = busy || osmLoading || !project;
   button.textContent = osmLoading
-    ? 'Loading trails and water…'
+    ? isOsm
+      ? 'Loading trails and water…'
+      : 'Loading source…'
     : osmRetryAvailable
-      ? 'Retry trails and water'
-      : 'Pull from OpenStreetMap';
+      ? isOsm
+        ? 'Retry trails and water'
+        : 'Retry source'
+      : isOsm
+        ? 'Pull from OpenStreetMap'
+        : 'Load source';
+  sourcePanel?.setDisabled(busy || osmLoading);
+  $('cancel-feature-source').classList.toggle('hidden', !osmLoading);
 }
 function cancelOsmLoad(resetAction = true) {
   osmLoadSerial++;
@@ -912,7 +930,7 @@ $('winter-mode').onchange = () => {
   const enabled = ($('winter-mode') as HTMLInputElement).checked;
   setWinterMode(enabled);
   if (enabled && !project.features.some(f => f.class === 'ski_run' || f.class === 'ski_lift'))
-    $('fetch-osm').click();
+    void loadProjectOsm();
 };
 $('feature-search').addEventListener('input', listFeatures);
 $('all-features').onclick = () =>
@@ -1445,7 +1463,14 @@ $('file-features').onchange = async () => {
   }
 };
 async function loadProjectOsm(focusFeatures = false) {
-  if (!project || osmLoading) return;
+  return loadProjectFeatures(focusFeatures, defaultFeatureSources[0]);
+}
+async function loadProjectFeatures(
+  focusFeatures = false,
+  source: FeatureSource = sourcePanel!.selected(),
+) {
+  if (!project || busy || osmLoading) return;
+  sourcePanel?.choose(source.id);
   const target = project;
   const serial = ++osmLoadSerial;
   const controller = new AbortController();
@@ -1454,19 +1479,37 @@ async function loadProjectOsm(focusFeatures = false) {
   osmRetryAvailable = false;
   syncOsmAction();
   try {
-    const query = await engine.call('query', {
-      bounds: target.settings.boundary.length
-        ? polygonBounds(target.settings.boundary)
-        : target.grid.bounds,
-      winter: Boolean(target.winter_mode),
-    });
-    if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
-    const data = await loadOsm(query, controller.signal, progress => {
-      if (serial === osmLoadSerial && project === target)
-        status(progress.message, false, true, progress.attempt, progress.maxAttempts);
-    });
-    if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
-    const incoming = await engine.call('classify', data);
+    const bounds = target.settings.boundary.length
+      ? polygonBounds(target.settings.boundary)
+      : target.grid.bounds;
+    let incoming: Feature[];
+    if (source.kind === 'overpass') {
+      const query = await engine.call('query', { bounds, winter: Boolean(target.winter_mode) });
+      if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
+      const data = await loadOsm(query, controller.signal, progress => {
+        if (serial === osmLoadSerial && project === target)
+          status(progress.message, false, true, progress.attempt, progress.maxAttempts);
+      });
+      if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
+      incoming = await engine.call('classify', data);
+    } else {
+      status(`Loading ${source.name}…`, false, true);
+      const download = await downloadFeatureSource(source, bounds, controller.signal);
+      if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
+      incoming = identifySourceFeatures(
+        source,
+        download,
+        await engine.call('classify', download.geojson),
+      );
+      if (
+        !['hrc', 'openskimap'].includes(source.id) &&
+        download.geojson.features.length &&
+        !incoming.length
+      )
+        throw new Error(
+          'No supported features were found. For untagged data, edit the source and choose a feature type such as Trails.',
+        );
+    }
     if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
     if (target.winter_mode)
       for (const feature of incoming) {
@@ -1476,16 +1519,20 @@ async function loadProjectOsm(focusFeatures = false) {
           feature.treatment = feature.class === 'ski_lift' ? 'v_carve' : 'insert';
         }
       }
-    const existing = new Map(target.features.map(feature => [feature.id, feature]));
-    incoming.forEach(feature => {
-      const current = existing.get(feature.id);
-      if (current) {
-        feature.enabled = current.enabled;
-        feature.treatment = current.treatment;
-      }
-      existing.set(feature.id, feature);
-    });
-    target.features = [...existing.values()];
+    if (source.kind !== 'overpass') {
+      target.features = mergeSourceFeatures(target.features, incoming, source);
+    } else {
+      const existing = new Map(target.features.map(feature => [feature.id, feature]));
+      incoming.forEach(feature => {
+        const current = existing.get(feature.id);
+        if (current) {
+          feature.enabled = current.enabled;
+          feature.treatment = current.treatment;
+        }
+        existing.set(feature.id, feature);
+      });
+      target.features = [...existing.values()];
+    }
     touch();
     listFeatures();
     refreshMetrics();
@@ -1495,14 +1542,20 @@ async function loadProjectOsm(focusFeatures = false) {
     if (focusFeatures && incoming.length) setPanel('features');
     osmRetryAvailable = false;
     status(
-      `Added ${incoming.length} map ${incoming.length === 1 ? 'feature' : 'features'}. Select any feature to customize it.`,
+      source.kind === 'overpass'
+        ? `Added ${incoming.length} map ${incoming.length === 1 ? 'feature' : 'features'}. Select any feature to customize it.`
+        : incoming.length
+          ? `Loaded ${incoming.length} ${incoming.length === 1 ? 'feature' : 'features'} from ${source.name}. Select any feature to customize it.`
+          : `No features from ${source.name} intersect this terrain. Other sources are unchanged.`,
     );
   } catch (e) {
     if (controller.signal.aborted || serial !== osmLoadSerial || project !== target) return;
     osmRetryAvailable = true;
     console.error(e);
     status(
-      'Trails and water could not be loaded right now. Your terrain is ready—use “Retry trails and water” when you are ready.',
+      source.kind === 'overpass'
+        ? 'Trails and water could not be loaded right now. Your terrain is ready—use “Retry trails and water” when you are ready.'
+        : `${userErrorMessage(e)} Use “Retry source” when ready.`,
       true,
     );
   } finally {
@@ -1515,8 +1568,16 @@ async function loadProjectOsm(focusFeatures = false) {
 }
 $('fetch-osm').onclick = () => {
   if (!project || busy || osmLoading) return;
-  void loadProjectOsm();
+  void loadProjectFeatures();
 };
+$('cancel-feature-source').onclick = () => {
+  cancelOsmLoad();
+  status('Source download canceled.');
+};
+sourcePanel = new FeatureSourcePanel(() => {
+  osmRetryAvailable = false;
+  syncOsmAction();
+});
 $('base-height').oninput = () => {
   if (!project || !terrain) return;
   const value = Number(($('base-height') as HTMLInputElement).value);
@@ -1905,6 +1966,8 @@ $('area-load').onclick = async () => {
             ?.value || 'osm'
         : 'none',
       prior = wizardMode ? structuredClone(defaults) : normalizeSettings(project?.settings);
+    const featureSource =
+      featureChoice === 'winter' ? defaultFeatureSources[0] : sourcePanel!.selected();
     $('area-dialog').classList.add('hidden');
     updateBusy(true);
     abort = new AbortController();
@@ -1945,8 +2008,8 @@ $('area-load').onclick = async () => {
     updateBusy(false);
     if (featureChoice === 'none') status('Terrain ready.');
     else {
-      status('Terrain ready. Loading trails and water in the background…', false, true);
-      void loadProjectOsm(true);
+      status(`Terrain ready. Loading ${featureSource.name} in the background…`, false, true);
+      void loadProjectFeatures(true, featureSource);
     }
   } catch (e) {
     error(e);

@@ -1,5 +1,6 @@
 /** Target-specific archive encoders used only by the disposable export worker. */
 import { strToU8, zipSync, zlibSync } from 'fflate';
+import { featureSourceAttribution } from './feature-sources';
 import { buildThreeMf, type ThreeMfOptions, type ThreeMfKind } from './three-mf';
 import {
   featureClasses,
@@ -212,7 +213,10 @@ function shapewaysColor(asset: Asset, project: Project) {
     'model.mtl': strToU8(mtl),
     'colors.png': colorTexture(groups.map(group => group.color)),
     'README.txt': strToU8(
-      'Units: millimeters\nUpload model.obj with model.mtl and colors.png as one ZIP.\n',
+      'Units: millimeters\nUpload model.obj with model.mtl and colors.png as one ZIP.\n' +
+        project.source.attribution +
+        '\n' +
+        featureSourceAttribution(project.features),
     ),
   };
   const zip = zipSync(files, { level: 6 });
@@ -244,7 +248,8 @@ export function buildExport(
       'validation.json': strToU8(JSON.stringify(asset.validation, null, 2)),
       'attribution.txt': strToU8(
         project.source.attribution +
-          '\nOpenStreetMap data: (c) OpenStreetMap contributors, ODbL.\n',
+          '\nOpenStreetMap data: (c) OpenStreetMap contributors, ODbL.\n' +
+          featureSourceAttribution(project.features),
       ),
     };
     for (const piece of asset.inserts)
@@ -387,7 +392,8 @@ function marketigerColor(asset: Asset, project: Project, stem: string): ExportRe
         'README.txt': strToU8(
           'Contour Workbench full-color exterior. Units: millimeters.\n' +
             project.source.attribution +
-            '\nOpenStreetMap contributors, ODbL.\n',
+            '\nOpenStreetMap contributors, ODbL.\n' +
+            featureSourceAttribution(project.features),
         ),
       },
       { mtime: new Date('2000-01-01T00:00:00Z') },

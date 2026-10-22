@@ -18,6 +18,7 @@ flowchart LR
   UI --> USGS[USGS TNM catalog and GeoTIFFs]
   UI --> COP[Copernicus S3 download links]
   UI --> OSM[OpenStreetMap Overpass API]
+  UI --> Features[HRC and custom GeoJSON / ArcGIS sources]
   UI --> Worker[Geometry web worker]
   Worker --> Rust[Rust terrain WASM]
   Worker --> Manifold[Manifold WASM]
@@ -67,6 +68,7 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 
 - `app-shell.ts`: static controls, dialogs, and viewport hosts.
 - `providers.ts` and `provider-registry.ts`: raster windows and mosaics, provider selection, USGS/Copernicus catalogs, persistent response caching, and bounded Overpass mirror failover.
+- `feature-sources.ts`: curated Overpass, HRC, USFS, NPS, BLM, Washington RCO, and OpenSkiMap entries, validated custom HTTPS endpoints, browser-local library preferences, bounded GeoJSON downloads, complete ArcGIS object-ID batching, WGS84 validation, and source-specific refresh merging. `feature-source-panel.ts` owns the library controls and shares their selection with the new-landscape wizard. Explicit feature-class and name-field mappings are applied by the Rust normalizer; they do not change the saved Feature contract.
 - `extent-map.ts` and `extent-shapes.ts`: slippy-map drawing and editable shapes.
 - `gpx.ts`: validates uploaded GPX XML and converts each track or route into an enabled trail feature with a unique import ID, its GPX name (or filename fallback), and separate lines for track segments. Multiple files append atomically to the active project; imported features use the existing tree controls, terrain clipping, preview, generation, and project persistence. GPX elevation is ignored in favor of terrain elevation; standalone waypoints are not imported.
 - `gpx-placement.ts` classifies full line segments against the terrain grid and optional concave boundary. Feature-tree labels distinguish inside, partial, and outside tracks. Zoom shows a temporary unclipped geographic footprint above the terrain; it never enters exported geometry. Fit model clears the guide.
@@ -126,6 +128,62 @@ The working terrain solid is deleted immediately after export; only then is the 
 6. Rust normalizes classifications and builds preview overlays. Three.js adds them without rebuilding or hiding the terrain.
 7. Feature controls remain editable throughout the completed design preview.
 
+### Feature source library
+
+The Features panel and new-landscape wizard share a source selector. OpenStreetMap
+remains the default and retains its existing cache, mirror failover, retry, and
+winter behavior. Winter landscape creation explicitly uses Overpass. HRC queries
+the county public trail layer within the terrain bounds, with automatic county
+classification excluding closed/future trails. Sources load one at a time; users
+can combine sources by loading each into the same model.
+
+USFS, NPS, BLM public trails, and Washington RCO use official ArcGIS layers with
+the same terrain-envelope queries and complete ID batching as HRC. Each entry
+maps the provider's exact trail-name field and explicitly imports trails. BLM
+uses the managed-for-public layer, excluding the separate unassessed layer;
+Washington uses the current RCO public view's Trails layer, not trailhead points.
+Curated descriptions explain coverage beside the selector. These public trail
+layers may overlap each other and Overpass; source snapshots remain independent.
+
+OpenSkiMap's public `/features.geojson?bbox=…&types=run,lift` endpoint supplies
+terrain-bounded ski GeoJSON without a backend or worldwide download. The browser
+enforces the API's 1,000 km² bounding-box limit using its equirectangular formula.
+Rust classifies active OpenSkiData run/lift properties and excludes non-ski uses
+and inactive features. Browser identity mapping prefers sorted upstream sources;
+ambiguous split-feature groups append the content ID. This preserves ordinary
+refresh edits but cannot guarantee continuity when split features change. Source
+credits travel in `tags.contour_source.attribution` and export attribution files.
+
+Custom library entries (name, HTTPS URL, feature class, optional name field) live
+under `contour-feature-sources-v1` in localStorage. Entries can be edited or removed;
+removing one does not delete imported model geometry. Storage failure is reported
+instead of claiming a definition was saved. Library preferences are separate from
+saved projects. Projects embed downloaded geometry and source provenance inside
+the existing feature `tags.contour_source` object, so reopening never depends on
+network availability or the source library.
+
+GeoJSON endpoints can use `{bbox}` for west,south,east,north. Complete files are
+also supported and filtered by geometry bounds before Rust clips them to the
+model outline. ArcGIS FeatureServer/MapServer layer URLs (including query URLs)
+are detected automatically; the loader requests matching object IDs and downloads
+verified batches of 200 in EPSG:4326. Partial responses fail before any project
+mutation. Downloads omit browser credentials, require browser CORS access, and
+have a 60-second deadline, 50 MB response budget, 20,000-feature limit, and
+500,000-coordinate limit. Invalid/projected coordinates, duplicate IDs, unsupported
+geometry collections, and known pagination/truncation indicators produce actionable
+errors. Point features and null geometries are not printable and are skipped in
+plain GeoJSON files; ArcGIS layers must return complete line/polygon batches.
+
+Endpoint loads use stable source-prefixed feature IDs (remote IDs when available,
+otherwise a canonical geometry/properties SHA-256 digest). HRC retains the existing
+`county-trail:<OBJECTID>` identifiers so refreshing the bundled Post Canyon model
+does not duplicate its trails. A successful refresh replaces that source's prior
+snapshot, removes disappeared records, and preserves matching visibility,
+treatment, surface, width, and insert depth overrides. Other sources and uploads
+remain intact. Downloads are fresh on each explicit load; only Overpass uses its
+existing persistent cache. The shared cancellation controller and serial/project
+guards reject late results after cancellation, navigation, or project replacement.
+
 ### Preset project
 
 1. The landing catalog loads a compressed `.cwpack`.
@@ -133,6 +191,15 @@ The working terrain solid is deleted immediately after export; only then is the 
 3. Overlay identifiers are checked against project feature identifiers.
 4. The worker hydrates a Rust session in the background for subsequent edits and generation.
 5. Opening a preset remains ephemeral. Its first edit forks it into a new local project identifier and starts autosave.
+
+Post Canyon's trail snapshot comes from Hood River County's public recreation-trail
+FeatureServer layer 134. The raw WGS84 GeoJSON lives in
+`tests/resources/post_canyon.geojson`; the integration fixture retains its separate
+boundary, roads, streams, and elevation grid. Rust recognizes the county's
+`Trail_Name` and full `Name` fields and excludes closed/future trails. The preset
+uses stable `county-trail:<OBJECTID>` identifiers and regenerated overlay meshes;
+its catalog revision must advance with each refresh to invalidate cached bundles.
+Download details are recorded in `tests/resources/README.md`.
 
 ### Local project sessions
 

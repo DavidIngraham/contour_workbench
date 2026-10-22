@@ -80,6 +80,67 @@ The Print setup panel selects separate tapered inserts or multicolor print-toget
 
 After generation, Download offers an STL parts bundle, portable 3MF, Bambu Studio 3MF, PrusaSlicer multipart 3MF, Shapeways full-color OBJ/MTL/PNG ZIP, and Shapeways single-material STL or 3MF. Bambu uses material extruder assignments and either aligned print-together parts on one plate or shelf-packed removable inserts. PrusaSlicer receives one build object with aligned child parts and compatible extruder metadata. Final encoding runs in a disposable worker and transfers compact mesh copies; completion, failure, or cancellation terminates that worker so archive and geometry buffers can be reclaimed.
 
+## Feature sources
+
+In **Features**, choose a **Feature source**, then load it. The library includes
+OpenStreetMap (the existing Overpass service), Hood River County recreation
+trails, US Forest Service trails, National Park Service trails, BLM public trails,
+Washington State trails, and OpenSkiMap ski runs and lifts. You can load several sources into one landscape. The new-landscape wizard
+also offers the saved source library; Winter landscape always uses OpenStreetMap.
+
+The four national/state trail entries use official public ArcGIS services and
+request only features intersecting the terrain's bounding box. Their name fields
+are configured automatically. BLM uses trails managed for public use; Washington
+uses RCO's current public Trails layer. Trailhead points are not imported.
+
+| Source | Official layer | Name field |
+| --- | --- | --- |
+| US Forest Service | [National Forest System Trails](https://apps.fs.usda.gov/arcx/rest/services/EDW/EDW_TrailNFSPublishWithDataStatus_01/MapServer/0) | `trail_name` |
+| National Park Service | [Public Trails](https://mapservices.nps.gov/arcgis/rest/services/NationalDatasets/NPS_Public_Trails/FeatureServer/0) | `TRLNAME` |
+| Bureau of Land Management | [Trails Managed for Public](https://gis.blm.gov/arcgis/rest/services/recreation/BLM_Natl_Recreation/MapServer/7) | `ROUTE_PRMRY_NM` |
+| Washington State | [RCO Trails Database Public View](https://services2.arcgis.com/TGEC20q86HQAeMS6/arcgis/rest/services/WA_RCO_Trails_Database_Public_View/FeatureServer/0) | `trail_name` |
+
+OpenSkiMap uses `https://api.openskimap.org/features.geojson?bbox={bbox}&types=run,lift`
+to request only the terrain area. It needs no backend or global dataset download.
+The service limits each bounding box to 1,000 km²; larger terrains receive an
+actionable error before downloading. The Rust importer maps active downhill,
+Nordic, touring, and snow-park runs to Ski runs and active lifts to Ski lifts;
+non-ski pistes and inactive features are excluded. Source metadata and attribution
+are preserved in project features and export archives. Upstream source IDs keep
+refresh identities stable; split features sharing upstream IDs use the API's
+content ID as a suffix, so edits to those split features may reset their settings.
+API implementation: https://github.com/russellporter/api.openskimap.org/blob/master/src/app.ts.
+Data attribution: https://www.openskidata.org/.
+
+Choose **Add source** to save a public HTTPS GeoJSON endpoint or ArcGIS
+FeatureServer/MapServer layer URL. Give it a name and choose Automatic if it has
+recognizable OSM or county tags. For untagged data, choose Trails, Roads, Streams,
+Water areas, Glaciers, Ski runs, or Ski lifts. An optional name field specifies
+which property contains display names. Explicit feature types apply to all
+imported records; Automatic retains source-specific classification and exclusions.
+
+Direct GeoJSON files must contain WGS84 longitude/latitude lines or polygons. A
+URL may include `{bbox}`, replaced with `west,south,east,north`. ArcGIS sources
+automatically query the model area and download complete batches. The endpoint
+must allow browser access (CORS); authenticated services and arbitrary paginated
+GeoJSON APIs are not supported. A failed or incomplete download leaves existing
+features intact. Cancel source download stops a pending request.
+
+Loading the same source again refreshes its geometry without creating duplicates.
+Matching features retain their visibility and print settings; records removed
+from the source disappear from that source's model snapshot. Different sources
+are kept independently, so overlapping datasets can contain overlapping paths.
+Stable source feature IDs preserve edits across geometry updates; anonymous
+features use a content fingerprint, so editing their source geometry makes them
+new features. Features outside the model's bounding box are skipped and the
+terrain outline clips the printable geometry.
+
+Use **Edit** or **Remove** to manage custom definitions. The library is saved in
+this browser, while imported geometry and provenance travel with exported
+projects. Removing a library entry keeps its already-imported features. Downloads
+are limited to 50 MB, 20,000 features, 500,000 coordinates, and 60 seconds. Use a
+smaller area or a filtered endpoint for larger datasets.
+
 ## Local projects and thumbnails
 
 Opening an example is read-only until the first meaningful edit. At that point it receives a new project identifier and appears under Recent projects. New designs and imported project files receive identifiers when they enter the editor. Project metadata, editable state, terrain samples, and thumbnails are stored separately so ordinary control edits do not rewrite the elevation raster.

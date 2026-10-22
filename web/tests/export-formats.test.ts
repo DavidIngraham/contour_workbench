@@ -32,6 +32,34 @@ const asset: Asset = {
 };
 
 describe('target export formats', () => {
+  it.each(['stl', 'portable', 'bambu', 'prusa', 'shapeways-color'] as const)(
+    'retains imported source credits once in %s exports',
+    format => {
+      const credits = 'Data from OpenSkiData / OpenSkiMap.org, © OpenStreetMap contributors';
+      const files = unzipSync(
+        buildExport(format, asset, {
+          ...project,
+          features: ['run', 'lift'].map(id => ({
+            id,
+            name: id,
+            class: 'ski_run',
+            lines: [],
+            enabled: true,
+            tags: { contour_source: { attribution: credits } },
+          })),
+        }).bytes,
+      );
+      const path =
+        format === 'stl'
+          ? 'attribution.txt'
+          : format === 'shapeways-color'
+            ? 'README.txt'
+            : 'Metadata/attribution.txt';
+      expect(strFromU8(files[path]).split(credits)).toHaveLength(2);
+      expect(strFromU8(files[path])).toContain(project.source.attribution);
+    },
+  );
+
   it('keeps STL parts aligned only for print-together mode', () => {
     for (const mode of ['separate', 'multicolor'] as const) {
       const files = unzipSync(

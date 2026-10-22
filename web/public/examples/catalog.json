@@ -10,9 +10,9 @@
       "bundle": "examples/presets/post-canyon.cwpack",
       "badges": [
         "10 m terrain",
-        "518 features"
+        "520 features"
       ],
-      "revision": 3
+      "revision": 4
     },
     {
       "id": "mt-hood-meadows",

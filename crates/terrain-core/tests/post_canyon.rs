@@ -1,4 +1,28 @@
 use contour_core::*;
+
+#[test]
+fn county_export_preserves_active_trails_with_full_names() {
+    let data: serde_json::Value =
+        serde_json::from_str(include_str!("../../../tests/resources/post_canyon.geojson")).unwrap();
+    let features = normalize(&data);
+    assert_eq!(data["features"].as_array().unwrap().len(), 218);
+    assert_eq!(features.len(), 157);
+    for (id, name) in [
+        (446, "Mitchell Ridge"),
+        (448, "Chuck Line"),
+        (457, "Shadow"),
+    ] {
+        let feature = features.iter().find(|f| f.tags["OBJECTID"] == id).unwrap();
+        assert_eq!(feature.name, name);
+        assert_eq!(feature.class, "trail");
+        assert!(!feature.lines.is_empty());
+    }
+    assert!(features.iter().all(|f| !matches!(
+        f.tags["Difficulty"].as_str(),
+        Some("Closed Trail" | "Future Trail" | "Decomissioned")
+    )));
+}
+
 #[test]
 #[ignore = "full real-data integration"]
 fn real_data_plan() {
