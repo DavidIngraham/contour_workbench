@@ -4,6 +4,7 @@ import type { EngineProgress } from './engine-contract';
 import type { ExportFormat, ExportResult } from './export-formats';
 import type { ExportProject, ExportRequest, ExportResponse } from './export-contract';
 import type { Asset, Mesh, Project } from './types';
+import { featureSourceAttribution } from './feature-sources';
 
 const canceled = () => new DOMException('Export canceled', 'AbortError');
 
@@ -57,7 +58,12 @@ export class ExportClient {
     transfers.push(projectFile.buffer);
     const compactProject: ExportProject = {
       name: project.name,
-      source: project.source,
+      source: {
+        ...project.source,
+        attribution: [project.source.attribution, featureSourceAttribution(project.features)]
+          .filter(Boolean)
+          .join('\n'),
+      },
       settings: project.settings,
       materials: project.materials,
     };

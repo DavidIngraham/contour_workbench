@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExportClient } from '../src/export-client';
+import { buildExport } from '../src/export-formats';
+import type { ExportRequest } from '../src/export-contract';
+import { strFromU8, unzipSync } from 'fflate';
 import { defaults, type Asset, type Project } from '../src/types';
 
 class FakeWorker {
@@ -41,6 +44,40 @@ describe('disposable export worker', () => {
     vi.stubGlobal('Worker', FakeWorker);
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it('encodes source credits through the compact worker payload without copying features', async () => {
+    const sourceProject: Project = {
+      ...project,
+      features: [
+        {
+          id: 'ski:1',
+          name: 'Run',
+          class: 'ski_run',
+          enabled: true,
+          lines: [],
+          tags: { contour_source: { attribution: 'OpenSkiMap credits' } },
+        },
+      ],
+    };
+    const pending = new ExportClient().run('stl', asset, sourceProject);
+    const worker = FakeWorker.instances[0];
+    const request = worker.message as ExportRequest;
+    expect(request.project).not.toHaveProperty('features');
+    expect(request.project.source.attribution).toBe('Test\nOpenSkiMap credits');
+    expect(sourceProject.source.attribution).toBe('Test');
+    const result = buildExport(
+      request.format,
+      request.asset,
+      request.project as Project,
+      request.projectFile,
+    );
+    const files = unzipSync(result.bytes);
+    expect(strFromU8(files['attribution.txt']).split('OpenSkiMap credits')).toHaveLength(2);
+    expect(JSON.parse(strFromU8(files['project.contour.json'])).features).toHaveLength(1);
+    worker.onmessage?.({ data: { result } } as MessageEvent);
+    await pending;
+    expect(worker.terminated).toBe(true);
+  });
 
   it('transfers compact copies and terminates after success', async () => {
     const client = new ExportClient();

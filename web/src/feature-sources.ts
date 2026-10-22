@@ -2,7 +2,7 @@
 import { featureClasses, type Bounds, type Feature, type FeatureClass } from './types';
 
 /** Unique credits saved with source features, including those in reopened projects. */
-export function featureSourceAttribution(features: Feature[]): string {
+export function featureSourceAttribution(features: Feature[] = []): string {
   return [
     ...new Set(
       features.flatMap(feature => {

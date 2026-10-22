@@ -220,7 +220,7 @@ Download details are recorded in `tests/resources/README.md`.
 
 ### Download
 
-The UI copies generated meshes into compact typed arrays and transfers ownership to a newly created export worker. The worker encodes one selected target, transfers the completed bytes back, and closes. The client also terminates it after success, failure, or cancellation. This keeps archive strings, texture data, and duplicate geometry out of the persistent preview/generation worker.
+The UI copies generated meshes into compact typed arrays and transfers ownership to a newly created export worker. Feature-source credits are folded into the compact export source attribution before transfer, without copying feature geometries or changing the original project. The worker encodes one selected target, transfers the completed bytes back, and closes. The client also terminates it after success, failure, or cancellation. This keeps archive strings, texture data, and duplicate geometry out of the persistent preview/generation worker.
 
 - STL creates a ZIP with terrain and insert files, project data, origins, validation, and attribution.
 - The download dialog offers STL parts or 3MF, with standard, Bambu Studio, and PrusaSlicer choices nested under 3MF. Manufacturing mode is chosen before generation and is independent of file format.
