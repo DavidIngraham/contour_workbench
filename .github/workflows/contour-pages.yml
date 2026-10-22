@@ -30,12 +30,9 @@ jobs:
           components: rustfmt, clippy
       - run: cargo install wasm-bindgen-cli --version 0.2.100 --locked
       - run: bash scripts/check.sh
-      - name: Use the main Ubuntu mirror for browser dependencies
-        run: |
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
-      - run: npx playwright install --with-deps chromium
+      # The hosted Ubuntu runner supplies Chromium's system libraries.
+      # Avoid refreshing OS packages; browser launch/tests still validate the runtime.
+      - run: npx playwright install chromium
         working-directory: web
       - run: npm run test:mobile
         working-directory: web
