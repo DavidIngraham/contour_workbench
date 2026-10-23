@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
-import { defaults } from '../src/types';
+import { defaults, type Feature } from '../src/types';
 import { defaultFeatureSources } from '../src/feature-sources';
 
 const fixture = {
@@ -42,13 +42,13 @@ const geojson = {
     },
   ],
 };
-async function openProject(page: Page) {
+async function openProject(page: Page, features: Feature[] = []) {
   await page.goto('/');
   await page.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
   await page.locator('#file-project').setInputFiles({
     name: 'source.contour.json',
     mimeType: 'application/json',
-    buffer: Buffer.from(JSON.stringify(fixture)),
+    buffer: Buffer.from(JSON.stringify({ ...fixture, features })),
   });
   await page.waitForFunction(
     () => (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
@@ -67,6 +67,131 @@ async function addSource(page: Page) {
   await page.locator('#source-save').tap();
   await expect(page.locator('#source-message')).toContainText('Source saved');
 }
+
+test('OpenStreetMap requests and imports only the selected classes', async ({ page }) => {
+  let query = '';
+  await page.route('**/api/interpreter', async route => {
+    query = new URLSearchParams(route.request().postData() ?? '').get('data') ?? '';
+    await route.fulfill({
+      json: {
+        elements: ['path', 'residential'].map((highway, id) => ({
+          type: 'way',
+          id: id + 100,
+          tags: { highway, name: highway },
+          geometry: [
+            { lon: 0.003, lat: 0.006 },
+            { lon: 0.007, lat: 0.006 },
+          ],
+        })),
+      },
+    });
+  });
+  await openProject(page);
+  const classes = page.locator('#source-classes');
+  for (const label of ['Roads', 'Waterways', 'Lakes & rivers', 'Glaciers', 'Ski runs', 'Ski lifts'])
+    await classes.getByLabel(label, { exact: true }).uncheck();
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toBeEnabled();
+  expect(query).toContain('path|footway');
+  expect(query).not.toContain('residential');
+  expect(query).not.toContain('waterway');
+  expect(query).not.toContain('aerialway');
+  await expect(page.locator('[data-feature]')).toHaveCount(1);
+  await expect(page.locator('[data-feature-source="overpass"] .feature-item span')).toHaveText(
+    'path',
+  );
+});
+
+test('class selections persist per source and only refresh the chosen classes', async ({
+  page,
+}) => {
+  let empty = false;
+  const requests: string[] = [];
+  await page.route('https://api.openskimap.org/features.geojson?**', route => {
+    requests.push(new URL(route.request().url()).searchParams.get('types')!);
+    return route.fulfill({
+      json: {
+        type: 'FeatureCollection',
+        features: empty
+          ? []
+          : ['run', 'lift'].map((type, id) => ({
+              ...geojson.features[0],
+              id,
+              properties: {
+                type,
+                name: type,
+                uses: ['downhill'],
+                status: 'operating',
+                sources: [{ type: 'openstreetmap', id: `way/${id}` }],
+              },
+            })),
+      },
+    });
+  });
+  await openProject(page);
+  await page.locator('#feature-source').selectOption('openskimap');
+  const classes = page.locator('#source-classes');
+  await classes.getByLabel('Ski lifts', { exact: true }).uncheck();
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toBeEnabled();
+  await expect(page.locator('[data-feature]')).toHaveCount(1);
+  expect(requests).toEqual(['run']);
+  await classes.getByLabel('Ski runs', { exact: true }).uncheck();
+  await expect(page.locator('#fetch-osm')).toBeDisabled();
+  await classes.getByLabel('Ski lifts', { exact: true }).check();
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toBeEnabled();
+  await expect(page.locator('[data-feature]')).toHaveCount(2);
+  empty = true;
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toBeEnabled();
+  await expect(page.locator('[data-feature]')).toHaveCount(1);
+  await expect(page.locator('[data-feature] .feature-item span')).toHaveText('run');
+  expect(requests).toEqual(['run', 'lift', 'lift']);
+  await page.locator('#feature-source').selectOption('hrc');
+  await expect(classes.getByLabel('Trails', { exact: true })).toBeChecked();
+  await page.locator('#feature-source').selectOption('openskimap');
+  await expect(classes.getByLabel('Ski runs', { exact: true })).not.toBeChecked();
+  await openProject(page);
+  await page.locator('#feature-source').selectOption('openskimap');
+  await expect(classes.getByLabel('Ski runs', { exact: true })).not.toBeChecked();
+  await expect(classes.getByLabel('Ski lifts', { exact: true })).toBeChecked();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('each class lists sources and feature names alphabetically and remains editable', async ({
+  page,
+}) => {
+  const feature = (id: string, name: string): Feature => ({
+    id,
+    name,
+    class: 'trail',
+    enabled: true,
+    tags: {},
+    lines: [
+      [
+        [0.002, 0.005],
+        [0.008, 0.005],
+      ],
+    ],
+  });
+  await openProject(page, [
+    feature('osm:way:2', 'Zulu trail'),
+    feature('county-trail:1', 'County trail'),
+    feature('osm:way:1', 'Alpha trail'),
+  ]);
+  await expect(page.locator('.feature-source-heading span')).toHaveText([
+    'Hood River County · recreation trails',
+    'OpenStreetMap · Overpass',
+  ]);
+  const osm = page.locator('[data-feature-source="overpass"]');
+  await expect(osm.locator('.feature-item span')).toHaveText(['Alpha trail', 'Zulu trail']);
+  await osm.getByLabel('Show Alpha trail', { exact: true }).uncheck();
+  await expect(osm.getByLabel('Show Alpha trail', { exact: true })).not.toBeChecked();
+  await page.getByLabel('Search features').fill('Hood River');
+  await expect(page.locator('[data-feature]')).toHaveCount(1);
+  await expect(page.locator('.feature-item span')).toHaveText('County trail');
+});
 
 test('OpenSkiMap loads ski classes, excludes inactive features, and preserves edits across content updates', async ({
   page,

@@ -7,6 +7,10 @@ import {
   mergeSourceFeatures,
   readFeatureSources,
   saveFeatureSources,
+  sourceClasses,
+  readSourceClasses,
+  saveSourceClasses,
+  groupFeaturesBySource,
 } from '../src/feature-sources';
 import type { Bounds, Feature } from '../src/types';
 
@@ -52,6 +56,72 @@ const normalized = (id = 'upload:0'): Feature => ({
 });
 
 describe('source library', () => {
+  it('keeps class selections independent and tolerates malformed preferences', () => {
+    let saved = '';
+    saveSourceClasses(
+      {
+        setItem: (_key, value) => {
+          saved = value;
+        },
+      },
+      { overpass: ['water'], openskimap: [] },
+    );
+    expect(readSourceClasses({ getItem: () => saved })).toEqual({
+      overpass: ['water'],
+      openskimap: [],
+    });
+    expect(readSourceClasses({ getItem: () => '{"hrc":["unknown"],"usfs":null}' })).toEqual({});
+    expect(sourceClasses(defaultFeatureSources.find(s => s.id === 'openskimap')!)).toEqual([
+      'ski_run',
+      'ski_lift',
+    ]);
+    expect(sourceClasses(source)).toEqual(['trail']);
+  });
+
+  it('groups legacy and attributed features by source then name without mutating the project', () => {
+    const features: Feature[] = [
+      { ...normalized('osm:way:2'), name: 'Zulu' },
+      { ...normalized('osm:way:1'), name: 'Alpha' },
+      { ...normalized('county-trail:1'), name: 'County' },
+      {
+        ...normalized('custom:1'),
+        tags: { contour_source: { id: 'local', name: 'A local source' } },
+      },
+    ];
+    const groups = groupFeaturesBySource(features);
+    expect(groups.map(g => g.id)).toEqual(['local', 'hrc', 'overpass']);
+    expect(groups[2].features.map(f => f.name)).toEqual(['Alpha', 'Zulu']);
+    expect(features[0].name).toBe('Zulu');
+  });
+
+  it('refreshes only selected classes while preserving other classes and sources', () => {
+    const tag = { contour_source: { id: source.id } };
+    const trail = { ...normalized('t'), tags: tag, enabled: false, width_m: 8 };
+    const road: Feature = { ...normalized('r'), tags: tag, class: 'road' };
+    const other = normalized('other');
+    expect(mergeSourceFeatures([trail, road, other], [], source, ['trail'])).toEqual([road, other]);
+    const updated = mergeSourceFeatures(
+      [trail, road, other],
+      [{ ...trail, enabled: true }, road],
+      source,
+      ['trail'],
+    );
+    expect(updated).toEqual([road, other, trail]);
+    const changedClass: Feature = { ...road, class: 'trail' };
+    expect(mergeSourceFeatures([road], [changedClass], source, ['trail'])).toHaveLength(1);
+  });
+
+  it('limits the OpenSkiMap request to the selected class', async () => {
+    const fetcher = fetchData(collection([]));
+    await downloadFeatureSource(
+      defaultFeatureSources.find(s => s.id === 'openskimap')!,
+      bounds,
+      signal(),
+      fetcher,
+      ['ski_lift'],
+    );
+    expect(new URL(String(fetcher.mock.calls[0][0])).searchParams.get('types')).toBe('lift');
+  });
   it('keeps curated entries separate and persists editable custom sources', () => {
     expect(defaultFeatureSources.map(s => s.id)).toEqual([
       'overpass',

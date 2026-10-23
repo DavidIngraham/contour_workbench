@@ -2185,6 +2185,53 @@ button.compass {
 .print-order-dialog .print-confirm input {
   width: auto;
 }
+.source-class-options {
+  border: 0;
+  margin: 14px 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+}
+.source-class-options legend {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.source-class-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  margin: 0;
+  font-size: 12px;
+}
+.source-class-options input {
+  width: auto;
+  margin: 0;
+  flex-shrink: 0;
+}
+.feature-source-group {
+  padding-left: 10px;
+  border-left: 2px solid #dfe5d9;
+  margin: 10px 0;
+  min-width: 0;
+}
+.feature-source-heading {
+  display: flex;
+  align-items: start;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 8px 0;
+}
+.feature-source-heading span {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+.feature-source-heading small {
+  font-weight: 400;
+}
 .print-palette {
   display: flex;
   flex-wrap: wrap;

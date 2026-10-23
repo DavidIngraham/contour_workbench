@@ -247,7 +247,8 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await page.locator('[data-toggle]').first().check();
   await expect(page.locator('[data-treatment]').first()).toHaveValue('v_carve');
   const lake = page.locator('[data-feature]').filter({ hasText: 'Test lake' });
-  await lake.tap();
+  // The row also contains a treatment selector; select the feature by its name.
+  await lake.locator('.feature-item > span').tap();
   await expect(lake.locator('[data-surface]')).toBeVisible();
   await lake.locator('[data-surface]').selectOption('level');
   await expect(lake.locator('[data-zone-depth]')).toBeVisible();

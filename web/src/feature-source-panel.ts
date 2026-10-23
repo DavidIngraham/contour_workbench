@@ -4,8 +4,22 @@ import {
   defaultFeatureSources,
   readFeatureSources,
   saveFeatureSources,
+  sourceClasses,
+  readSourceClasses,
+  saveSourceClasses,
   type FeatureSource,
 } from './feature-sources';
+import type { FeatureClass } from './types';
+
+const labels: Record<FeatureClass, string> = {
+  trail: 'Trails',
+  road: 'Roads',
+  stream: 'Waterways',
+  water: 'Lakes & rivers',
+  glacier: 'Glaciers',
+  ski_run: 'Ski runs',
+  ski_lift: 'Ski lifts',
+};
 
 /** Manage local source preferences without changing a project's imported features. */
 export class FeatureSourcePanel {
@@ -17,10 +31,12 @@ export class FeatureSourcePanel {
   private message = document.querySelector<HTMLElement>('#source-message')!;
   private editing: string | undefined;
   private disabled = false;
+  private classes: Record<string, FeatureClass[]> = {};
 
   constructor(private changed: () => void) {
     try {
       this.custom = readFeatureSources(localStorage);
+      this.classes = readSourceClasses(localStorage);
     } catch {
       /* Storage may be disabled. */
     }
@@ -123,6 +139,44 @@ export class FeatureSourcePanel {
       (source.description ??
         'Loads lines and polygons in your terrain area. Refreshing replaces this source’s features and keeps matching feature settings.') +
       (source.attribution ? ` ${source.attribution}` : '');
+    for (const id of ['source-classes', 'wizard-source-classes']) {
+      const fieldset = document.getElementById(id)!;
+      fieldset.replaceChildren();
+      const legend = document.createElement('legend');
+      legend.textContent = 'Classes to load';
+      fieldset.append(legend);
+      for (const cls of sourceClasses(source)) {
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = cls;
+        input.checked = this.selectedClasses().includes(cls);
+        input.disabled = this.disabled;
+        input.onchange = () => {
+          const selected = new Set(this.selectedClasses());
+          if (input.checked) selected.add(cls);
+          else selected.delete(cls);
+          this.classes[source.id] = [...selected];
+          try {
+            saveSourceClasses(localStorage, this.classes);
+          } catch {
+            this.message.textContent =
+              'Class choices apply now but could not be saved in this browser.';
+          }
+          this.sync();
+          document.querySelector<HTMLInputElement>(`#${id} input[value="${cls}"]`)?.focus();
+          this.changed();
+        };
+        label.append(input, document.createTextNode(labels[cls]));
+        fieldset.append(label);
+      }
+    }
+  }
+  /** Snapshot the selected classes for the current source, constrained to its supported classes. */
+  selectedClasses(): FeatureClass[] {
+    const source = this.selected();
+    const available = sourceClasses(source);
+    return available.filter(cls => (this.classes[source.id] ?? available).includes(cls));
   }
   /** Resolve the current selection without trusting option text or saved data. */
   selected(): FeatureSource {
@@ -149,5 +203,8 @@ export class FeatureSourcePanel {
       'source-save',
     ])
       (document.getElementById(id) as HTMLButtonElement | HTMLSelectElement).disabled = disabled;
+    document
+      .querySelectorAll<HTMLInputElement>('.source-class-options input')
+      .forEach(input => (input.disabled = disabled));
   }
 }

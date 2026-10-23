@@ -2,6 +2,31 @@ use contour_core::*;
 use serde_json::json;
 
 #[test]
+fn selected_overpass_classes_limit_request_and_keep_query_order_stable() {
+    let bounds = [-121.8, 45.2, -121.5, 45.5];
+    let trails = overpass_query_classes(bounds, &["trail".into()]).unwrap();
+    assert!(trails.contains("path|footway"));
+    assert!(trails.contains("(45.2,-121.8,45.5,-121.5)"));
+    assert!(!trails.contains("residential"));
+    assert!(!trails.contains("waterway"));
+    assert!(!trails.contains("aerialway"));
+    let ski = overpass_query_classes(bounds, &["ski_run".into(), "ski_lift".into()]).unwrap();
+    assert!(ski.contains("piste:type"));
+    assert!(ski.contains("aerialway"));
+    assert!(!ski.contains("highway"));
+    assert_eq!(
+        ski,
+        overpass_query_classes(
+            bounds,
+            &["ski_lift".into(), "ski_run".into(), "ski_run".into()]
+        )
+        .unwrap()
+    );
+    assert!(overpass_query_classes(bounds, &[]).is_err());
+    assert!(overpass_query_classes(bounds, &["unsupported".into()]).is_err());
+}
+
+#[test]
 fn openskimap_classifies_active_ski_uses_and_lifts_without_importing_other_pistes() {
     let properties = json!({"type":"run", "name":"Ridge", "uses":["downhill"],
         "status":"operating", "sources":[{"type":"openstreetmap","id":"way/42"}]});

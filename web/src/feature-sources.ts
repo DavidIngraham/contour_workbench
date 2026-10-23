@@ -101,6 +101,76 @@ export const defaultFeatureSources: readonly FeatureSource[] = [
   },
 ];
 const storageKey = 'contour-feature-sources-v1';
+const classStorageKey = 'contour-source-classes-v1';
+
+/** Classes offered by a source; automatic custom feeds may contain any supported class. */
+export function sourceClasses(source: FeatureSource): FeatureClass[] {
+  if (source.featureClass !== 'auto') return [source.featureClass];
+  if (source.id === 'hrc') return ['trail'];
+  if (source.id === 'openskimap') return ['ski_run', 'ski_lift'];
+  return [...featureClasses];
+}
+
+/** Read per-source selections, ignoring malformed saved preferences. Empty selections are valid. */
+export function readSourceClasses(
+  storage: Pick<Storage, 'getItem'>,
+): Record<string, FeatureClass[]> {
+  try {
+    const saved: unknown = JSON.parse(storage.getItem(classStorageKey) || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(
+      Object.entries(saved).filter(
+        ([, value]) => Array.isArray(value) && value.every(cls => featureClasses.includes(cls)),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/** Persist independent class choices for built-in and custom sources. */
+export function saveSourceClasses(
+  storage: Pick<Storage, 'setItem'>,
+  selections: Record<string, FeatureClass[]>,
+) {
+  storage.setItem(classStorageKey, JSON.stringify(selections));
+}
+
+/** Resolve provenance for both new imports and projects saved before the source library. */
+export function featureSource(feature: Feature): { id: string; name: string } {
+  const saved = feature.tags?.contour_source as { id?: unknown; name?: unknown } | undefined;
+  if (typeof saved?.id === 'string' && typeof saved.name === 'string')
+    return { id: saved.id, name: saved.name };
+  const builtin = feature.id.startsWith('county-trail:')
+    ? 'hrc'
+    : feature.id.startsWith('osm:')
+      ? 'overpass'
+      : undefined;
+  if (builtin) return defaultFeatureSources.find(source => source.id === builtin)!;
+  if (feature.id.startsWith('gpx:') || feature.tags?.source === 'gpx') {
+    const filename = typeof feature.tags?.filename === 'string' ? feature.tags.filename : '';
+    return { id: `gpx:${filename}`, name: filename ? `GPX · ${filename}` : 'GPX uploads' };
+  }
+  return { id: 'other', name: 'Other features' };
+}
+
+/** Alphabetical source groups and feature names, without changing persisted feature order. */
+export function groupFeaturesBySource(features: Feature[]) {
+  const groups = new Map<string, { id: string; name: string; features: Feature[] }>();
+  for (const feature of features) {
+    const source = featureSource(feature);
+    if (!groups.has(source.id)) groups.set(source.id, { ...source, features: [] });
+    groups.get(source.id)!.features.push(feature);
+  }
+  const compare = (a: string, b: string) =>
+    a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+  return [...groups.values()]
+    .sort((a, b) => compare(a.name, b.name) || compare(a.id, b.id))
+    .map(group => ({
+      ...group,
+      features: group.features.sort((a, b) => compare(a.name, b.name) || compare(a.id, b.id)),
+    }));
+}
 const maxFeatures = 20_000;
 const maxBytes = 50_000_000;
 const arcgisLayer = /\/(?:FeatureServer|MapServer)\/\d+(?:\/query)?\/?$/i;
@@ -317,6 +387,7 @@ export async function downloadFeatureSource(
   bounds: Bounds,
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
+  classes: readonly FeatureClass[] = sourceClasses(source),
 ): Promise<SourceDownload> {
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
@@ -391,6 +462,14 @@ export async function downloadFeatureSource(
         );
     }
     const url = new URL(source.url.replaceAll('{bbox}', bounds.join(',')));
+    if (source.id === 'openskimap') {
+      const types = [
+        classes.includes('ski_run') ? 'run' : '',
+        classes.includes('ski_lift') ? 'lift' : '',
+      ].filter(Boolean);
+      if (!types.length) throw new Error('Choose at least one class to load.');
+      url.searchParams.set('types', types.join(','));
+    }
     let features: GeoFeature[];
     if (source.kind === 'arcgis') {
       url.pathname = url.pathname.replace(/\/query\/?$/i, '').replace(/\/$/, '') + '/query';
@@ -554,14 +633,20 @@ export function mergeSourceFeatures(
   existing: Feature[],
   incoming: Feature[],
   source: FeatureSource,
+  classes: readonly FeatureClass[] = featureClasses,
 ): Feature[] {
   const owned = (feature: Feature) =>
     (feature.tags.contour_source as { id?: string } | undefined)?.id === source.id ||
     (source.id === 'hrc' && feature.id.startsWith('county-trail:'));
   const old = new Map(existing.filter(owned).map(feature => [feature.id, feature]));
+  const selected = incoming.filter(feature => classes.includes(feature.class));
+  const incomingIds = new Set(selected.map(feature => feature.id));
   return [
-    ...existing.filter(feature => !owned(feature)),
-    ...incoming.map(feature => {
+    ...existing.filter(
+      feature =>
+        !owned(feature) || (!classes.includes(feature.class) && !incomingIds.has(feature.id)),
+    ),
+    ...selected.map(feature => {
       const previous = old.get(feature.id);
       if (!previous) return feature;
       return {

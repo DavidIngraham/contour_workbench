@@ -86,7 +86,22 @@ In **Features**, choose a **Feature source**, then load it. The library includes
 OpenStreetMap (the existing Overpass service), Hood River County recreation
 trails, US Forest Service trails, National Park Service trails, BLM public trails,
 Washington State trails, and OpenSkiMap ski runs and lifts. You can load several sources into one landscape. The new-landscape wizard
-also offers the saved source library; Winter landscape always uses OpenStreetMap.
+also offers the saved source library and class choices; Winter landscape uses the
+selected source with winter display settings.
+
+Use **Classes to load** to choose which types to import from each source. Choices
+are remembered independently for each source in this browser and shared with the
+new-landscape wizard. Only supported classes are offered for curated sources and
+custom feeds with a fixed feature type. At least one class must be selected to load.
+OpenStreetMap and OpenSkiMap requests include the class filter; other feeds are
+filtered after classification. Refreshing a source updates only the chosen
+classes, keeping already-loaded features in other classes and other sources.
+
+The feature tree groups each class by source, then sorts sources and feature names
+alphabetically. Search also matches source names. Older OpenStreetMap and county
+features are recognized from their IDs, GPX uploads use their filenames, and new
+GeoJSON uploads retain their filename as the source. Unattributed features appear
+under **Other features**. Existing class-wide and individual feature controls remain available.
 
 The four national/state trail entries use official public ArcGIS services and
 request only features intersecting the terrain's bounding box. Their name fields

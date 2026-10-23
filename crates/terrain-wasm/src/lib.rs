@@ -395,6 +395,13 @@ pub fn osm_query(bounds: &str, winter: bool) -> Result<String, JsValue> {
     overpass_query(serde_json::from_str(bounds).map_err(err)?, winter).map_err(err)
 }
 
+/// Return an Overpass query limited to the explicitly selected feature classes.
+#[wasm_bindgen]
+pub fn osm_query_classes(bounds: &str, classes: &str) -> Result<String, JsValue> {
+    let classes: Vec<String> = serde_json::from_str(classes).map_err(err)?;
+    overpass_query_classes(serde_json::from_str(bounds).map_err(err)?, &classes).map_err(err)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

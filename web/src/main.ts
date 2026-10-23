@@ -9,6 +9,8 @@ import {
   downloadFeatureSource,
   identifySourceFeatures,
   mergeSourceFeatures,
+  groupFeaturesBySource,
+  featureSource,
   type FeatureSource,
 } from './feature-sources';
 import { filamentPlan } from './filaments';
@@ -296,7 +298,7 @@ function showProjectLoadingPreview() {
 function syncOsmAction() {
   const button = $('fetch-osm') as HTMLButtonElement;
   const isOsm = !sourcePanel || sourcePanel.selected().kind === 'overpass';
-  button.disabled = busy || osmLoading || !project;
+  button.disabled = busy || osmLoading || !project || sourcePanel?.selectedClasses().length === 0;
   button.textContent = osmLoading
     ? isOsm
       ? 'Loading trails and water…'
@@ -780,13 +782,22 @@ function listFeatures() {
     featureClasses
       .map(cls => {
         const all = project.features.filter(f => f.class === cls),
-          list = all.filter(f => `${f.name} ${f.id}`.toLowerCase().includes(term));
+          list = all.filter(f =>
+            `${f.name} ${f.id} ${featureSource(f).name}`.toLowerCase().includes(term),
+          );
         if (!list.length) return '';
         const modes = new Set(all.map(treatment));
         const value = modes.size === 1 ? treatment(all[0]) : 'mixed';
         const label = classLabels[cls],
           zone = all.some(zoneFeature);
-        return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${list.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</div>`;
+        return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${groupFeaturesBySource(
+          list,
+        )
+          .map(
+            group =>
+              `<section class="feature-source-group" data-feature-source="${esc(group.id)}"><div class="feature-source-heading"><span>${esc(group.name)}</span><small>${group.features.length}</small></div>${group.features.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</section>`,
+          )
+          .join('')}</div>`;
       })
       .join('') || '<p class="empty-note">No matching features.</p>';
   $('feature-list')
@@ -1451,7 +1462,10 @@ $('file-features').onchange = async () => {
     const data = JSON.parse(await f.text());
     const added = await engine.call('classify', data);
     const prefix = Date.now();
-    added.forEach(a => (a.id = `${prefix}:${a.id}`));
+    added.forEach(a => {
+      a.id = `${prefix}:${a.id}`;
+      a.tags = { ...a.tags, contour_source: { id: `upload:${prefix}`, name: f.name } };
+    });
     project.features.push(...added);
     touch();
     listFeatures();
@@ -1471,6 +1485,11 @@ async function loadProjectFeatures(
 ) {
   if (!project || busy || osmLoading) return;
   sourcePanel?.choose(source.id);
+  const classes = sourcePanel!.selectedClasses();
+  if (!classes.length) {
+    status('Choose at least one class to load.');
+    return;
+  }
   const target = project;
   const serial = ++osmLoadSerial;
   const controller = new AbortController();
@@ -1484,17 +1503,30 @@ async function loadProjectFeatures(
       : target.grid.bounds;
     let incoming: Feature[];
     if (source.kind === 'overpass') {
-      const query = await engine.call('query', { bounds, winter: Boolean(target.winter_mode) });
+      const query = await engine.call('query', {
+        bounds,
+        winter: Boolean(target.winter_mode),
+        classes,
+      });
       if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
       const data = await loadOsm(query, controller.signal, progress => {
         if (serial === osmLoadSerial && project === target)
           status(progress.message, false, true, progress.attempt, progress.maxAttempts);
       });
       if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
-      incoming = await engine.call('classify', data);
+      incoming = (await engine.call('classify', data)).map(feature => ({
+        ...feature,
+        tags: { ...feature.tags, contour_source: { id: source.id, name: source.name } },
+      }));
     } else {
       status(`Loading ${source.name}…`, false, true);
-      const download = await downloadFeatureSource(source, bounds, controller.signal);
+      const download = await downloadFeatureSource(
+        source,
+        bounds,
+        controller.signal,
+        fetch,
+        classes,
+      );
       if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
       incoming = identifySourceFeatures(
         source,
@@ -1511,6 +1543,7 @@ async function loadProjectFeatures(
         );
     }
     if (serial !== osmLoadSerial || project !== target || controller.signal.aborted) return;
+    incoming = incoming.filter(feature => classes.includes(feature.class));
     if (target.winter_mode)
       for (const feature of incoming) {
         if (feature.class === 'trail') feature.enabled = false;
@@ -1520,7 +1553,7 @@ async function loadProjectFeatures(
         }
       }
     if (source.kind !== 'overpass') {
-      target.features = mergeSourceFeatures(target.features, incoming, source);
+      target.features = mergeSourceFeatures(target.features, incoming, source, classes);
     } else {
       const existing = new Map(target.features.map(feature => [feature.id, feature]));
       incoming.forEach(feature => {
@@ -1546,7 +1579,7 @@ async function loadProjectFeatures(
         ? `Added ${incoming.length} map ${incoming.length === 1 ? 'feature' : 'features'}. Select any feature to customize it.`
         : incoming.length
           ? `Loaded ${incoming.length} ${incoming.length === 1 ? 'feature' : 'features'} from ${source.name}. Select any feature to customize it.`
-          : `No features from ${source.name} intersect this terrain. Other sources are unchanged.`,
+          : `No features from ${source.name} match the selected classes in this terrain. Other classes and sources are unchanged.`,
     );
   } catch (e) {
     if (controller.signal.aborted || serial !== osmLoadSerial || project !== target) return;
@@ -1966,8 +1999,7 @@ $('area-load').onclick = async () => {
             ?.value || 'osm'
         : 'none',
       prior = wizardMode ? structuredClone(defaults) : normalizeSettings(project?.settings);
-    const featureSource =
-      featureChoice === 'winter' ? defaultFeatureSources[0] : sourcePanel!.selected();
+    const featureSource = sourcePanel!.selected();
     $('area-dialog').classList.add('hidden');
     updateBusy(true);
     abort = new AbortController();

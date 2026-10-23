@@ -2544,6 +2544,41 @@ pub fn overpass_query(b: [f64; 4], winter: bool) -> Result<String, String> {
     };
     Ok(format!("[out:json][timeout:45];(way[highway~\"^(path|footway|bridleway|cycleway|track|motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street)$\"]{bbox};way[waterway~\"^(river|stream|drain|ditch)$\"]{bbox};way[natural=water]{bbox};relation[natural=water][type=multipolygon]{bbox};way[landuse=reservoir]{bbox};relation[landuse=reservoir][type=multipolygon]{bbox};way[waterway=riverbank]{bbox};relation[waterway=riverbank][type=multipolygon]{bbox};way[natural=glacier]{bbox};relation[natural=glacier][type=multipolygon]{bbox};{winter_query});out body geom;"))
 }
+/// Build a bounded Overpass request for only the explicitly selected classes.
+pub fn overpass_query_classes(b: [f64; 4], classes: &[String]) -> Result<String, String> {
+    validate_bounds(b)?;
+    let supported = [
+        "trail", "road", "stream", "water", "glacier", "ski_run", "ski_lift",
+    ];
+    if classes.is_empty()
+        || classes
+            .iter()
+            .any(|class| !supported.contains(&class.as_str()))
+    {
+        return Err("Choose at least one supported feature class.".into());
+    }
+    let bbox = format!("({},{},{},{})", b[1], b[0], b[3], b[2]);
+    let mut query = String::from("[out:json][timeout:45];(");
+    for class in supported {
+        if !classes.iter().any(|selected| selected == class) {
+            continue;
+        }
+        let part = match class {
+            "trail" => format!(r#"way[highway~"^(path|footway|bridleway|cycleway|track)$"]{bbox};"#),
+            "road" => format!(r#"way[highway~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|service|living_street)$"]{bbox};"#),
+            "stream" => format!(r#"way[waterway~"^(river|stream|drain|ditch)$"]{bbox};"#),
+            "water" => format!("way[natural=water]{bbox};relation[natural=water][type=multipolygon]{bbox};way[landuse=reservoir]{bbox};relation[landuse=reservoir][type=multipolygon]{bbox};way[waterway=riverbank]{bbox};relation[waterway=riverbank][type=multipolygon]{bbox};"),
+            "glacier" => format!("way[natural=glacier]{bbox};relation[natural=glacier][type=multipolygon]{bbox};"),
+            "ski_run" => format!(r#"way["piste:type"="downhill"]{bbox};relation["piste:type"="downhill"]{bbox};"#),
+            "ski_lift" => format!("way[aerialway]{bbox};"),
+            _ => unreachable!(),
+        };
+        query.push_str(&part);
+    }
+    query.push_str(");out body geom;");
+    Ok(query)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

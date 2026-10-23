@@ -396,6 +396,8 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
     case 'urls':
       return JSON.parse(core.source_urls(JSON.stringify(p.bounds), p.ninety));
     case 'query':
+      if (p.classes)
+        return core.osm_query_classes(JSON.stringify(p.bounds), JSON.stringify(p.classes));
       return core.osm_query(JSON.stringify(p.bounds ?? p), Boolean(p.winter));
     case 'terrain': {
       setGrid(p.grid);

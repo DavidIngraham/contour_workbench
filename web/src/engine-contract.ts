@@ -16,7 +16,10 @@ export interface EngineOperationMap {
   hydrate: { payload: { project: Project; terrain: Terrain }; result: true };
   classify: { payload: unknown; result: Feature[] };
   urls: { payload: { bounds: Bounds; ninety: boolean }; result: string[] };
-  query: { payload: { bounds: Bounds; winter: boolean }; result: string };
+  query: {
+    payload: { bounds: Bounds; winter: boolean; classes?: Feature['class'][] };
+    result: string;
+  };
   terrain: {
     payload: { grid: Grid; settings: Settings; features: Feature[] };
     result: Terrain & { terrainBuilds: number };
