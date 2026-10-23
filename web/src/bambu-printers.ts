@@ -10,6 +10,7 @@ export const bambuPrinters = {
     rodHeightMm: 34,
     nozzleHeightMm: 4.2,
     excludedBedMm: [18, 28],
+    purgeKeepoutMm: [17, 0, 241, 16],
   },
   x1c: {
     name: 'Bambu Lab X1 Carbon',
@@ -19,6 +20,7 @@ export const bambuPrinters = {
     rodHeightMm: 34,
     nozzleHeightMm: 4.2,
     excludedBedMm: [18, 28],
+    purgeKeepoutMm: [17, 0, 241, 16],
   },
   a1: {
     name: 'Bambu Lab A1',
@@ -28,6 +30,7 @@ export const bambuPrinters = {
     rodHeightMm: 25,
     nozzleHeightMm: 4.76,
     excludedBedMm: [0, 0],
+    purgeKeepoutMm: [87, -2, 169, 1],
   },
   'a1-mini': {
     name: 'Bambu Lab A1 mini',
@@ -37,8 +40,16 @@ export const bambuPrinters = {
     rodHeightMm: 25,
     nozzleHeightMm: 4.76,
     excludedBedMm: [0, 0],
+    purgeKeepoutMm: [67, -5, 116, 1],
   },
 } as const;
+
+// Purge rectangles are [minX, minY, maxX, maxY], with a 1 mm bead/wipe allowance.
+// P1/X1 cover the union of 0.2/0.4/0.6/0.8 mm nozzle paths and X1 calibration
+// strokes. A-series include the front-edge wipe exit; other nozzle sizes inherit
+// the 0.4 mm start code. The packer adds its brim allowance outside these bounds.
+// Source: BambuStudio resources/profiles/BBL/machine/*machine_start_gcode.json,
+// commit 79df7ae309be398ed30c9f397c13c9911c2edc57 (checked 2026-10-23).
 
 /** Supported printer layouts for Bambu downloads. */
 export type BambuPrinterId = keyof typeof bambuPrinters;

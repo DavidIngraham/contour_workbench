@@ -186,6 +186,12 @@ function packedPlacement(
 ): Placement[] {
   const printer = bambuPrinter(printerId);
   const margin = 4; // Includes the explicit 3 mm brim and rounding tolerance.
+  const keepouts: readonly (readonly [number, number, number, number])[] = [
+    ...(printer.excludedBedMm[0] > 0 && printer.excludedBedMm[1] > 0
+      ? [[0, 0, ...printer.excludedBedMm] as const]
+      : []),
+    printer.purgeKeepoutMm,
+  ];
   type Packed = { object: ObjectRecord; b: Bounds3; x: number; y: number };
   const entries = objects.map(object => ({ object, b: bounds(object.mesh) }));
   const groups = projectMaterialGroups(project);
@@ -238,14 +244,14 @@ function packedPlacement(
         const xs = [
           ...new Set([
             margin,
-            printer.excludedBedMm[0] + margin,
+            ...keepouts.map(rect => rect[2] + margin),
             ...plate.map(p => p.x + p.b.width + gap),
           ]),
         ].sort((a, b) => a - b);
         const ys = [
           ...new Set([
             margin,
-            printer.excludedBedMm[1] + margin,
+            ...keepouts.map(rect => rect[3] + margin),
             ...plate.map(p => p.y + p.b.depth + gap),
           ]),
         ].sort((a, b) => a - b);
@@ -265,7 +271,15 @@ function packedPlacement(
               y + entry.b.depth > printer.bedMm - margin
             )
               continue;
-            if (x < printer.excludedBedMm[0] + margin && y < printer.excludedBedMm[1] + margin)
+            if (
+              keepouts.some(
+                ([left, front, right, rear]) =>
+                  x - margin < right &&
+                  x + entry.b.width + margin > left &&
+                  y - margin < rear &&
+                  y + entry.b.depth + margin > front,
+              )
+            )
               continue;
             if (!plate.every(p => separated(p, candidate))) continue;
             if (!plates[index]) plates.push(plate);
@@ -278,7 +292,7 @@ function packedPlacement(
         if (placed) break;
         if (index === plates.length)
           throw new Error(
-            `"${entry.object.name}" does not fit outside ${printer.name}'s excluded bed area.`,
+            `"${entry.object.name}" does not fit outside ${printer.name}'s purge-line and excluded bed areas, including brim clearance. Reduce the model size or choose a larger printer.`,
           );
       }
     }
@@ -286,7 +300,7 @@ function packedPlacement(
   }
   if (singlePlate && best!.length !== 1)
     throw new Error(
-      'The fit test does not fit on one plate with sequential-print spacing. Choose a larger printer.',
+      'The fit test does not fit on one plate with purge-line, brim, and sequential-print spacing. Choose a larger printer.',
     );
   if (best!.length > 36)
     throw new Error(

@@ -74,6 +74,65 @@ const asset: Asset = {
 };
 
 describe('3MF export', () => {
+  it.each([
+    ['p1s', 256, [17, 0, 241, 16]],
+    ['x1c', 256, [17, 0, 241, 16]],
+    ['a1', 256, [87, -2, 169, 1]],
+    ['a1-mini', 180, [67, -5, 116, 1]],
+  ] as const)(
+    'keeps every %s plate and brim clear of the stock purge path',
+    (printer, bed, purge) => {
+      const many = {
+        ...asset,
+        terrain: box(80, 80, 10),
+        inserts: Array.from({ length: 8 }, (_, i) => ({
+          ...asset.inserts[0],
+          id: `part-${i}`,
+          mesh: box(80, 80, 10),
+        })),
+      };
+      for (const nozzle of [0.2, 0.4, 0.6, 0.8]) {
+        const files = unzipSync(
+          buildThreeMf(
+            many,
+            { ...project, settings: { ...project.settings, nozzle_diameter_mm: nozzle } },
+            'bambu',
+            undefined,
+            { bambuPrinter: printer },
+          ),
+        );
+        const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+        expect(manifest.plates.length).toBeGreaterThan(1);
+        const columns = Math.ceil(Math.sqrt(manifest.plates.length));
+        const items = [
+          ...strFromU8(files['3D/3dmodel.model']).matchAll(
+            /<item objectid="(\d+)"[^>]*transform="([^"]+)"/g,
+          ),
+        ];
+        let index = 0;
+        for (const plate of manifest.plates)
+          for (const _name of plate.objects) {
+            const t = items[index++][2].split(' ').map(Number);
+            const x = t[9] - ((plate.plate - 1) % columns) * bed * 1.2;
+            const y = t[10] + Math.floor((plate.plate - 1) / columns) * bed * 1.2;
+            // Independent expected path bounds, plus the actual exported 3 mm brim.
+            expect(
+              x + 83 <= purge[0] || x - 3 >= purge[2] || y + 83 <= purge[1] || y - 3 >= purge[3],
+            ).toBe(true);
+            expect(x).toBeGreaterThanOrEqual(3.999);
+            expect(y).toBeGreaterThanOrEqual(3.999);
+            expect(x + 80).toBeLessThanOrEqual(bed - 3.999);
+            expect(y + 80).toBeLessThanOrEqual(bed - 3.999);
+          }
+        expect(index).toBe(9);
+      }
+    },
+  );
+  it('rejects a full-depth P1S part that only fits by covering the purge line', () => {
+    expect(() =>
+      buildThreeMf({ ...asset, terrain: box(220, 240, 5), inserts: [] }, project, 'bambu'),
+    ).toThrow('purge-line');
+  });
   it.each(['separate', 'multicolor'] as const)(
     'writes native Prusa %s volume assignments',
     mode => {
