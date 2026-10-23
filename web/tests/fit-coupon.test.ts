@@ -8,6 +8,22 @@ import {
 import { defaults } from '../src/types';
 
 describe('dimensioned fit coupon', () => {
+  it('adds floor thickness without changing pocket engagement or clearance', () => {
+    const options = defaultCouponOptions(defaults);
+    const before = couponLayout(defaults, options);
+    const thicker = { ...options, floor_thickness_mm: 5 };
+    const after = couponLayout(defaults, thicker);
+    expect(after.surfaceMm - after.floorMm).toBe(before.surfaceMm - before.floorMm);
+    expect(after.surfaceMm - before.surfaceMm).toBe(4);
+    expect(couponLabels(defaults, thicker).pockets).toEqual(
+      couponLabels(defaults, options).pockets,
+    );
+    expect(couponLabels(defaults, thicker).settings.join(' ')).toContain('FLOOR 5.00 MM');
+    for (const floor_thickness_mm of [NaN, Infinity, 0, -1, 20.01, 1.001])
+      expect(() => validateCoupon(defaults, { ...options, floor_thickness_mm })).toThrow(
+        'base thickness',
+      );
+  });
   it('keeps clearance trials distinct even for a zero-clearance starting project', () => {
     const s = { ...defaults, insert_fit_clearance_per_side_mm: 0 };
     const options = defaultCouponOptions(s);

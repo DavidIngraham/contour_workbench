@@ -4,6 +4,8 @@ import type { Settings } from './types';
 
 export interface FitCouponOptions {
   clearances_mm: number[];
+  /** Solid material beneath the pockets; older requests retain the 1 mm floor. */
+  floor_thickness_mm?: number;
 }
 
 export const couponFields = [
@@ -18,11 +20,24 @@ export const couponFields = [
 /** Starting values preserve the project's selected fit without duplicate pockets. */
 export function defaultCouponOptions(settings: Settings): FitCouponOptions {
   const values = calibrationClearances(settings);
-  return { clearances_mm: values.map((value, i) => Math.max(value, values[0] + i * 0.05)) };
+  return {
+    clearances_mm: values.map((value, i) => Math.max(value, values[0] + i * 0.05)),
+    floor_thickness_mm: 1,
+  };
 }
 
 /** Reject ambiguous labels and taper values that the normal fit planner would clamp. */
 export function validateCoupon(settings: Settings, options: FitCouponOptions) {
+  const floor = options.floor_thickness_mm ?? 1;
+  if (
+    !Number.isFinite(floor) ||
+    floor < 1 ||
+    floor > 20 ||
+    Math.abs(floor * 100 - Math.round(floor * 100)) > 1e-6
+  )
+    throw new Error(
+      'Coupon base thickness must be between 1 and 20 mm, with up to two decimal places.',
+    );
   for (const [key, label, unit, min, max] of couponFields) {
     const value = settings[key];
     if (!Number.isFinite(value) || value < min || value > max)
@@ -78,7 +93,8 @@ export function couponLayout(settings: Settings, options: FitCouponOptions) {
     widthMm: 100 * pathScale,
     terrainDepthMm: 28 * pathScale,
     depthMm: 28 * pathScale + 48 * textScale,
-    surfaceMm: settings.insert_depth_mm,
+    floorMm: options.floor_thickness_mm ?? 1,
+    surfaceMm: settings.insert_depth_mm + (options.floor_thickness_mm ?? 1) - 1,
   };
 }
 
@@ -91,7 +107,7 @@ export function couponLabels(settings: Settings, options: FitCouponOptions) {
       `NOZZLE ${n(settings.nozzle_diameter_mm)} MM  PATH ${n(settings.path_width_mm)} MM`,
       `INSERT DEPTH ${n(settings.insert_depth_mm)} MM`,
       `FOOT/SIDE ${n(settings.insert_elephant_foot_relief_mm)} MM  H ${n(settings.insert_elephant_foot_height_mm)} MM`,
-      `DRAFT ${n(settings.insert_draft_angle_deg)} DEG`,
+      `DRAFT ${n(settings.insert_draft_angle_deg)} DEG  FLOOR ${n(options.floor_thickness_mm ?? 1)} MM`,
       'TERRAIN RELIEF 1.20 MM',
       'POCKET CLEARANCE PER SIDE',
     ],
@@ -106,6 +122,8 @@ export function couponForm() {
         `<label for="coupon-${key}">${label} (${unit})<input id="coupon-${key}" type="number" required min="${min}" max="${max}" step="${step}"/></label>`,
     )
     .join('')}</div>
+    <label for="coupon-floor-thickness">Coupon base thickness (mm)<input id="coupon-floor-thickness" type="number" required min="1" max="20" step="0.1" value="1" aria-describedby="coupon-floor-help"/></label>
+    <p class="help" id="coupon-floor-help">Solid material beneath the pockets. Increase this for a thicker, stiffer coupon; insert dimensions and pocket fit stay the same. Engraved as FLOOR on the base.</p>
     <fieldset class="coupon-clearances"><legend>Pocket clearance · each side (mm)</legend><div class="coupon-fields">${[1, 2, 3, 4].map(n => `<label for="coupon-clearance-${n}">Pocket ${n}<input id="coupon-clearance-${n}" type="number" required min="0" max="1" step="0.01"/></label>`).join('')}</div></fieldset>
     <p class="help">Choose four increasing clearances. All four inserts have the same dimensions; try any insert in each pocket. Copy the smallest clearance that seats without force into Print setup → Pocket clearance · each side.</p>
     <details open><summary>Labels engraved on your coupon</summary><div id="coupon-label-preview" class="coupon-label-preview"></div></details>

@@ -230,7 +230,7 @@ function calibrationFiles(
   const clearances = options.clearances_mm;
   const layout = couponLayout(s, options);
   const labels = couponLabels(s, options);
-  const { pathScale, textScale, widthMm, terrainDepthMm, depthMm, surfaceMm } = layout;
+  const { pathScale, textScale, widthMm, terrainDepthMm, depthMm, surfaceMm, floorMm } = layout;
   const centers = [14, 38, 62, 86].map(x => x * pathScale);
   const owned: Manifold[] = [];
   const own = (solid: Manifold) => {
@@ -310,7 +310,7 @@ function calibrationFiles(
             12 * pathScale,
             s.path_width_mm + 2 * clearance,
             surfaceMm + 2,
-            1,
+            floorMm,
             pathScale,
           ),
         ),
@@ -347,6 +347,8 @@ function calibrationFiles(
           units: 'mm',
           geometry: 'trail_switchback',
           size_mm: [widthMm, depthMm],
+          floor_thickness_mm: floorMm,
+          total_height_mm: surfaceMm + 1.2,
           engraved_labels: labels,
           label_depth_mm: 0.6,
           label_stroke_mm: pixel,
@@ -371,7 +373,7 @@ function calibrationFiles(
     files['README.txt'] = strToU8(
       'CONTOUR WORKBENCH FIT TEST\n\nPrint the base and four identical switchback inserts with their flat, narrow ends on the build plate. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
         'The base records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees, and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
-        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share a 1 mm floor. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
+        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the floor thickness engraved on the base. Increasing it adds material below the pockets without changing fit or insert dimensions. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
         labels.settings.join('\n') +
         '\nPOCKETS: ' +
         labels.pockets.join(', '),

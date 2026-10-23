@@ -1412,6 +1412,7 @@ function readCouponForm() {
   for (const [key] of couponFields)
     settings[key] = $<HTMLInputElement>(`coupon-${key}`).valueAsNumber;
   const coupon = {
+    floor_thickness_mm: $<HTMLInputElement>('coupon-floor-thickness').valueAsNumber,
     clearances_mm: [1, 2, 3, 4].map(
       n => $<HTMLInputElement>(`coupon-clearance-${n}`).valueAsNumber,
     ),
@@ -1428,7 +1429,7 @@ function updateCouponPreview() {
       '\n',
     );
     $('coupon-size').textContent =
-      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm. Labels are engraved 0.6 mm deep. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
+      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${(layout.surfaceMm + 1.2).toFixed(2)} mm, including terrain relief. Labels are engraved 0.6 mm deep. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
     $('coupon-error').textContent = '';
     $<HTMLButtonElement>('fit-download-confirm').disabled = false;
   } catch (e) {
@@ -1466,6 +1467,7 @@ function openFitDownload(fromLanding: boolean) {
   if (busy) return;
   fitDownloadFromLanding = fromLanding;
   couponSettings = { ...(fromLanding ? defaults : project.settings) };
+  $<HTMLInputElement>('coupon-floor-thickness').value = '1';
   for (const [key] of couponFields)
     $<HTMLInputElement>(`coupon-${key}`).value = String(couponSettings[key]);
   defaultCouponOptions(couponSettings).clearances_mm.forEach((value, i) => {
