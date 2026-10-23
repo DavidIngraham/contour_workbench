@@ -2,6 +2,7 @@ import { PrintOrderDialog } from './print-order-dialog';
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
+import { setupPwa } from './pwa';
 import { parseGpx } from './gpx';
 import { FeatureSourcePanel } from './feature-source-panel';
 import {
@@ -137,6 +138,7 @@ const esc = (s: unknown) =>
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
 $('app').innerHTML = renderAppShell(icon);
+setupPwa();
 const legacyFeatureMaterialRow = $('feature-color').closest<HTMLElement>('.input-row');
 if (legacyFeatureMaterialRow)
   legacyFeatureMaterialRow.outerHTML =

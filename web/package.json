@@ -10,9 +10,11 @@
     "test": "vitest run",
     "test:mobile": "playwright test --config playwright.mobile.config.ts",
     "test:presets": "playwright test --config playwright.presets.config.ts",
+    "test:pwa": "npm run build && playwright test --config playwright.pwa.config.ts",
+    "render:app-icons": "node scripts/render-app-icons.mjs",
     "render:preset-thumbnails": "node scripts/render-preset-thumbnails.mjs",
-    "format": "prettier --write \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
+    "format": "prettier --write \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"pwa-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"mobile-tests/**/*.ts\" \"performance-tests/**/*.ts\" \"pwa-tests/**/*.ts\" \"scripts/**/*.mjs\" \"*.{ts,html,json}\"",
     "typecheck": "tsc --noEmit",
     "check": "npm run format:check && npm run typecheck && npm test"
   },

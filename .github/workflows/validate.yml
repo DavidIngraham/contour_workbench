@@ -35,3 +35,5 @@ jobs:
         working-directory: web
       - run: npm run test:presets
         working-directory: web
+      - run: npm run test:pwa
+        working-directory: web

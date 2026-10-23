@@ -15,10 +15,12 @@
     "tests",
     "mobile-tests",
     "performance-tests",
+    "pwa-tests",
     "scripts",
     "vite.config.ts",
     "vitest.config.ts",
     "playwright.mobile.config.ts",
-    "playwright.presets.config.ts"
+    "playwright.presets.config.ts",
+    "playwright.pwa.config.ts"
   ]
 }

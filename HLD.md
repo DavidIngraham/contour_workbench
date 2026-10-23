@@ -10,6 +10,26 @@ Contour Workbench is a static, client-side application for designing printable t
 
 The browser is the trust boundary for uploaded files and downloaded models. Remote services provide source data only; project editing and mesh generation stay on the user's device.
 
+## Installable app and offline shell
+
+`public/app.webmanifest` uses relative identity, scope, start URL, and icon URLs
+for both root and GitHub Pages subpath hosting. Explicit SVG/ICO favicon links
+and raster install/Apple/maskable icons derive from the existing mountain mark.
+`pwa-build.ts` emits `sw.js` after production builds using a content hash of the
+worker template and final cached files. The allowlist includes the HTML shell,
+all bundled/lazy JS and WASM, icons, catalog, and thumbnails; large preset bundles,
+external provider responses, and user project data are excluded.
+
+The worker installs a complete version atomically, serves that version's shell
+and assets from its own cache, and waits for old clients to close before activation.
+It does not call `skipWaiting` or reload clients. Activation only removes older
+Contour Workbench shell caches in the same scope; IndexedDB/project data and
+other applications' caches are untouched. `pwa.ts` offers browser-supported
+installation, reports offline readiness/waiting updates, and rechecks updates
+when returning after an hour. Registration is production-only. CI runs production
+PWA tests for installability, offline local model generation/export, multi-window
+updates, and failed-release recovery under both deployment path layouts.
+
 ## System context
 
 ```mermaid

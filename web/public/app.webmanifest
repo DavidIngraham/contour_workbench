@@ -1,0 +1,17 @@
+{
+  "id": "./",
+  "name": "Contour Workbench",
+  "short_name": "Contour",
+  "description": "Shape landscapes, choose trails, and create printable terrain models.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f8faf5",
+  "theme_color": "#172d27",
+  "lang": "en",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

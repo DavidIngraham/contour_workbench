@@ -38,6 +38,8 @@ jobs:
         working-directory: web
       - run: npm run test:presets
         working-directory: web
+      - run: npm run test:pwa
+        working-directory: web
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist

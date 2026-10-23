@@ -16,6 +16,28 @@ npm run dev
 
 Run these commands from the repository root. The production site is `web/dist`; any static HTTP server can serve it, including a GitHub Pages repository subpath.
 
+## Install and use offline
+
+The production build is an installable PWA on HTTPS (or localhost). Use **Install
+app** on the Projects screen when Chrome offers installation, or the browser's
+install menu. On iPhone/iPad, use **Share → Add to Home Screen**. The favicon and
+install icons reuse the mountain mark, with SVG, ICO, Apple touch, and maskable
+PNG variants. Regenerate the raster variants with `npm run render:app-icons`
+after editing `public/icon.svg` (requires Playwright Chromium).
+
+After offline setup finishes during an online visit, local and imported projects
+can be opened, edited, generated, and exported offline. New terrain, external map
+tiles, source requests, and bundled example downloads require a connection.
+Projects remain in the existing browser-local store; browser storage eviction can
+remove offline data, so exported project files remain useful backups.
+
+Updates download in the background and wait until all workbench windows/tabs are
+closed. They never force-reload an active model. The Projects screen announces a
+waiting update. The cache is scoped to this app and never clears project storage.
+Development mode does not register a worker. `npm run test:pwa` tests the built
+site at both `/` and `/contour_workbench/`, including installability, offline
+generation/export, delayed activation, and incomplete-release recovery.
+
 ## Design and export
 
 The bundled Post Canyon example opens automatically with 246,078 elevation samples and the original five-vertex Post Canyon boundary rounded with a default 500 m corner radius. Choose an area on the slippy map: draw a freeform or smooth spline polygon, or select Square, Rectangle, or Circle. Presets have dimensions in meters, a draggable center, and edge handles for resizing. Click the nearby rotation arrow for 15° steps, or drag it for any angle. Spline control points remain editable. Rotate outlines clockwise and round freeform or preset corners with a corner radius in meters (locally limited by short edges). Circle size uses diameter. Shape controls are retained in saved projects. For freeform drawing, click Draw / redraw, place vertices, then Finish polygon. Drag vertices to edit, or undo the last point. Use loaded elevation to crop the current landscape without downloading again, or load new elevation for the outline. Concave simple polygons are supported; self-crossing outlines and holes are rejected. The exact outline clips terrain, overlays, and printable parts and is saved with the project. Load elevation, and pull trails, roads, waterways, lakes, reservoirs, rivers, and glaciers directly from OpenStreetMap. Local geographic GeoTIFF and GeoJSON imports are also supported. The Rust classifier follows the original project classification rules, including named local trails and closed/future exclusions.
