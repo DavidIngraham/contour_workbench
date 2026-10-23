@@ -19,6 +19,7 @@ export const serializedContract = {
   fields: {
     Asset: ['terrain', 'faceMaterials', 'inserts', 'validation', 'revision'],
     Settings: [
+      'class_priority',
       'manufacturing_mode',
       'insert_relative_height_mm',
       'max_print_size_mm',

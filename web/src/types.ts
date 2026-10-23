@@ -10,8 +10,25 @@ export interface Grid {
 }
 /** Manufacturing strategy for removable inserts or aligned multicolor parts. */
 export type ManufacturingMode = 'separate' | 'multicolor';
+/** Original geometry priority, highest first, retained for older models. */
+export const defaultClassPriority: readonly FeatureClass[] = [
+  'water',
+  'glacier',
+  'ski_run',
+  'trail',
+  'road',
+  'stream',
+  'ski_lift',
+];
+/** Complete partial orders deterministically and discard duplicate or unknown classes. */
+export function normalizeClassPriority(order: unknown): FeatureClass[] {
+  return [...new Set([...(Array.isArray(order) ? order : []), ...defaultClassPriority])].filter(
+    (cls): cls is FeatureClass => defaultClassPriority.includes(cls),
+  );
+}
 /** User-controlled geometry and print settings; unit suffixes identify physical units. */
 export interface Settings {
+  class_priority: FeatureClass[];
   manufacturing_mode: ManufacturingMode;
   insert_relative_height_mm: number;
   max_print_size_mm: [number, number];
@@ -38,6 +55,7 @@ export interface Settings {
 }
 /** Defaults used for new projects and backward-compatible deserialization. */
 export const defaults: Settings = {
+  class_priority: [...defaultClassPriority],
   manufacturing_mode: 'separate',
   insert_relative_height_mm: 0.35,
   max_print_size_mm: [248, 198],
@@ -88,7 +106,12 @@ export function normalizeSettings(
       relativeHeight =
         typeof legacyProud === 'number' && Number.isFinite(legacyProud) ? legacyProud : 0.35;
   }
-  return { ...defaults, ...canonical, insert_relative_height_mm: relativeHeight };
+  return {
+    ...defaults,
+    ...canonical,
+    class_priority: normalizeClassPriority(canonical.class_priority),
+    insert_relative_height_mm: relativeHeight,
+  };
 }
 
 /** Effective geometry operation selected for a feature. */

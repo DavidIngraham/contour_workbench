@@ -7,6 +7,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
   defaultMaterialGroups,
+  normalizeClassPriority,
   type Mesh,
   type Layout,
   type Overlay,
@@ -415,17 +416,12 @@ export class Viewer {
     const projectColors = materialColors(project);
     ctx.clearRect(0, 0, 2048, 2048);
     ctx.fillStyle = 'white';
+    const classPriority = normalizeClassPriority(settings.class_priority);
     for (const o of overlays) {
       const id = o.id.slice(0, o.id.lastIndexOf('#'));
       const carve = o.treatment === 'v_carve';
-      const classBias =
-        o.class === 'ski_lift'
-          ? 0.012
-          : o.class === 'trail'
-            ? 0.009
-            : o.class === 'road'
-              ? 0.006
-              : 0.003;
+      const rank = classPriority.length - classPriority.indexOf(o.class);
+      const classBias = rank * 0.003;
       const placement = carve
         ? { renderBiasMm: 0, opensTerrain: false, openingDepthMm: 0 }
         : insertPreviewState(o.surface_offset_mm ?? settings.insert_relative_height_mm, classBias);
@@ -434,7 +430,7 @@ export class Viewer {
         roughness: o.class === 'water' ? 0.52 : 0.85,
         clippingPlanes: [this.clip],
         polygonOffset: !carve,
-        polygonOffsetFactor: o.class === 'trail' ? -3 : o.class === 'road' ? -2 : -1,
+        polygonOffsetFactor: -rank,
         polygonOffsetUnits: -2,
       });
       const mesh = new THREE.Mesh(this.geometry(o.mesh), material);
@@ -448,17 +444,7 @@ export class Viewer {
         attr.needsUpdate = true;
         mesh.geometry.computeVertexNormals();
       }
-      mesh.renderOrder = carve
-        ? 8
-        : o.class === 'ski_lift'
-          ? 7
-          : o.class === 'trail'
-            ? 6
-            : o.class === 'road'
-              ? 5
-              : o.class === 'stream'
-                ? 4
-                : 3;
+      mesh.renderOrder = 2 + rank;
       mesh.position.z = placement.renderBiasMm;
       mesh.visible = enabled.get(id) ?? true;
       this.features.add(mesh);

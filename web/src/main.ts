@@ -84,6 +84,8 @@ import {
 import {
   defaultMaterialGroups,
   defaults,
+  defaultClassPriority,
+  normalizeClassPriority,
   normalizeSettings,
   projectMaterialGroups,
   type Project,
@@ -706,15 +708,6 @@ async function openPresetModel(entry: PresetEntry) {
 document
   .querySelectorAll('[data-tab]')
   .forEach(e => e.addEventListener('click', () => setPanel((e as HTMLElement).dataset.tab!)));
-const featureClasses: Feature['class'][] = [
-  'trail',
-  'road',
-  'stream',
-  'water',
-  'glacier',
-  'ski_run',
-  'ski_lift',
-];
 const classLabels: Record<Feature['class'], string> = {
   trail: 'Trails',
   road: 'Roads',
@@ -780,6 +773,42 @@ function syncFilaments() {
 }
 function listFeatures() {
   if (!project) return;
+  const priority = normalizeClassPriority(project.settings.class_priority);
+  $('class-priority-list').innerHTML = priority
+    .map(
+      (cls, index) =>
+        `<div class="class-priority-row"><span>${index + 1}. ${classLabels[cls]}</span><button data-priority-class="${cls}" data-direction="-1" aria-label="Move ${classLabels[cls]} up" ${index === 0 ? 'disabled' : ''}>↑</button><button data-priority-class="${cls}" data-direction="1" aria-label="Move ${classLabels[cls]} down" ${index === priority.length - 1 ? 'disabled' : ''}>↓</button></div>`,
+    )
+    .join('');
+  $('class-priority-list')
+    .querySelectorAll<HTMLButtonElement>('[data-priority-class]')
+    .forEach(button => {
+      button.onclick = () => {
+        const cls = button.dataset.priorityClass as Feature['class'];
+        const from = priority.indexOf(cls),
+          to = from + Number(button.dataset.direction);
+        if (to < 0 || to >= priority.length) return;
+        [priority[from], priority[to]] = [priority[to], priority[from]];
+        project.settings.class_priority = priority;
+        touch();
+        listFeatures();
+        const focus =
+          $('class-priority-list').querySelector<HTMLButtonElement>(
+            `[data-priority-class="${cls}"][data-direction="${button.dataset.direction}"]:not(:disabled)`,
+          ) ??
+          $('class-priority-list').querySelector<HTMLButtonElement>(
+            `[data-priority-class="${cls}"]:not(:disabled)`,
+          );
+        focus?.focus();
+        void updateOverlays();
+      };
+    });
+  $('reset-class-priority').onclick = () => {
+    project.settings.class_priority = [...defaultClassPriority];
+    touch();
+    listFeatures();
+    void updateOverlays();
+  };
   const sources = groupFeaturesBySource(project.features);
   $('loaded-sources').innerHTML = sources.length
     ? `<h3>Loaded sources</h3><p class="help">Remove a source’s features from all classes in this model.</p>${sources.map(source => `<div class="loaded-source"><span>${esc(source.name)}<small>${source.features.length} features</small></span><button class="small-link" data-remove-loaded-source="${esc(source.id)}" aria-label="Remove ${esc(source.name)} from model" ${busy || osmLoading ? 'disabled' : ''}>Remove</button></div>`).join('')}`
@@ -814,7 +843,7 @@ function listFeatures() {
     });
   const term = ($('feature-search') as HTMLInputElement).value.toLowerCase();
   $('feature-list').innerHTML =
-    featureClasses
+    priority
       .map(cls => {
         const all = project.features.filter(f => f.class === cls),
           list = all.filter(f =>

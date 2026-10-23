@@ -2223,6 +2223,23 @@ button.compass {
   gap: 12px;
   margin-bottom: 8px;
 }
+#class-priority {
+  margin-bottom: 20px;
+}
+.class-priority-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.class-priority-row span {
+  flex: 1;
+  font-size: 13px;
+}
+.class-priority-row button {
+  min-width: 44px;
+  min-height: 44px;
+}
 .loaded-source > span {
   flex: 1;
   min-width: 0;

@@ -102,6 +102,12 @@ classes in the current model after confirmation, including search-hidden feature
 The source stays in the library so it can be loaded again. **Remove from library**
 only removes a custom source definition and keeps its loaded model features.
 
+Open **Class priority** in Features and use the up/down buttons to change which
+classes take precedence at overlaps. Highest priority is first; within a class,
+inserts take precedence over grooves. The tree, preview, and exported geometry
+follow this order in both print modes. Priority is saved with the model; **Reset
+priority** restores the original order. Older models keep that original order.
+
 The feature tree groups each class by source, then sorts sources and feature names
 alphabetically. Each source group has an on/off checkbox and an Insert/V-carve
 selector (Recess for area features), scoped to that source and class. Mixed states

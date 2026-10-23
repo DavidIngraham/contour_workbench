@@ -31,6 +31,8 @@ pub enum ManufacturingMode {
 /// Validated controls that affect terrain, overlays, inserts, and pockets.
 #[derive(Clone, Debug, Serialize)]
 pub struct Settings {
+    /// Feature classes from highest to lowest overlap priority.
+    pub class_priority: Vec<String>,
     /// Manufacturing strategy for insert geometry.
     pub manufacturing_mode: ManufacturingMode,
     /// Signed insert-top height relative to sampled terrain, in millimeters.
@@ -81,6 +83,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            class_priority: CLASS_ORDER.iter().map(|class| (*class).into()).collect(),
             manufacturing_mode: ManufacturingMode::Separate,
             insert_relative_height_mm: 0.35,
             max_print_size_mm: [248., 198.],
@@ -110,6 +113,7 @@ impl Default for Settings {
 #[derive(Default, Deserialize)]
 #[serde(remote = "Settings", default)]
 struct SettingsDef {
+    class_priority: Vec<String>,
     manufacturing_mode: ManufacturingMode,
     insert_relative_height_mm: f64,
     max_print_size_mm: [f64; 2],
@@ -175,7 +179,20 @@ impl<'de> Deserialize<'de> for Settings {
             .as_object()
             .ok_or_else(|| serde::de::Error::custom("Settings must be an object"))?;
         merged_settings.extend(supplied_settings.clone());
-        SettingsDef::deserialize(merged).map_err(serde::de::Error::custom)
+        let mut settings = SettingsDef::deserialize(merged).map_err(serde::de::Error::custom)?;
+        let mut order = vec![];
+        for class in settings
+            .class_priority
+            .iter()
+            .map(String::as_str)
+            .chain(CLASS_ORDER)
+        {
+            if CLASS_ORDER.contains(&class) && !order.iter().any(|item| item == class) {
+                order.push(class.to_owned());
+            }
+        }
+        settings.class_priority = order;
+        Ok(settings)
     }
 }
 /// Return `[west, south, east, north]` for longitude/latitude vertices.
@@ -229,6 +246,17 @@ impl Settings {
     }
     /// Validate dimensions, compensation ranges, and boundary topology.
     pub fn validate(&self) -> Result<(), String> {
+        if self.class_priority.len() != CLASS_ORDER.len()
+            || CLASS_ORDER.iter().any(|class| {
+                self.class_priority
+                    .iter()
+                    .filter(|item| item.as_str() == *class)
+                    .count()
+                    != 1
+            })
+        {
+            return Err("Class priority must contain each supported class exactly once".into());
+        }
         if !self.boundary.is_empty() {
             if self.boundary.len() < 3
                 || self.boundary.len() > 500
@@ -1514,10 +1542,10 @@ pub fn overlays(
 ) -> Result<Vec<Overlay>, String> {
     s.validate()?;
     let clip = feature_boundary(s, l, 0.);
-    let insert_clip = feature_boundary(s, l, s.insert_fit_clearance_per_side_mm);
-    let mut occupied_inserts = MultiPolygon(vec![]);
+    let insert_clip = feature_boundary(s, l, s.effective_insert_clearance_mm());
+    let mut occupied = MultiPolygon(vec![]);
     let mut out = vec![];
-    for class in CLASS_ORDER {
+    for class in s.class_priority.iter().map(String::as_str) {
         let mut inserts = MultiPolygon(vec![]);
         for f in features
             .iter()
@@ -1525,14 +1553,27 @@ pub fn overlays(
         {
             inserts = inserts.union(&feature_polygon(f, l, s, 0.));
         }
-        inserts = inserts.intersection(&insert_clip);
-        let allowed =
-            clip.difference(&occupied_inserts.union(&inserts.buffer(s.path_clearance_mm / 2.)));
+        inserts = inserts.intersection(&insert_clip).difference(&occupied);
+        let allowed = clip.difference(
+            &occupied
+                .union(&inserts)
+                .buffer((s.path_clearance_mm / 2. - 0.002).max(0.)),
+        );
+        let mut carved = MultiPolygon(vec![]);
         for f in features
             .iter()
             .filter(|f| f.class == class && f.treatment() != Treatment::Hide)
         {
-            let footprint = feature_polygon(f, l, s, 0.);
+            let footprint = feature_polygon(
+                f,
+                l,
+                s,
+                if f.treatment() == Treatment::VCarve {
+                    0.002
+                } else {
+                    0.
+                },
+            );
             let footprint = if f.treatment() == Treatment::VCarve {
                 footprint.buffer(-0.001).buffer(0.001)
             } else {
@@ -1541,8 +1582,11 @@ pub fn overlays(
             let polygons = footprint.intersection(if f.treatment() == Treatment::VCarve {
                 &allowed
             } else {
-                &insert_clip
+                &inserts
             });
+            if f.treatment() == Treatment::VCarve {
+                carved = carved.union(&polygons);
+            }
             for (i, p) in polygons.0.iter().enumerate() {
                 let (mesh, surface_offset_mm) = if f.treatment() == Treatment::VCarve {
                     let mesh = if f.is_zone() {
@@ -1602,7 +1646,7 @@ pub fn overlays(
                 });
             }
         }
-        occupied_inserts = occupied_inserts.union(&inserts);
+        occupied = occupied.union(&inserts).union(&carved);
     }
     Ok(out)
 }
@@ -2345,7 +2389,6 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
     let clip = feature_boundary(s, l, 0.);
     let insert_clip = feature_boundary(s, l, s.effective_insert_clearance_mm());
     let mut occupied = MultiPolygon(vec![]);
-    let mut occupied_inserts = MultiPolygon(vec![]);
     let mut out = Plan {
         terrain: Mesh::default(),
         inserts: vec![],
@@ -2372,7 +2415,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         + l.base_height
         + 5.;
     let mut serial = 0;
-    for class in CLASS_ORDER {
+    for class in s.class_priority.iter().map(String::as_str) {
         let cutter_group_start = out.cutters.len();
         let occupied_before = occupied.clone();
         let mut union = MultiPolygon(vec![]);
@@ -2384,7 +2427,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             union = union.union(&feature_polygon(f, l, s, 0.));
         }
         let layer = union.intersection(&insert_clip).difference(&occupied);
-        let protected = occupied_inserts
+        let protected = occupied
             .union(&layer)
             .buffer((s.path_clearance_mm / 2. - 0.002).max(0.));
         let allowed = clip.difference(&protected);
@@ -2478,7 +2521,6 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
             out.cutter_group_ends.push(out.cutters.len());
         }
         occupied = occupied.union(&layer).union(&carved);
-        occupied_inserts = occupied_inserts.union(&layer);
     }
     if pocket_surfaces.is_empty() {
         out.terrain = base_terrain.mesh;

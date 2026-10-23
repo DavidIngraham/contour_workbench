@@ -243,9 +243,12 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await page.getByRole('button', { name: /^Features/, exact: false }).tap();
   await page.locator('[data-class-treatment="trail"]').selectOption('v_carve');
   await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
-  await page.locator('[data-toggle]').first().uncheck();
-  await page.locator('[data-toggle]').first().check();
-  await expect(page.locator('[data-treatment]').first()).toHaveValue('v_carve');
+  const trails = page
+    .locator('.feature-group')
+    .filter({ has: page.locator('[data-class="trail"]') });
+  await trails.locator('[data-toggle]').first().uncheck();
+  await trails.locator('[data-toggle]').first().check();
+  await expect(trails.locator('[data-treatment]').first()).toHaveValue('v_carve');
   const lake = page.locator('[data-feature]').filter({ hasText: 'Test lake' });
   // The row also contains a treatment selector; select the feature by its name.
   await lake.locator('.feature-item > span').tap();

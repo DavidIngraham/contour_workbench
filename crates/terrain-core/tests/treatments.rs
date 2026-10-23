@@ -62,6 +62,91 @@ fn hidden_features_create_no_geometry() {
     assert!(p.inserts.is_empty() && p.cutters.is_empty());
     assert!(overlays(&g, &s, &[f], &t.layout).unwrap().is_empty());
 }
+
+#[test]
+fn class_priority_controls_preview_and_printed_overlap_in_both_manufacturing_modes() {
+    let (g, mut s, mut trail) = fixture();
+    trail.treatment = Treatment::Insert;
+    let mut road = trail.clone();
+    road.id = "road".into();
+    road.class = "road".into();
+    for mode in [ManufacturingMode::Separate, ManufacturingMode::Multicolor] {
+        s.manufacturing_mode = mode;
+        for winner in ["road", "trail"] {
+            s.class_priority.retain(|class| class != winner);
+            s.class_priority.insert(0, winner.into());
+            let terrain = terrain(&g, &s).unwrap();
+            let features = [trail.clone(), road.clone()];
+            let preview = overlays(&g, &s, &features, &terrain.layout).unwrap();
+            assert!(!preview.is_empty());
+            assert!(preview.iter().all(|overlay| overlay.class == winner));
+            let printed = plan(&g, &s, &features, &terrain.layout).unwrap();
+            assert!(!printed.inserts.is_empty());
+            assert!(printed.inserts.iter().all(|piece| piece.class == winner));
+            printed.terrain.validate().unwrap();
+            for piece in printed.inserts {
+                piece.mesh.validate().unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn class_priority_applies_to_grooves_and_disabled_classes_do_not_claim_space() {
+    let (g, mut s, mut trail) = fixture();
+    let mut road = trail.clone();
+    road.id = "road".into();
+    road.class = "road".into();
+    s.class_priority.retain(|class| class != "road");
+    s.class_priority.insert(0, "road".into());
+    let terrain = terrain(&g, &s).unwrap();
+    // Both a lower insert and a lower groove must yield to the higher groove.
+    for treatment in [Treatment::Insert, Treatment::VCarve] {
+        trail.treatment = treatment;
+        let features = [trail.clone(), road.clone()];
+        let preview = overlays(&g, &s, &features, &terrain.layout).unwrap();
+        assert!(!preview.is_empty());
+        assert!(preview.iter().all(|overlay| overlay.class == "road"));
+        let printed = plan(&g, &s, &features, &terrain.layout).unwrap();
+        assert!(printed.inserts.is_empty());
+        assert_eq!(printed.cutter_group_ends.len(), 1);
+        for cutter in printed.cutters {
+            cutter.validate().unwrap();
+        }
+    }
+    road.enabled = false;
+    trail.treatment = Treatment::Insert;
+    let features = [trail, road];
+    assert!(overlays(&g, &s, &features, &terrain.layout)
+        .unwrap()
+        .iter()
+        .all(|o| o.class == "trail"));
+    assert!(!plan(&g, &s, &features, &terrain.layout)
+        .unwrap()
+        .inserts
+        .is_empty());
+}
+
+#[test]
+fn class_priority_migrates_old_and_partial_settings_and_validates_direct_settings() {
+    let old: Settings = serde_json::from_str("{}").unwrap();
+    assert_eq!(old.class_priority, Settings::default().class_priority);
+    let partial: Settings = serde_json::from_value(serde_json::json!({
+        "class_priority": ["road", "road", "unknown", "water"]
+    }))
+    .unwrap();
+    assert_eq!(
+        partial.class_priority,
+        ["road", "water", "glacier", "ski_run", "trail", "stream", "ski_lift"]
+    );
+    partial.validate().unwrap();
+    let roundtrip: Settings =
+        serde_json::from_value(serde_json::to_value(&partial).unwrap()).unwrap();
+    assert_eq!(roundtrip.class_priority, partial.class_priority);
+    let mut invalid = old;
+    invalid.class_priority[0] = "road".into();
+    assert!(invalid.validate().unwrap_err().contains("Class priority"));
+}
 #[test]
 fn inserts_win_over_same_class_carves() {
     let (g, s, f) = fixture();

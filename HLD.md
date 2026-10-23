@@ -130,6 +130,17 @@ The working terrain solid is deleted immediately after export; only then is the 
 
 ### Feature source library
 
+`Settings.class_priority` stores a complete, highest-first class order. Older models
+retain the original water/glacier/ski-run/trail/road/stream/ski-lift order. Import
+normalization removes unknown/duplicate names and appends missing classes in that
+default order; direct Rust settings validation requires a complete permutation.
+The Features panel's accessible move-up/down controls reorder the tree and persist
+through normal project edits, invalidating generated output and rebuilding overlays.
+Rust uses the same order and occupied footprints to clip lower-priority inserts
+and grooves in previews and final plans. Same-class inserts still take precedence
+over grooves. Viewer depth bias follows the saved order; material/filament IDs stay
+stable regardless of priority.
+
 The Features panel and new-landscape wizard share a source selector. OpenStreetMap
 remains the default and retains its existing cache, mirror failover, retry, and
 winter behavior. Winter landscape creation explicitly uses Overpass. HRC queries
