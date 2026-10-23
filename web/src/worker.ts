@@ -3,7 +3,14 @@
 import { annotationGeometry, type Annotation } from './annotations';
 import { calibrationSwitchbackCenterlineMm } from './calibration-path';
 import calibrationTerrain from './calibration-terrain.json';
-import { calibrationClearances, fitProfile, insetAtHeight } from './insert-fit';
+import { fitProfile, insetAtHeight } from './insert-fit';
+import {
+  couponLabels,
+  couponLayout,
+  defaultCouponOptions,
+  validateCoupon,
+  type FitCouponOptions,
+} from './fit-coupon';
 import { insetCrossSection, shouldTaperInsert } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
@@ -176,28 +183,6 @@ function safeTaperedSolid(
   return { solid: prism, profile: fitProfile(adjusted, className, depthMm, 0) };
 }
 
-const digitSegments: Record<string, string> = { 1: 'bc', 2: 'abdeg', 3: 'abcdg', 4: 'bcfg' };
-function digitCutters(
-  M: ManifoldToplevel,
-  digit: string,
-  cx: number,
-  cy: number,
-  z: number,
-): Manifold[] {
-  const map: { [key: string]: [number, number, number, number] } = {
-    a: [0, 2, 2.4, 0.42],
-    g: [0, 0, 2.4, 0.42],
-    d: [0, -2, 2.4, 0.42],
-    f: [-1.2, 1, 0.42, 1.8],
-    b: [1.2, 1, 0.42, 1.8],
-    e: [-1.2, -1, 0.42, 1.8],
-    c: [1.2, -1, 0.42, 1.8],
-  };
-  return [...(digitSegments[digit] || '')].map(key => {
-    const [x, y, w, h] = map[key];
-    return M.Manifold.cube([w, h, 0.6]).translate([cx + x - w / 2, cy + y - h / 2, z]);
-  });
-}
 function switchbackSolid(
   M: ManifoldToplevel,
   cx: number,
@@ -205,9 +190,10 @@ function switchbackSolid(
   widthMm: number,
   heightMm: number,
   zMm: number,
+  scale = 1,
 ) {
   const points = calibrationSwitchbackCenterlineMm.map(
-      ([x, y]) => [x + cx, y + cy] as [number, number],
+      ([x, y]) => [x * scale + cx, y * scale + cy] as [number, number],
     ),
     parts: Manifold[] = [];
   try {
@@ -237,107 +223,142 @@ function switchbackSolid(
 function calibrationFiles(
   M: ManifoldToplevel,
   s: Settings,
-  prefix = 'calibration/',
-  meshes?: Mesh[],
+  options: FitCouponOptions,
+  meshes: Mesh[],
 ): Record<string, Uint8Array> {
-  const clearances = calibrationClearances(s),
-    centers = [14, 38, 62, 86],
-    pathWidth = Math.max(0.05, s.path_width_mm);
-  let base = M.Manifold.cube([100, 10, 3]).translate([0, 28, 0]);
-  // A private Rust session avoids replacing the user's active terrain/grid.
-  // Normalize the real relief into the original footprint, beneath all four
-  // pockets. A 2 mm minimum surface leaves at least 1 mm of pocket wall above
-  // their shared floor; the flat rear strip keeps the engraved labels legible.
-  const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
+  validateCoupon(s, options);
+  const clearances = options.clearances_mm;
+  const layout = couponLayout(s, options);
+  const labels = couponLabels(s, options);
+  const { pathScale, textScale, widthMm, terrainDepthMm, depthMm, surfaceMm } = layout;
+  const centers = [14, 38, 62, 86].map(x => x * pathScale);
+  const owned: Manifold[] = [];
+  const own = (solid: Manifold) => {
+    owned.push(solid);
+    return solid;
+  };
+  const box = (size: [number, number, number], xyz: [number, number, number]) =>
+    own(own(M.Manifold.cube(size)).translate(xyz));
   try {
-    const packet = decodeMeshPacket<TerrainPacketMetadata>(
-      terrainSession.build_terrain(
-        JSON.stringify({
-          ...s,
-          boundary: [],
-          max_print_size_mm: [96, 36],
-          base_height_mm: 0.6,
-          height_factor: 1,
-          terrain_max_error_mm: 0,
-        }),
+    // All inserts are identical. Fail instead of silently reducing a labeled taper.
+    const prism = own(
+      switchbackSolid(
+        M,
+        8 * pathScale,
+        6.2 * pathScale,
+        s.path_width_mm,
+        s.insert_depth_mm,
+        0,
+        pathScale,
       ),
     );
-    const mesh = packet.meshes[0];
-    let top = 0;
-    for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
-    for (let i = 0; i < mesh.positions.length; i += 3) {
-      mesh.positions[i] *= 100 / packet.metadata.layout.width;
-      mesh.positions[i + 1] *= 28 / packet.metadata.layout.depth;
-      if (mesh.positions[i + 2] > 0.6)
-        mesh.positions[i + 2] = 2 + ((mesh.positions[i + 2] - 0.6) * 1.2) / (top - 0.6);
-      else if (mesh.positions[i + 2] > 0) mesh.positions[i + 2] = 2;
-    }
-    const relief = solidFromMesh(M, mesh);
+    const tapered = taperedSolid(M, prism, 'trail', s, s.insert_depth_mm);
+    if (tapered.solid !== prism) own(tapered.solid);
+    if (tapered.solid === prism && tapered.profile.maximumInsetMm > 1e-7)
+      throw new Error(
+        'Could not generate the labeled taper. Reduce draft or elephant-foot relief and try again.',
+      );
+    const insertMesh = validatedMesh(tapered.solid, 'Calibration switchback insert');
+    const strip = box([widthMm, depthMm - terrainDepthMm, surfaceMm], [0, terrainDepthMm, 0]);
+    // This private session cannot replace the active project's terrain or settings.
+    const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
+    let relief: Manifold;
     try {
-      const joined = M.Manifold.union([base, relief]);
-      base.delete();
-      base = joined;
+      const packet = decodeMeshPacket<TerrainPacketMetadata>(
+        terrainSession.build_terrain(
+          JSON.stringify({
+            ...s,
+            boundary: [],
+            max_print_size_mm: [96, 36],
+            base_height_mm: 0.6,
+            height_factor: 1,
+            terrain_max_error_mm: 0,
+          }),
+        ),
+      );
+      const mesh = packet.meshes[0];
+      let top = 0;
+      for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
+      for (let i = 0; i < mesh.positions.length; i += 3) {
+        mesh.positions[i] *= widthMm / packet.metadata.layout.width;
+        mesh.positions[i + 1] *= terrainDepthMm / packet.metadata.layout.depth;
+        if (mesh.positions[i + 2] > 0.6)
+          mesh.positions[i + 2] = surfaceMm + ((mesh.positions[i + 2] - 0.6) * 1.2) / (top - 0.6);
+        else if (mesh.positions[i + 2] > 0) mesh.positions[i + 2] = surfaceMm;
+      }
+      relief = own(solidFromMesh(M, mesh));
     } finally {
-      relief.delete();
+      terrainSession.free();
     }
-  } catch (error) {
-    base.delete();
-    throw error;
-  } finally {
-    terrainSession.free();
-  }
-  const cutters: Manifold[] = [];
-  try {
+    const base = own(M.Manifold.union([strip, relief]));
+    const cutters: Manifold[] = [];
+    const pixel = 0.45 * textScale;
+    const engrave = (text: string, x: number, y: number) => {
+      const rectangles: number[][] = JSON.parse(core.coupon_label_rectangles(text, pixel));
+      for (const [dx, dy, w, h] of rectangles)
+        // Tiny overlap removes point-touching corners between neighboring pixels.
+        cutters.push(
+          box([w + 0.01, h + 0.01, 0.7], [x + dx - 0.005, y + dy - 0.005, surfaceMm - 0.6]),
+        );
+    };
     clearances.forEach((clearance, index) => {
-      cutters.push(switchbackSolid(M, centers[index], 12, pathWidth + 2 * clearance, 3, 1));
-      cutters.push(...digitCutters(M, String(index + 1), centers[index], 32, 2.7));
+      cutters.push(
+        own(
+          switchbackSolid(
+            M,
+            centers[index],
+            12 * pathScale,
+            s.path_width_mm + 2 * clearance,
+            surfaceMm + 2,
+            1,
+            pathScale,
+          ),
+        ),
+      );
+      const label = labels.pockets[index];
+      engrave(
+        label,
+        centers[index] - ((label.length * 6 - 1) * pixel) / 2,
+        terrainDepthMm + 3 * textScale,
+      );
     });
-    const combined = M.Manifold.union(cutters),
-      cut = base.subtract(combined);
-    base.delete();
-    base = cut;
-    combined.delete();
-    const baseMesh = validatedMesh(base, 'Calibration coupon base');
-    meshes?.push(baseMesh);
-    const files: Record<string, Uint8Array> = {
-        [prefix + 'coupon-base.stl']: stl(baseMesh),
-      },
-      pieces: {
-        label: number;
-        clearance_per_side_mm: number;
-        file: string;
-        geometry: string;
-        path_width_mm: number;
-      }[] = [];
-    clearances.forEach((clearance, index) => {
-      const prism = switchbackSolid(M, 8, 6.2, pathWidth, 2, 0),
-        tapered = safeTaperedSolid(M, prism, 'trail', s, 2);
-      const mesh = validatedMesh(tapered.solid, `Calibration switchback insert ${index + 1}`);
-      meshes?.push(mesh);
-      files[`${prefix}insert-${index + 1}-clearance-${clearance.toFixed(2)}mm.stl`] = stl(mesh);
-      if (tapered.solid !== prism) tapered.solid.delete();
-      prism.delete();
-      pieces.push({
-        label: index + 1,
+    labels.settings.forEach((label, i) =>
+      engrave(label, 4 * textScale, terrainDepthMm + (42 - i * 6) * textScale),
+    );
+    const combined = own(M.Manifold.union(cutters));
+    const cut = own(base.subtract(combined));
+    const baseMesh = validatedMesh(cut, 'Calibration coupon base');
+    meshes.push(baseMesh, insertMesh, insertMesh, insertMesh, insertMesh);
+    const files: Record<string, Uint8Array> = { 'coupon-base.stl': stl(baseMesh) };
+    const pieces = clearances.map((clearance, i) => {
+      const file = `insert-${i + 1}-clearance-${clearance.toFixed(2)}mm.stl`;
+      files[file] = stl(insertMesh);
+      return {
+        label: i + 1,
         clearance_per_side_mm: clearance,
-        file: `insert-${index + 1}-clearance-${clearance.toFixed(2)}mm.stl`,
+        file,
         geometry: 'trail_switchback',
-        path_width_mm: pathWidth,
-      });
+        path_width_mm: s.path_width_mm,
+      };
     });
-    files[prefix + 'calibration_manifest.json'] = strToU8(
+    files['calibration_manifest.json'] = strToU8(
       JSON.stringify(
         {
           units: 'mm',
           geometry: 'trail_switchback',
+          size_mm: [widthMm, depthMm],
+          engraved_labels: labels,
+          label_depth_mm: 0.6,
+          label_stroke_mm: pixel,
           terrain: {
             name: calibrationTerrain.name,
             attribution: calibrationTerrain.attribution,
             source_url: calibrationTerrain.source_url,
             relief_mm: 1.2,
           },
-          path_width_mm: pathWidth,
+          path_width_mm: s.path_width_mm,
           nozzle_diameter_mm: s.nozzle_diameter_mm,
+          insert_depth_mm: s.insert_depth_mm,
           elephant_foot_relief_mm: s.insert_elephant_foot_relief_mm,
           elephant_foot_height_mm: s.insert_elephant_foot_height_mm,
           draft_angle_deg: s.insert_draft_angle_deg,
@@ -347,20 +368,17 @@ function calibrationFiles(
         2,
       ),
     );
-    files[prefix + 'README.txt'] = strToU8(
-      'CONTOUR WORKBENCH SWITCHBACK FIT TEST\n\nThe 100 × 38 mm coupon reproduces Mt. Hood Meadows using USGS 3D Elevation Program data, normalized to its footprint with 1.2 mm relief. The fit pockets cut directly into the terrain, with a shared flat floor and a flat strip for the numbered labels. Inspect its ridges, valleys, and shallow slopes for visible layer stepping; compare layer-height settings using the same sample. The terrain and numbered fit pockets form one base. This coupon uses narrow trail geometry with close parallel runs, tight hairpins, and an angled jog. It exposes first-layer swelling, fused switchback gaps, corner loss, and clearance problems that a rectangular coupon can miss.\n\nPrint coupon-base.stl normally. Print each numbered switchback insert with its flat, narrow end on the build plate. Match insert numbers to the engraved numbers beside the pockets. Choose the smallest number that seats through every turn without force, then enter its clearance-per-side value in Print setup.\n\nConfigured path width: ' +
-        pathWidth.toFixed(2) +
-        ' mm\nConfigured nozzle: ' +
-        s.nozzle_diameter_mm.toFixed(2) +
-        ' mm\n\n' +
-        pieces
-          .map(p => `${p.label}: ${p.clearance_per_side_mm.toFixed(2)} mm clearance per side\n`)
-          .join(''),
+    files['README.txt'] = strToU8(
+      'CONTOUR WORKBENCH FIT TEST\n\nPrint the base and four identical switchback inserts with their flat, narrow ends on the build plate. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
+        'The base records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees, and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
+        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share a 1 mm floor. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
+        labels.settings.join('\n') +
+        '\nPOCKETS: ' +
+        labels.pockets.join(', '),
     );
     return files;
   } finally {
-    base.delete();
-    cutters.forEach(c => c.delete());
+    owned.reverse().forEach(solid => solid.delete());
   }
 }
 function syncBase(next: Settings) {
@@ -764,10 +782,11 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const M = await loadManifold(progress);
       progress('Creating fit-test pieces for your printer…');
       const meshes: Mesh[] = [];
-      const files = calibrationFiles(M, p.settings, '', meshes);
+      const coupon = p.coupon ?? defaultCouponOptions(p.settings);
+      const files = calibrationFiles(M, p.settings, coupon, meshes);
       if (!p.format || p.format === 'stl') return zipSync(files, { level: 3 });
       const { buildThreeMf } = await import('./three-mf');
-      const clearances = calibrationClearances(p.settings);
+      const clearances = coupon.clearances_mm;
       const asset: Asset = {
         terrain: meshes[0],
         inserts: meshes.slice(1).map((mesh, index) => ({
@@ -775,7 +794,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
           class: 'trail',
           mesh,
           origin: [0, 0, 0],
-          insert_depth_mm: 2,
+          insert_depth_mm: p.settings.insert_depth_mm,
         })),
         revision: 0,
         validation: {

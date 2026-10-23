@@ -1,3 +1,4 @@
+import type { FitCouponOptions } from './fit-coupon';
 /** Typed messages exchanged between the UI and the geometry worker. */
 import type { BambuPrinterId } from './bambu-printers';
 import type { Annotation } from './annotations';
@@ -39,6 +40,7 @@ export interface EngineOperationMap {
   calibration: {
     payload: {
       settings: Settings;
+      coupon?: FitCouponOptions;
       format?: 'stl' | 'portable' | 'bambu' | 'prusa';
       bambuPrinter?: BambuPrinterId;
     };

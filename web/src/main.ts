@@ -1,3 +1,10 @@
+import {
+  couponFields,
+  couponLabels,
+  couponLayout,
+  defaultCouponOptions,
+  validateCoupon,
+} from './fit-coupon';
 import { PrintOrderDialog } from './print-order-dialog';
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
@@ -1399,6 +1406,39 @@ $('download-color-calibration').onclick = async () => {
   }
 };
 let fitDownloadFromLanding = false;
+let couponSettings: Settings;
+function readCouponForm() {
+  const settings = { ...couponSettings };
+  for (const [key] of couponFields)
+    settings[key] = $<HTMLInputElement>(`coupon-${key}`).valueAsNumber;
+  const coupon = {
+    clearances_mm: [1, 2, 3, 4].map(
+      n => $<HTMLInputElement>(`coupon-clearance-${n}`).valueAsNumber,
+    ),
+  };
+  validateCoupon(settings, coupon);
+  return { settings, coupon };
+}
+function updateCouponPreview() {
+  try {
+    const { settings, coupon } = readCouponForm();
+    const labels = couponLabels(settings, coupon);
+    const layout = couponLayout(settings, coupon);
+    $('coupon-label-preview').textContent = [...labels.settings, labels.pockets.join('   ')].join(
+      '\n',
+    );
+    $('coupon-size').textContent =
+      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm. Labels are engraved 0.6 mm deep. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
+    $('coupon-error').textContent = '';
+    $<HTMLButtonElement>('fit-download-confirm').disabled = false;
+  } catch (e) {
+    $('coupon-error').textContent = userErrorMessage(e);
+    $('coupon-label-preview').textContent = 'Adjust the settings to preview your coupon.';
+    $('coupon-size').textContent = '';
+    $<HTMLButtonElement>('fit-download-confirm').disabled = true;
+  }
+}
+$('fit-download-dialog').addEventListener('input', updateCouponPreview);
 $('fit-download-format').onchange = () => {
   $('fit-bambu-options').classList.toggle(
     'hidden',
@@ -1413,9 +1453,11 @@ function fitDownloadDialog(open: boolean) {
   document.querySelector<HTMLElement>('header')!.inert = blocked;
   if (open) {
     $('fit-download-settings').textContent = fitDownloadFromLanding
-      ? 'Uses default printer and clearance settings. Customize them in Print setup for your printer.'
-      : 'Uses your current Print setup settings.';
-    $('fit-download-format').focus();
+      ? 'Start from defaults and adjust this test for your printer.'
+      : 'Starts from your current Print setup. Changes here affect only this test.';
+    $('fit-download-title').tabIndex = -1;
+    $('fit-download-title').focus({ preventScroll: true });
+    $('fit-download-dialog').querySelector('.modal')!.scrollTop = 0;
   } else {
     $(fitDownloadFromLanding ? 'landing-calibration' : 'download-calibration').focus();
   }
@@ -1423,6 +1465,13 @@ function fitDownloadDialog(open: boolean) {
 function openFitDownload(fromLanding: boolean) {
   if (busy) return;
   fitDownloadFromLanding = fromLanding;
+  couponSettings = { ...(fromLanding ? defaults : project.settings) };
+  for (const [key] of couponFields)
+    $<HTMLInputElement>(`coupon-${key}`).value = String(couponSettings[key]);
+  defaultCouponOptions(couponSettings).clearances_mm.forEach((value, i) => {
+    $<HTMLInputElement>(`coupon-clearance-${i + 1}`).value = value.toFixed(2);
+  });
+  updateCouponPreview();
   fitDownloadDialog(true);
 }
 $('landing-calibration').onclick = () => openFitDownload(true);
@@ -1438,7 +1487,13 @@ $('fit-download-confirm').onclick = async () => {
   if (busy) return;
   const format = $<HTMLSelectElement>('fit-download-format').value as
     'stl' | 'portable' | 'bambu' | 'prusa';
-  const settings = fitDownloadFromLanding ? defaults : project.settings;
+  let config: ReturnType<typeof readCouponForm>;
+  try {
+    config = readCouponForm();
+  } catch {
+    updateCouponPreview();
+    return;
+  }
   const fitStatus = (message: string) => {
     if (fitDownloadFromLanding) $('landing-fit-status').textContent = message;
   };
@@ -1449,7 +1504,7 @@ $('fit-download-confirm').onclick = async () => {
     const bytes = await engine.call(
       'calibration',
       {
-        settings,
+        ...config,
         format,
         bambuPrinter: $<HTMLSelectElement>('fit-bambu-printer').value as BambuPrinterId,
       },
@@ -1461,12 +1516,14 @@ $('fit-download-confirm').onclick = async () => {
       format === 'stl' ? 'application/zip' : 'model/3mf',
     );
     const message =
-      'Fit test downloaded. Print the numbered base and inserts before the full model.';
+      'Fit test downloaded. Print the labeled base and inserts, then use the best-fitting pocket’s engraved clearance in Print setup.';
     status(message);
     fitStatus(message);
   } catch (e) {
     error(e);
     fitStatus(userErrorMessage(e));
+    fitDownloadDialog(true);
+    $('coupon-error').textContent = userErrorMessage(e);
   } finally {
     updateBusy(false);
   }

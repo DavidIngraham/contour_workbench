@@ -14,6 +14,11 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
   await page.getByRole('button', { name: 'Print setup', exact: true }).click();
   const pending = page.waitForEvent('download');
   await page.locator('#download-calibration').click();
+  await page.locator('#coupon-path_width_mm').fill('1.10');
+  await page.locator('#coupon-insert_depth_mm').fill('2.50');
+  for (const [i, value] of ['0.06', '0.14', '0.22', '0.30'].entries())
+    await page.locator(`#coupon-clearance-${i + 1}`).fill(value);
+  await expect(page.locator('#coupon-label-preview')).toContainText('INSERT DEPTH 2.50 MM');
   await page.locator('#fit-download-format').selectOption('stl');
   await page.locator('#fit-download-confirm').click();
   const download = await pending,
@@ -23,12 +28,13 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
     manifest = JSON.parse(strFromU8(files['calibration_manifest.json']));
   expect(manifest).toMatchObject({
     geometry: 'trail_switchback',
-    path_width_mm: 0.9,
+    path_width_mm: 1.1,
+    insert_depth_mm: 2.5,
     nozzle_diameter_mm: 0.4,
     terrain: { name: 'Mt. Hood Meadows', relief_mm: 1.2 },
   });
   expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
-    0.1, 0.15, 0.2, 0.25,
+    0.06, 0.14, 0.22, 0.3,
   ]);
   for (const name of ['coupon-base.stl', ...manifest.pieces.map((piece: any) => piece.file)]) {
     const facets = (strFromU8(files[name]).match(/facet normal/g) || []).length;
@@ -39,16 +45,26 @@ test('fit coupon contains detailed switchback trail inserts', async ({ page }) =
   ].map(match => match.slice(1).map(Number));
   for (const [axis, size] of [
     [0, 100],
-    [1, 38],
+    [1, 76],
   ]) {
     expect(Math.min(...vertices.map(v => v[axis]))).toBeCloseTo(0, 3);
     expect(Math.max(...vertices.map(v => v[axis]))).toBeCloseTo(size, 3);
   }
-  const terrainVertices = vertices.filter(([, y, z]) => y < 28 && z > 2);
+  const terrainVertices = vertices.filter(([, y, z]) => y < 28 && z > 2.5);
   expect(terrainVertices.length).toBeGreaterThan(1000);
   expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
-  expect(Math.max(...vertices.map(([, , z]) => z))).toBeLessThanOrEqual(3.201);
-  expect(Math.max(...vertices.filter(([, y]) => y > 28).map(([, , z]) => z))).toBeCloseTo(3, 3);
+  expect(Math.max(...vertices.map(([, , z]) => z))).toBeLessThanOrEqual(3.701);
+  expect(Math.max(...vertices.filter(([, y]) => y > 28).map(([, , z]) => z))).toBeCloseTo(2.5, 3);
+  // Engraving must exist in the exported mesh in every pocket and settings row.
+  for (const y0 of [31, 40, 46, 52, 58, 64, 70])
+    expect(
+      vertices.filter(([, y, z]) => y >= y0 - 0.01 && y <= y0 + 3.2 && Math.abs(z - 1.9) < 1e-4)
+        .length,
+    ).toBeGreaterThan(30);
+  await expect(page.locator('#path-width')).toHaveValue('0.9');
+  await expect(page.locator('#insert-depth')).toHaveValue('2');
+  await mkdir('../temp', { recursive: true });
+  await writeFile('../temp/custom-fit-coupon.stl', files['coupon-base.stl']);
   // Relief must span every insert region, rather than occupy a separate patch.
   for (const center of [14, 38, 62, 86]) {
     const region = terrainVertices.filter(([x, y]) => Math.abs(x - center) < 8 && y > 5 && y < 23);

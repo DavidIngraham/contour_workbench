@@ -2016,6 +2016,34 @@ button.compass {
   max-height: calc(100dvh - 40px);
   overflow: auto;
 }
+.coupon-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.coupon-clearances {
+  border: 1px solid #d8e0ce;
+  border-radius: 8px;
+  margin: 18px 0 0;
+  padding: 0 12px;
+}
+.coupon-clearances legend {
+  font-size: 12px;
+}
+.coupon-label-preview {
+  white-space: pre;
+  overflow-x: auto;
+  padding: 12px;
+  margin-top: 10px;
+  border-radius: 8px;
+  background: #e7eddf;
+  color: #344d32;
+  font: 10px/1.9 monospace;
+}
+#coupon-error {
+  color: #9c3328;
+}
 .format-options {
   display: grid;
   gap: 10px;
