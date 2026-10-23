@@ -156,7 +156,13 @@ credits travel in `tags.contour_source.attribution` and export attribution files
 
 Custom library entries (name, HTTPS URL, feature class, optional name field) live
 under `contour-feature-sources-v1` in localStorage. Entries can be edited or removed;
-removing one does not delete imported model geometry. Storage failure is reported
+removing one does not delete imported model geometry. Separately, `main.ts` renders
+loaded sources from feature provenance and removes a chosen source's features
+across all classes after confirmation, invalidating generated output, refreshing
+overlays, and saving through the normal project-edit path. This action keeps the
+library definition, ignores search/class-load filters, and is disabled during
+downloads and geometry jobs. Source/class bulk visibility and treatment controls
+use the same edit path and apply to search-hidden group members. Storage failure is reported
 instead of claiming a definition was saved. Library preferences are separate from
 saved projects. Projects embed downloaded geometry and source provenance inside
 the existing feature `tags.contour_source` object, so reopening never depends on

@@ -193,6 +193,148 @@ test('each class lists sources and feature names alphabetically and remains edit
   await expect(page.locator('.feature-item span')).toHaveText('County trail');
 });
 
+test('source controls apply to the whole class group and preserve other sources and classes', async ({
+  page,
+}, testInfo) => {
+  const feature = (id: string, name: string, cls: Feature['class'] = 'trail'): Feature => ({
+    id,
+    name,
+    class: cls,
+    enabled: true,
+    treatment: 'insert',
+    tags: {},
+    lines: [
+      [
+        [0.002, 0.005],
+        [0.008, 0.005],
+      ],
+    ],
+  });
+  await openProject(page, [
+    feature('osm:way:1', 'Alpha trail'),
+    { ...feature('osm:way:2', 'Zulu trail'), enabled: false, treatment: 'v_carve' },
+    feature('county-trail:1', 'County trail'),
+    feature('osm:way:3', 'Access road', 'road'),
+  ]);
+  const trails = page.locator('[data-feature-source="overpass"][data-source-class="trail"]');
+  const toggle = trails.locator('[data-source-toggle]');
+  const treatment = trails.locator('[data-source-treatment]');
+  await expect(toggle).toHaveJSProperty('indeterminate', true);
+  await expect(treatment).toHaveValue('mixed');
+  await toggle.check();
+  await expect(trails.locator('[data-toggle]:checked')).toHaveCount(2);
+  await expect(toggle).toHaveJSProperty('indeterminate', false);
+  await toggle.uncheck();
+  await expect(trails.locator('[data-toggle]:checked')).toHaveCount(0);
+  await treatment.selectOption('v_carve');
+  await expect(trails.locator('[data-toggle]:checked')).toHaveCount(0);
+  await expect(trails.locator('[data-treatment]').first()).toHaveValue('v_carve');
+  await expect(trails.locator('[data-treatment]').last()).toHaveValue('v_carve');
+  await treatment.selectOption('insert');
+  await expect(trails.locator('[data-treatment]').first()).toHaveValue('insert');
+  await expect(trails.locator('[data-treatment]').last()).toHaveValue('insert');
+  await trails.locator('[data-treatment]').first().selectOption('v_carve');
+  await expect(treatment).toHaveValue('mixed');
+  await page.getByLabel('Search features').fill('Alpha');
+  await expect(trails.locator('[data-feature]')).toHaveCount(1);
+  await toggle.check();
+  await treatment.selectOption('v_carve');
+  await page.getByLabel('Search features').fill('');
+  await expect(trails.locator('[data-toggle]:checked')).toHaveCount(2);
+  await expect(trails.locator('[data-treatment]').last()).toHaveValue('v_carve');
+  const others = page.locator('[data-feature="county-trail:1"], [data-feature="osm:way:3"]');
+  await expect(others.locator('[data-toggle]:checked')).toHaveCount(2);
+  for (const select of await others.locator('[data-treatment]').all())
+    await expect(select).toHaveValue('insert');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await trails.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('source-group-controls.png') });
+  await page.locator('#mobile-close').tap();
+  const pending = page.waitForEvent('download');
+  await page.locator('#save-project').tap();
+  const saved = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
+  expect(saved.features.map((f: Feature) => [f.id, f.enabled, f.treatment])).toEqual([
+    ['osm:way:1', true, 'v_carve'],
+    ['osm:way:2', true, 'v_carve'],
+    ['county-trail:1', true, 'insert'],
+    ['osm:way:3', true, 'insert'],
+  ]);
+});
+
+test('loaded sources can be removed across classes, saved, and loaded again', async ({
+  page,
+}, testInfo) => {
+  const feature = (id: string, name: string, cls: Feature['class'] = 'trail'): Feature => ({
+    id,
+    name,
+    class: cls,
+    enabled: true,
+    treatment: 'insert',
+    tags: {},
+    lines: [
+      [
+        [0.002, 0.005],
+        [0.008, 0.005],
+      ],
+    ],
+  });
+  await openProject(page, [
+    feature('osm:way:1', 'Alpha trail'),
+    feature('osm:way:2', 'Other trail'),
+    feature('osm:way:3', 'Access road', 'road'),
+    feature('county-trail:1', 'County trail'),
+  ]);
+  const remove = page.getByRole('button', {
+    name: 'Remove OpenStreetMap · Overpass from model',
+    exact: true,
+  });
+  await page.locator('#loaded-sources').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: testInfo.outputPath('loaded-sources.png') });
+  page.once('dialog', dialog => dialog.dismiss());
+  await remove.tap();
+  await expect(page.locator('[data-feature]')).toHaveCount(4);
+  await page.locator('[data-feature="osm:way:1"] .feature-item > span').tap();
+  await page.getByLabel('Search features').fill('Alpha');
+  page.once('dialog', async dialog => {
+    expect(dialog.message()).toContain('all 3 features');
+    await dialog.accept();
+  });
+  await remove.tap();
+  await expect(remove).toHaveCount(0);
+  await expect(page.locator('[data-feature]')).toHaveCount(0);
+  await page.getByLabel('Search features').fill('');
+  await expect(page.locator('[data-feature]')).toHaveCount(1);
+  await expect(page.locator('[data-feature="county-trail:1"] [data-toggle]')).toBeChecked();
+  await page.locator('#mobile-close').tap();
+  const pending = page.waitForEvent('download');
+  await page.locator('#save-project').tap();
+  const saved = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
+  expect(saved.features.map((f: Feature) => f.id)).toEqual(['county-trail:1']);
+  await openProject(page, saved.features);
+  await expect(remove).toHaveCount(0);
+  await page.route('**/api/interpreter', route =>
+    route.fulfill({
+      json: {
+        elements: [
+          {
+            type: 'way',
+            id: 1,
+            tags: { highway: 'path', name: 'Reloaded trail' },
+            geometry: [
+              { lon: 0.003, lat: 0.006 },
+              { lon: 0.007, lat: 0.006 },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+  await page.locator('#fetch-osm').tap();
+  await expect(page.locator('#fetch-osm')).toBeEnabled();
+  await expect(remove).toBeVisible();
+  await expect(page.locator('[data-feature]')).toHaveCount(2);
+});
+
 test('OpenSkiMap loads ski classes, excludes inactive features, and preserves edits across content updates', async ({
   page,
 }) => {

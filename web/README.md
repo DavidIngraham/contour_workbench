@@ -97,8 +97,16 @@ OpenStreetMap and OpenSkiMap requests include the class filter; other feeds are
 filtered after classification. Refreshing a source updates only the chosen
 classes, keeping already-loaded features in other classes and other sources.
 
+Under **Loaded sources**, **Remove** deletes that source’s features across all
+classes in the current model after confirmation, including search-hidden features.
+The source stays in the library so it can be loaded again. **Remove from library**
+only removes a custom source definition and keeps its loaded model features.
+
 The feature tree groups each class by source, then sorts sources and feature names
-alphabetically. Search also matches source names. Older OpenStreetMap and county
+alphabetically. Each source group has an on/off checkbox and an Insert/V-carve
+selector (Recess for area features), scoped to that source and class. Mixed states
+reflect individual edits. Group controls affect all members, including those hidden
+by search; treatment changes preserve visibility. Search also matches source names. Older OpenStreetMap and county
 features are recognized from their IDs, GPX uploads use their filenames, and new
 GeoJSON uploads retain their filename as the source. Unattributed features appear
 under **Other features**. Existing class-wide and individual feature controls remain available.

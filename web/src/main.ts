@@ -311,6 +311,9 @@ function syncOsmAction() {
         ? 'Pull from OpenStreetMap'
         : 'Load source';
   sourcePanel?.setDisabled(busy || osmLoading);
+  document.querySelectorAll<HTMLButtonElement>('[data-remove-loaded-source]').forEach(button => {
+    button.disabled = busy || osmLoading;
+  });
   $('cancel-feature-source').classList.toggle('hidden', !osmLoading);
 }
 function cancelOsmLoad(resetAction = true) {
@@ -777,6 +780,38 @@ function syncFilaments() {
 }
 function listFeatures() {
   if (!project) return;
+  const sources = groupFeaturesBySource(project.features);
+  $('loaded-sources').innerHTML = sources.length
+    ? `<h3>Loaded sources</h3><p class="help">Remove a source’s features from all classes in this model.</p>${sources.map(source => `<div class="loaded-source"><span>${esc(source.name)}<small>${source.features.length} features</small></span><button class="small-link" data-remove-loaded-source="${esc(source.id)}" aria-label="Remove ${esc(source.name)} from model" ${busy || osmLoading ? 'disabled' : ''}>Remove</button></div>`).join('')}`
+    : '';
+  $('loaded-sources')
+    .querySelectorAll<HTMLButtonElement>('[data-remove-loaded-source]')
+    .forEach(button => {
+      button.onclick = () => {
+        if (busy || osmLoading) return;
+        const source = sources.find(source => source.id === button.dataset.removeLoadedSource)!;
+        if (
+          !confirm(
+            `Remove all ${source.features.length} features from “${source.name}” across all classes in this model? This only changes the current model.`,
+          )
+        )
+          return;
+        const removed = new Set(source.features.map(f => f.id));
+        project.features = project.features.filter(f => !removed.has(f.id));
+        for (const id of removed) {
+          winterRestore.delete(id);
+          viewer.toggle(id, false);
+        }
+        if (selected && removed.has(selected)) {
+          selected = null;
+          viewer.highlight(null);
+        }
+        touch();
+        listFeatures();
+        refreshMetrics();
+        void updateOverlays();
+      };
+    });
   const term = ($('feature-search') as HTMLInputElement).value.toLowerCase();
   $('feature-list').innerHTML =
     featureClasses
@@ -793,13 +828,33 @@ function listFeatures() {
         return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${groupFeaturesBySource(
           list,
         )
-          .map(
-            group =>
-              `<section class="feature-source-group" data-feature-source="${esc(group.id)}"><div class="feature-source-heading"><span>${esc(group.name)}</span><small>${group.features.length}</small></div>${group.features.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</section>`,
-          )
+          .map(group => {
+            // Bulk controls include search-hidden members, just like the class controls.
+            const items = all.filter(f => featureSource(f).id === group.id);
+            const modes = new Set(items.map(treatment));
+            const value = modes.size === 1 ? treatment(items[0]) : 'mixed';
+            const scope = esc(`${label} from ${group.name}`);
+            return `<section class="feature-source-group" data-feature-source="${esc(group.id)}" data-source-class="${cls}"><div class="feature-source-heading"><label><input type="checkbox" data-source-toggle aria-label="Show all ${scope}" ${items.every(f => f.enabled) ? 'checked' : ''}/><span>${esc(group.name)}</span><small>${items.length}</small></label><select data-source-treatment aria-label="Treatment for all ${scope}">${treatmentOptions(value, modes.size > 1, items.some(zoneFeature))}</select></div>${group.features.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</section>`;
+          })
           .join('')}</div>`;
       })
       .join('') || '<p class="empty-note">No matching features.</p>';
+  $('feature-list')
+    .querySelectorAll<HTMLElement>('[data-feature-source]')
+    .forEach(group => {
+      const items = project.features.filter(
+        f =>
+          f.class === group.dataset.sourceClass &&
+          featureSource(f).id === group.dataset.featureSource,
+      );
+      const toggle = group.querySelector<HTMLInputElement>('[data-source-toggle]')!;
+      toggle.indeterminate = items.some(f => f.enabled) && !items.every(f => f.enabled);
+      toggle.onchange = () => setVisibility(items, toggle.checked);
+      const select = group.querySelector<HTMLSelectElement>('[data-source-treatment]')!;
+      select.onchange = () => {
+        if (select.value !== 'mixed') setTreatment(items, select.value as Treatment);
+      };
+    });
   $('feature-list')
     .querySelectorAll<HTMLInputElement>('[data-toggle]')
     .forEach(
