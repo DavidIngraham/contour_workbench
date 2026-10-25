@@ -5,6 +5,8 @@ import {
   defaultCouponOptions,
   validateCoupon,
 } from '../src/fit-coupon';
+import { calibrationSwitchbackCenterlineMm } from '../src/calibration-path';
+import { fitProfile } from '../src/insert-fit';
 import { defaults } from '../src/types';
 
 describe('dimensioned fit coupon', () => {
@@ -13,10 +15,10 @@ describe('dimensioned fit coupon', () => {
       const s = { ...defaults, nozzle_diameter_mm: nozzle, path_width_mm: nozzle * 2.25 };
       const layout = couponLayout(s, defaultCouponOptions(s));
       expect(layout.depthMm).toBe(layout.terrainDepthMm);
-      expect((1 + 6 * 3.8 + 7 * 0.45) * layout.textScale).toBeLessThan(layout.depthMm);
+      expect((1 + 4 * 3.8 + 7 * 0.45) * layout.textScale).toBeLessThan(layout.depthMm);
       expect(layout.floorMm - layout.engravingDepthMm).toBeCloseTo(0.6);
     }
-    expect(couponLayout(defaults, defaultCouponOptions(defaults)).depthMm).toBe(28);
+    expect(couponLayout(defaults, defaultCouponOptions(defaults)).depthMm).toBe(20);
   });
   it('adds floor thickness without changing pocket engagement or clearance', () => {
     const options = defaultCouponOptions(defaults);
@@ -37,13 +39,35 @@ describe('dimensioned fit coupon', () => {
   it('repeats four equal terrain tiles with minimum insert thickness below the relief', () => {
     const layout = couponLayout(defaults, defaultCouponOptions(defaults));
     expect(layout.tileWidthMm * 4).toBe(layout.widthMm);
-    expect(layout.pocketCentersMm).toEqual([12.5, 37.5, 62.5, 87.5]);
+    expect(layout.pocketCentersMm).toEqual([11, 33, 55, 77]);
     expect(layout.surfaceMm - layout.floorMm).toBe(defaults.insert_depth_mm);
     expect(layout.reliefMm).toBe(4);
     expect(layout.totalHeightMm).toBe(layout.surfaceMm + layout.reliefMm);
     const labels = couponLabels(defaults, defaultCouponOptions(defaults)).settings.join(' ');
     expect(labels).toContain('MIN INSERT 2.00 MM');
     expect(labels).toContain('RELIEF 4.00 MM');
+  });
+  it('omits taper labels without shrinking the printable lettering or the switchback', () => {
+    const options = defaultCouponOptions(defaults);
+    const labels = couponLabels(defaults, options);
+    expect(labels.settings).toHaveLength(4);
+    expect(labels.settings.join(' ')).not.toMatch(/FOOT|DRAFT|TAPER/);
+    const layout = couponLayout(defaults, options);
+    expect(layout.widthMm).toBe(88);
+    expect(layout.widthMm * layout.depthMm).toBeLessThan(100 * 28 * 0.65);
+    const radius = defaults.path_width_mm / 2 + Math.max(...options.clearances_mm);
+    for (const [x, y] of calibrationSwitchbackCenterlineMm) {
+      expect(layout.tileWidthMm / 2 + x - radius).toBeGreaterThan(0);
+      expect(layout.tileWidthMm / 2 + x + radius).toBeLessThan(layout.tileWidthMm);
+      expect(layout.pocketCenterYMm + y - radius).toBeGreaterThan(0);
+      expect(layout.pocketCenterYMm + y + radius).toBeLessThan(layout.depthMm);
+    }
+    expect(
+      couponLabels(
+        { ...defaults, insert_draft_angle_deg: 1, insert_elephant_foot_relief_mm: 0.1 },
+        options,
+      ),
+    ).toEqual(labels);
   });
   it('keeps clearance trials distinct even for a zero-clearance starting project', () => {
     const s = { ...defaults, insert_fit_clearance_per_side_mm: 0 };
@@ -54,16 +78,15 @@ describe('dimensioned fit coupon', () => {
   it('grows coupon and insert height together with a fixed floor and unchanged taper', () => {
     const options = defaultCouponOptions(defaults);
     const reference = couponLayout(defaults, options);
-    const taperLabel = couponLabels(defaults, options).settings.find(s => s.startsWith('DRAFT'));
+    const profile = fitProfile(defaults, 'trail', defaults.insert_depth_mm);
     for (const depth of [2.5, 3, 5, 10, 20]) {
       const settings = { ...defaults, insert_depth_mm: depth };
       expect(() => validateCoupon(settings, options)).not.toThrow();
       const layout = couponLayout(settings, options);
       expect(layout.floorMm).toBe(reference.floorMm);
       expect(layout.surfaceMm - reference.surfaceMm).toBeCloseTo(depth - defaults.insert_depth_mm);
-      expect(couponLabels(settings, options).settings.find(s => s.startsWith('DRAFT'))).toBe(
-        taperLabel,
-      );
+      expect(fitProfile(settings, 'trail', depth).draftHeightMm).toBe(profile.draftHeightMm);
+      expect(fitProfile(settings, 'trail', depth).footHeightMm).toBe(profile.footHeightMm);
     }
     const settings = { ...defaults, insert_depth_mm: 5 };
     expect(() => validateCoupon(settings, { ...options, floor_thickness_mm: 5 })).not.toThrow();

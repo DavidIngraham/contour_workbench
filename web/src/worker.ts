@@ -274,8 +274,13 @@ function calibrationFiles(
       let top = 0;
       for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
       for (let i = 0; i < mesh.positions.length; i += 3) {
-        mesh.positions[i] *= tileWidthMm / packet.metadata.layout.width;
-        mesh.positions[i + 1] *= terrainDepthMm / packet.metadata.layout.depth;
+        // Bed fitting may rotate a short, wide tile. Undo that orientation before
+        // mapping the DEM so each coupon keeps the same geographic terrain patch.
+        const { width, depth, rotated } = packet.metadata.layout;
+        const x = mesh.positions[i] / width,
+          y = mesh.positions[i + 1] / depth;
+        mesh.positions[i] = (rotated ? y : x) * tileWidthMm;
+        mesh.positions[i + 1] = (rotated ? 1 - x : y) * terrainDepthMm;
         if (mesh.positions[i + 2] > 0.6)
           mesh.positions[i + 2] =
             surfaceMm + ((mesh.positions[i + 2] - 0.6) * reliefMm) / (top - 0.6);
@@ -306,7 +311,7 @@ function calibrationFiles(
     if (tapered.solid !== prism) own(tapered.solid);
     if (tapered.solid === prism && tapered.profile.maximumInsetMm > 1e-7)
       throw new Error(
-        'Could not generate the labeled taper. Reduce draft or elephant-foot relief and try again.',
+        'Could not generate the insert taper. Reduce draft or elephant-foot relief and try again.',
       );
     const conformal = own(tapered.solid.intersect(relief));
     const insertOrigin: [number, number, number] = [
@@ -348,7 +353,7 @@ function calibrationFiles(
       engrave(label, centers[index] - ((label.length * 6 - 1) * pixel) / 2, textScale);
     });
     labels.settings.forEach((label, i) =>
-      engrave(label, 4 * textScale, (1 + (6 - i) * 3.8) * textScale),
+      engrave(label, 4 * textScale, (1 + (labels.settings.length - i) * 3.8) * textScale),
     );
     const combined = own(M.Manifold.union(cutters));
     const cut = own(base.subtract(combined));
@@ -409,8 +414,8 @@ function calibrationFiles(
       ),
     );
     files['README.txt'] = strToU8(
-      'CONTOUR WORKBENCH FIT TEST\n\nPrint the base terrain-side up with the recessed writing against the build plate. Print the four identical switchback inserts with their flat, narrow ends on the build plate. Flip the base over its long edge to read the underside; each clearance stays aligned with its pocket across the width. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
-        'The underside records nozzle diameter, path width, minimum insert thickness (MIN INSERT), elephant-foot relief per side, its taper height (H), draft angle in degrees and actual draft height (H), and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
+      'CONTOUR WORKBENCH FIT TEST\n\nPrint the base terrain-side up with the recessed writing against the build plate. Print the four identical switchback inserts with their flat, narrow ends on the build plate. Flip the base over its long edge to read the underside; each clearance stays aligned with its pocket across the width. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance per side. Values are per side, in mm.\n\n' +
+        'The underside records nozzle diameter, path width, minimum insert thickness (MIN INSERT), floor thickness, terrain relief, and per-side pocket clearances. Elephant-foot relief and draft settings are recorded in calibration_manifest.json, not engraved. The project settings are unchanged. Use matching nozzle/filament and your intended layer height in the slicer.\n\n' +
         'Each pocket repeats the same Mt. Hood Meadows terrain subset using USGS 3DEP elevations, normalized to 4 mm relief. The four tiles are joined into one base; tile boundaries can have a terrain step. All four inserts have identical terrain-conforming tops, flush with the original terrain (zero relative height), and flat bottoms. Rotate none of them when comparing pockets: use the same switchback orientation. MIN INSERT is the guaranteed minimum thickness; actual thickness varies with the relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Change coupon / insert thickness to grow the coupon and inserts together while keeping the floor fixed. The separate floor control adds material below the pockets without changing insert dimensions. Draft and elephant-foot taper heights do not grow with insert thickness; extra height adds a straight section above them. Use this sample to compare fit, terrain tracking, and layer stepping.\n\n' +
         labels.settings.join('\n') +
         '\nPOCKETS: ' +

@@ -231,7 +231,8 @@ The radius is in meters. The editable polygon remains intact and the rounded bou
 ### Coupon thickness and taper height
 
 **Coupon / insert thickness** sets minimum insert thickness and automatically grows
-its matching coupon base. Leave the advanced **Floor thickness** at 1 mm unless
+its matching coupon base. Open **Advanced** for elephant-foot relief/height, draft angle/taper height, and
+floor thickness. Leave **Floor thickness** at 1 mm unless
 you need more solid material beneath the pockets. That floor control alone does
 not change insert dimensions.
 
@@ -241,16 +242,19 @@ all four inserts have identical tops that follow that terrain at zero relative
 height (flush). Try each pocket with the insert facing the same direction.
 The four tiles form one base; terrain can step at tile boundaries. MIN INSERT
 underneath records minimum thickness; actual insert thickness varies with the
-terrain. With the defaults, the base is 100 × 28 × 7 mm including its 1 mm floor.
+terrain. With the defaults, the base is 88 × 20 × 7 mm including its 1 mm floor.
 Bambu exports keep all pieces in one file and may use multiple plates on small
 printers to preserve printhead clearance around the taller parts.
 
-Draft angle acts over a separately set **Draft taper height · maximum**, default
+Draft angle acts over a separately set **Maximum draft taper height**, default
 1.7 mm, instead of nearly the full insert depth. Extra thickness adds a straight
 section above the taper; shallow inserts shorten the draft height to leave a
 seating band. Elephant-foot relief retains its separate bottom taper height.
 Coupon and terrain inserts use this same profile. The coupon still rejects a
-requested taper that would consume too much of a narrow path, so its engraved
-labels describe the actual geometry. The draft row now records both angle and
-actual height; both limits are included in export metadata. Older saved projects
+requested taper that would consume too much of a narrow path. Elephant-foot and
+draft settings are recorded in export metadata, including actual and maximum
+draft heights; they are not engraved. The underside retains pocket clearances,
+nozzle and path width, minimum insert thickness, floor thickness, and terrain
+relief. Removing the two taper rows reduces the default footprint by 37% while
+retaining the same switchback and lettering sizes. Older saved projects
 receive the 1.7 mm draft-height default when loaded.

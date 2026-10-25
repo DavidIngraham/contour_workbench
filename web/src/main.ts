@@ -1332,7 +1332,7 @@ function updateCouponPreview() {
       '\n',
     );
     $('coupon-size').textContent =
-      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${layout.totalHeightMm.toFixed(2)} mm, including ${layout.reliefMm.toFixed(2)} mm of repeated terrain relief. Insert tops follow the terrain; MIN INSERT records their minimum thickness. Labels are recessed ${layout.engravingDepthMm.toFixed(1)} mm into the underside, leaving at least ${(layout.floorMm - layout.engravingDepthMm).toFixed(2)} mm beneath the pockets. H records the actual height of each taper; increasing thickness adds straight material above it. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
+      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${layout.totalHeightMm.toFixed(2)} mm, including ${layout.reliefMm.toFixed(2)} mm of repeated terrain relief. Insert tops follow the terrain; MIN INSERT records their minimum thickness. Labels are recessed ${layout.engravingDepthMm.toFixed(1)} mm into the underside, leaving at least ${(layout.floorMm - layout.engravingDepthMm).toFixed(2)} mm beneath the pockets. Taper settings are available under Advanced and are recorded in export metadata. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
     $('coupon-error').textContent = '';
     $<HTMLButtonElement>('fit-download-confirm').disabled = false;
   } catch (e) {

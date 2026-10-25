@@ -26,8 +26,8 @@ function surfaceAt(vertices: number[][], x: number, y: number) {
 // triangles, without using the coupon worker's remapped geometry.
 function reliefAt(x: number, y: number) {
   const { width, height, elevations } = calibrationTerrain.grid;
-  const gx = (x / 25) * (width - 1),
-    gy = (y / 28) * (height - 1);
+  const gx = (x / 22) * (width - 1),
+    gy = (y / 20) * (height - 1);
   const ix = Math.min(width - 2, Math.floor(gx)),
     iy = Math.min(height - 2, Math.floor(gy));
   const u = gx - ix,
@@ -62,7 +62,7 @@ test('one thickness control grows the coupon and inserts without changing the lo
       minimum_insert_thickness_mm: depth,
       insert_top: 'terrain_conforming',
       insert_relative_height_mm: 0,
-      terrain: { repeat_count: 4, relief_mm: 4, tile_size_mm: [25, 28] },
+      terrain: { repeat_count: 4, relief_mm: 4, tile_size_mm: [22, 20] },
       draft_angle_deg: 1.5,
       draft_height_mm: 1.7,
       draft_height_limit_mm: 1.7,
@@ -92,7 +92,7 @@ test('one thickness control grows the coupon and inserts without changing the lo
           const x = 8 + ax + (bx - ax) * t,
             y = 6.2 + ay + (by - ay) * t;
           const actual = surfaceAt(insert, x, y);
-          const expected = depth + reliefAt(x + (ox % 25), y + oy);
+          const expected = depth + reliefAt(x + (ox % 22), y + oy);
           expect(actual).toBeCloseTo(expected, 3);
           // Pocket floor must remain flat beneath every terrain-following insert.
           expect(surfaceAt(base, x + ox, y + oy)).toBeCloseTo(oz, 3);
@@ -105,10 +105,10 @@ test('one thickness control grows the coupon and inserts without changing the lo
     for (let tile = 0; tile < 4; tile++)
       for (const [x, y] of [
         [2.3, 4.2],
-        [22.7, 13.1],
-        [11.7, 5.6],
+        [20.7, 13.1],
+        [11.7, 3.6],
       ])
-        expect(surfaceAt(base, x + tile * 25, y)).toBeCloseTo(1 + depth + reliefAt(x, y), 3);
+        expect(surfaceAt(base, x + tile * 22, y)).toBeCloseTo(1 + depth + reliefAt(x, y), 3);
     results.push({ insert, baseHeight });
   }
   expect(results[1].baseHeight - results[0].baseHeight).toBeCloseTo(3, 3);
@@ -170,7 +170,7 @@ for (const floorMm of [1, 5, 20])
     await page.getByRole('button', { name: 'Print setup', exact: true }).click();
     const pending = page.waitForEvent('download');
     await page.locator('[data-command="download-calibration"]').click();
-    await page.getByText('Solid floor beneath pockets · advanced', { exact: true }).click();
+    await page.locator('#coupon-advanced > summary').click();
     await page.locator('#coupon-floor-thickness').fill(String(floorMm));
     await expect(page.locator('#coupon-label-preview')).toContainText(
       `FLOOR ${floorMm.toFixed(2)} MM`,
@@ -199,6 +199,10 @@ for (const floorMm of [1, 5, 20])
       minimum_floor_after_engraving_mm: floorMm - 0.4,
       terrain: { name: 'Mt. Hood Meadows', relief_mm: 4, repeat_count: 4 },
     });
+    expect(manifest.engraved_labels.settings).toHaveLength(4);
+    expect(manifest.engraved_labels.settings.join(' ')).not.toMatch(/DRAFT|FOOT/);
+    expect(manifest.draft_angle_deg).toBe(1.5);
+    expect(manifest.elephant_foot_relief_mm).toBe(0.18);
     expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
       0.06, 0.14, 0.22, 0.3,
     ]);
@@ -220,19 +224,19 @@ for (const floorMm of [1, 5, 20])
       ),
     ].map(match => match.slice(1).map(Number));
     for (const [axis, size] of [
-      [0, 100],
-      [1, 28],
+      [0, 88],
+      [1, 20],
     ]) {
       expect(vertices.reduce((min, v) => Math.min(min, v[axis]), Infinity)).toBeCloseTo(0, 3);
       expect(vertices.reduce((max, v) => Math.max(max, v[axis]), -Infinity)).toBeCloseTo(size, 3);
     }
-    const terrainVertices = vertices.filter(([, y, z]) => y < 28 && z > floorMm + 1.5);
+    const terrainVertices = vertices.filter(([, y, z]) => y < 20 && z > floorMm + 1.5);
     expect(terrainVertices.length).toBeGreaterThan(1000);
     expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
     expect(highest(vertices)).toBeCloseTo(floorMm + 6.5, 3);
     // Every lettering row opens from the bottom, mirrored in Y for a long-edge flip.
-    for (let row = 0; row < 7; row++) {
-      const y0 = 28 - (1 + row * 3.8) - 3.15;
+    for (let row = 0; row < 5; row++) {
+      const y0 = 20 - (1 + row * 3.8) - 3.15;
       expect(
         vertices.filter(([, y, z]) => y >= y0 - 0.01 && y <= y0 + 3.2 && Math.abs(z - 0.4) < 1e-4)
           .length,
@@ -249,14 +253,14 @@ for (const floorMm of [1, 5, 20])
     await expect(page.locator('#path-width')).toHaveValue('0.9');
     await expect(page.locator('#insert-depth')).toHaveValue('2');
     // Relief must span every insert region, rather than occupy a separate patch.
-    for (const center of [12.5, 37.5, 62.5, 87.5]) {
+    for (const center of [11, 33, 55, 77]) {
       const region = terrainVertices.filter(
-        ([x, y]) => Math.abs(x - center) < 8 && y > 5 && y < 23,
+        ([x, y]) => Math.abs(x - center) < 8 && y > 5 && y < 19,
       );
       expect(new Set(region.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(10);
       expect(
         vertices.some(
-          ([x, y, z]) => Math.abs(x - center) < 8 && y < 23 && Math.abs(z - floorMm) < 1e-5,
+          ([x, y, z]) => Math.abs(x - center) < 8 && y < 19 && Math.abs(z - floorMm) < 1e-5,
         ),
       ).toBe(true);
     }
