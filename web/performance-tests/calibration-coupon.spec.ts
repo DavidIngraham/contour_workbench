@@ -169,7 +169,7 @@ for (const floorMm of [1, 5, 20])
     );
     await page.getByRole('button', { name: 'Print setup', exact: true }).click();
     const pending = page.waitForEvent('download');
-    await page.locator('#download-calibration').click();
+    await page.locator('[data-command="download-calibration"]').click();
     await page.getByText('Solid floor beneath pockets · advanced', { exact: true }).click();
     await page.locator('#coupon-floor-thickness').fill(String(floorMm));
     await expect(page.locator('#coupon-label-preview')).toContainText(

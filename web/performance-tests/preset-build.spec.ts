@@ -110,7 +110,7 @@ test('Post Canyon builds one painted exterior', async ({ page }) => {
   const asset = await page.evaluate(() => (window as any).contourDiagnostics.asset);
   expect(asset?.watertight, status).toBe(true);
   expect(asset?.pieces, status).toBe(0);
-  await expect(page.locator('#asset-summary')).toContainText('One painted exterior mesh');
+  await expect(page.locator('#asset-summary')).toContainText('One multicolor solid');
   await page.locator('#download').click();
   await page.locator('input[value="3mf"]').check();
   await page.locator('#export-slicer').selectOption('bambu');

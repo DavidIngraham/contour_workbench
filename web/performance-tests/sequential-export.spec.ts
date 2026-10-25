@@ -55,7 +55,7 @@ test('regular export uses the selected printer and preserves terrain after calib
     () => (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
   );
   await page.getByRole('button', { name: 'Print setup', exact: true }).click();
-  await page.locator('#download-calibration').click();
+  await page.locator('[data-command="download-calibration"]').click();
   const couponDownload = page.waitForEvent('download');
   await page.locator('#fit-download-confirm').click();
   await couponDownload;
