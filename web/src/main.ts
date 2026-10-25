@@ -9,6 +9,8 @@ import { PrintOrderDialog } from './print-order-dialog';
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
 import { renderAppShell } from './app-shell';
+import { FeatureBrowser } from './feature-browser';
+import { setupWorkbenchChrome } from './workbench-chrome';
 import { setupPwa } from './pwa';
 import { parseGpx } from './gpx';
 import { FeatureSourcePanel } from './feature-source-panel';
@@ -18,13 +20,13 @@ import {
   identifySourceFeatures,
   mergeSourceFeatures,
   groupFeaturesBySource,
-  featureSource,
   type FeatureSource,
 } from './feature-sources';
 import { filamentPlan } from './filaments';
-import { gpxPlacement, placementLabels } from './gpx-placement';
+import { gpxPlacement } from './gpx-placement';
 import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
 import './style.css';
+import './workbench.css';
 import {
   createIcons,
   Mountain,
@@ -149,15 +151,15 @@ setupPwa();
 const legacyFeatureMaterialRow = $('feature-color').closest<HTMLElement>('.input-row');
 if (legacyFeatureMaterialRow)
   legacyFeatureMaterialRow.outerHTML =
-    '<div class="material-list"><div class="material-list-heading"><span>Feature class</span><span>Color</span><span>Extruder</span></div>' +
+    '<div class="material-list"><div class="material-list-heading"><span>Feature class</span><span>Color</span><span>Slot</span></div>' +
     defaultMaterialGroups
       .slice(1)
       .map(
         group =>
-          `<div class="material-row"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} extruder"/></div>`,
+          `<div class="material-row"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} filament slot"/></div>`,
       )
       .join('') +
-    '</div><div id="filament-mapping"><p class="help">One slot represents one physical filament. Print-together previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
+    '</div><div id="filament-mapping"><p class="help">One slot represents one physical filament. Multicolor previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
 createIcons({ icons });
 function mobileSettings(open: boolean) {
   document.body.classList.toggle('settings-open', open);
@@ -200,6 +202,7 @@ let overlays: Overlay[] = [];
 let asset: Asset | undefined;
 const printOrder = new PrintOrderDialog(() => (asset && !busy ? { asset, project } : undefined));
 $('order-print').onclick = () => {
+  downloadDialog(false);
   void printOrder.open();
 };
 let revision = 0;
@@ -207,6 +210,8 @@ let busy = false;
 let exportRunning = false;
 let mode: 'design' | 'review' = 'design';
 let selected: string | null = null;
+let commandProject: Project | undefined;
+let modelNeedsRegeneration = false;
 let abort = new AbortController();
 let osmAbort: AbortController | undefined;
 let osmLoadSerial = 0;
@@ -246,6 +251,56 @@ const annotationEditor = new AnnotationEditor(
   () => touch(),
   () => setPanel('annotations'),
 );
+const featureBrowser = new FeatureBrowser({
+  include: setVisibility,
+  treatment: setTreatment,
+  changed: () => {
+    touch();
+    refreshMetrics();
+    void updateOverlays();
+  },
+  select: id => {
+    selected = id;
+    viewer.highlight(id);
+  },
+  zoom: feature => {
+    viewer.highlight(feature.id);
+    viewer.focusFeature(feature);
+    mobileSettings(false);
+    status(
+      'Showing the complete feature footprint. Only sections inside the model area are printed.',
+    );
+  },
+});
+function syncModelCommands() {
+  if (commandProject !== project) {
+    commandProject = project;
+    modelNeedsRegeneration = false;
+  }
+  const current = Boolean(asset && asset.revision === revision);
+  const reason = busy
+    ? 'Processing model…'
+    : current
+      ? ''
+      : modelNeedsRegeneration
+        ? 'Model changed—generate again before inspection or export.'
+        : 'Generate the model to enable inspection and export.';
+  for (const id of ['download', 'mode-review']) {
+    const button = $<HTMLButtonElement>(id);
+    button.disabled = busy || !current;
+    button.title = reason;
+  }
+  $('inspection-reason').textContent = reason;
+  $('export-reason').textContent = reason;
+  $('export-reason').classList.toggle('hidden', !reason);
+  $<HTMLButtonElement>('order-print').disabled = busy || !current;
+  $('order-print').title = reason;
+  $<HTMLButtonElement>('save-project').disabled = !project;
+  $<HTMLButtonElement>('open-project').disabled = busy;
+  $<HTMLButtonElement>('new-project').disabled = busy;
+  $<HTMLButtonElement>('show-projects').disabled = busy;
+  $<HTMLButtonElement>('change-area').disabled = busy || !project;
+}
 function status(
   message: string,
   error = false,
@@ -254,6 +309,7 @@ function status(
   total?: number,
 ) {
   const container = $('status');
+  if ($<HTMLDialogElement>('sources-dialog').open) $('source-progress').textContent = message;
   container.classList.toggle('error', error);
   if (!message) {
     container.classList.remove('with-progress');
@@ -304,7 +360,7 @@ function showProjectLoadingPreview() {
         : projected;
   viewer.showLoadingMap(layout, closed);
   markPreviewStage('topo', true);
-  $('model-caption').textContent = 'PROJECT AREA \u00b7 LOADING TOPO AND ELEVATION';
+  $('model-caption').textContent = 'Loading basemap and elevation';
 }
 function syncOsmAction() {
   const button = $('fetch-osm') as HTMLButtonElement;
@@ -319,7 +375,7 @@ function syncOsmAction() {
         ? 'Retry trails and water'
         : 'Retry source'
       : isOsm
-        ? 'Pull from OpenStreetMap'
+        ? 'Load OpenStreetMap features'
         : 'Load source';
   sourcePanel?.setDisabled(busy || osmLoading);
   document.querySelectorAll<HTMLButtonElement>('[data-remove-loaded-source]').forEach(button => {
@@ -344,6 +400,7 @@ function updateBusy(v: boolean) {
   $<HTMLButtonElement>('download-color-calibration').disabled = v;
   ($('area-load') as HTMLButtonElement).disabled = v || !polygonValid;
   $('cancel-job').classList.toggle('hidden', !v);
+  syncModelCommands();
   syncOsmAction();
 }
 function error(e: unknown) {
@@ -442,6 +499,7 @@ function scheduleThumbnail() {
   thumbnailTimer = setTimeout(() => void captureThumbnail(), 2200);
 }
 function touch() {
+  if (asset) modelNeedsRegeneration = true;
   printOrder.invalidate();
   revision++;
   ensureLocalIdentity();
@@ -456,6 +514,7 @@ function touch() {
       '<p class="empty-note">The design changed. Generate again to review and download the current model.</p>';
   asset = undefined;
   if (mode === 'review') design();
+  syncModelCommands();
 }
 function refreshMetrics() {
   if (terrain) {
@@ -468,10 +527,12 @@ function refreshMetrics() {
   $('feature-count').textContent = project?.features.length.toString() || '0';
 }
 function setPanel(name: string) {
-  document
-    .querySelectorAll('[data-tab]')
-    .forEach(e => e.classList.toggle('active', (e as HTMLElement).dataset.tab === name));
-  ['terrain', 'features', 'annotations', 'print'].forEach(n =>
+  document.querySelectorAll('[data-tab]').forEach(e => {
+    const active = (e as HTMLElement).dataset.tab === name;
+    e.classList.toggle('active', active);
+    e.setAttribute('aria-pressed', String(active));
+  });
+  ['terrain', 'features', 'annotations', 'print', 'inspect'].forEach(n =>
     $(`tab-${n}`).classList.toggle('hidden', n !== name),
   );
 }
@@ -537,7 +598,7 @@ async function renderLanding() {
           `<button class="preset-card" data-preset="${esc(entry.id)}" aria-label="Open ${esc(entry.name)}"><img src="${esc(presetUrl(entry.image))}" alt="" loading="eager"/><span class="preset-copy"><strong>${esc(entry.name)}</strong><small>${esc(entry.location)}</small><span>${esc(entry.description)}</span><span class="preset-badges">${entry.badges.map(b => `<b>${esc(b)}</b>`).join('')}</span></span></button>`,
       )
       .join('') +
-    `<button class="preset-card preset-new" id="preset-new" aria-label="Create a new landscape"><span class="new-model-icon">${icon('plus')}</span><span class="preset-copy"><strong>New landscape</strong><small>Choose any place</small><span>Draw a custom boundary and follow the guided setup.</span><span class="preset-badges"><b>3-step wizard</b></span></span></button>`;
+    `<button class="preset-card preset-new" id="preset-new" aria-label="Create a new project"><span class="new-model-icon">${icon('plus')}</span><span class="preset-copy"><strong>New project</strong><span>Select an area, elevation source, and map features.</span></span></button>`;
   createIcons({ icons });
   $('preset-grid')
     .querySelectorAll<HTMLElement>('[data-preset]')
@@ -607,11 +668,7 @@ async function renderLanding() {
           await renderLanding();
         }),
     );
-  $('preset-new').onclick = async () => {
-    await flushAutosave();
-    hideLanding();
-    openArea(true);
-  };
+  $('preset-new').onclick = () => $('new-project').click();
 }
 async function openLanding() {
   cancelOsmLoad();
@@ -691,13 +748,13 @@ async function openPresetModel(entry: PresetEntry) {
     viewer.setTerrain(terrain.mesh, terrain.layout, true, project);
     markPreviewStage('terrain');
     status('Terrain ready. Adding map features...', false, true);
-    $('model-caption').textContent = 'TERRAIN READY · ADDING MAP DETAILS';
+    $('model-caption').textContent = 'Terrain ready · loading features';
     await nextPreviewPaint();
     viewer.setOverlays(overlays, project.features, project.settings, project);
     if (overlays.length) markPreviewStage('features');
     annotationEditor.refresh();
     refreshMetrics();
-    $('model-caption').textContent = 'DESIGN PREVIEW · PREBUILT';
+    $('model-caption').textContent = 'Editing example';
     ($('generate') as HTMLButtonElement).disabled = false;
     ($('download') as HTMLButtonElement).disabled = true;
     ($('mode-review') as HTMLButtonElement).disabled = true;
@@ -714,9 +771,14 @@ async function openPresetModel(entry: PresetEntry) {
   }
 }
 
-document
-  .querySelectorAll('[data-tab]')
-  .forEach(e => e.addEventListener('click', () => setPanel((e as HTMLElement).dataset.tab!)));
+document.querySelectorAll('[data-tab]').forEach(e =>
+  e.addEventListener('click', () => {
+    const name = (e as HTMLElement).dataset.tab!;
+    if (name === 'inspect' && asset && asset.revision === revision && !busy)
+      $('mode-review').click();
+    else setPanel(name);
+  }),
+);
 const classLabels: Record<Feature['class'], string> = {
   trail: 'Trails',
   road: 'Roads',
@@ -726,17 +788,7 @@ const classLabels: Record<Feature['class'], string> = {
   ski_run: 'Ski runs',
   ski_lift: 'Ski lifts',
 };
-const zoneFeature = (f: Feature) =>
-  Boolean(f.polygons?.length) || (['water', 'glacier', 'ski_run'] as string[]).includes(f.class);
 const treatment = (f: Feature): Treatment => (f.treatment === 'v_carve' ? 'v_carve' : 'insert');
-const treatmentOptions = (value: string, mixed = false, zone = false) =>
-  (mixed ? '<option value="mixed">Mixed</option>' : '') +
-  (['insert', 'v_carve'] as Treatment[])
-    .map(
-      v =>
-        `<option value="${v}" ${v === value ? 'selected' : ''}>${v === 'insert' ? 'Insert' : zone ? 'Recess' : 'V-carve'}</option>`,
-    )
-    .join('');
 function setTreatment(features: Feature[], value: Treatment) {
   for (const f of features) {
     f.treatment = value;
@@ -746,19 +798,6 @@ function setTreatment(features: Feature[], value: Treatment) {
   refreshMetrics();
   listFeatures();
   void updateOverlays();
-}
-function featureOptions(f: Feature) {
-  if (!zoneFeature(f) || selected !== f.id) return '';
-  const width =
-    f.class === 'ski_run' && !f.polygons?.length
-      ? `<label>Run width <span class="input-wrap"><input data-width="${esc(f.id)}" type="number" min="1" max="500" step="1" value="${f.width_m ?? project.settings.ski_run_width_m}"/><span>m</span></span></label>`
-      : '';
-  return `<div class="zone-options"><label>Surface <select data-surface="${esc(f.id)}"><option value="terrain" ${f.surface !== 'level' ? 'selected' : ''}>Follow terrain</option><option value="level" ${f.surface === 'level' ? 'selected' : ''}>Level surface</option></select></label><label class="${project.settings.manufacturing_mode === 'multicolor' ? 'hidden' : ''}">Insert depth <span class="input-wrap"><input data-zone-depth="${esc(f.id)}" ${project.settings.manufacturing_mode === 'multicolor' ? 'disabled' : ''} type="number" min="0.2" max="20" step="0.1" value="${f.insert_depth_mm ?? project.settings.zone_insert_depth_mm}"/><span>mm</span></span></label>${width}<p>${project.settings.manufacturing_mode === 'multicolor' ? 'Painted surface · color depth controlled by slicer' : 'Shallow pocket · continuous supporting floor'}</p></div>`;
-}
-function gpxFeedback(f: Feature) {
-  if (!f.id.startsWith('gpx:')) return '';
-  const placement = gpxPlacement(f, project.grid.bounds, project.settings.boundary);
-  return `<div class="gpx-placement" data-placement="${placement}"><span>${placementLabels[placement]}</span><button class="small-link" data-zoom-feature="${esc(f.id)}" aria-label="Zoom to ${esc(f.name)}">Zoom to feature</button></div>`;
 }
 function filamentSummary() {
   const { slots } = filamentPlan(project);
@@ -850,145 +889,7 @@ function listFeatures() {
         void updateOverlays();
       };
     });
-  const term = ($('feature-search') as HTMLInputElement).value.toLowerCase();
-  $('feature-list').innerHTML =
-    priority
-      .map(cls => {
-        const all = project.features.filter(f => f.class === cls),
-          list = all.filter(f =>
-            `${f.name} ${f.id} ${featureSource(f).name}`.toLowerCase().includes(term),
-          );
-        if (!list.length) return '';
-        const modes = new Set(all.map(treatment));
-        const value = modes.size === 1 ? treatment(all[0]) : 'mixed';
-        const label = classLabels[cls],
-          zone = all.some(zoneFeature);
-        return `<div class="feature-group"><div class="group-heading"><input type="checkbox" data-class="${cls}" aria-label="Show ${label}" ${all.every(f => f.enabled) ? 'checked' : ''}/><span>${label}</span><small>${all.length}</small><select data-class-treatment="${cls}" aria-label="${label} treatment">${treatmentOptions(value, modes.size > 1, zone)}</select></div>${groupFeaturesBySource(
-          list,
-        )
-          .map(group => {
-            // Bulk controls include search-hidden members, just like the class controls.
-            const items = all.filter(f => featureSource(f).id === group.id);
-            const modes = new Set(items.map(treatment));
-            const value = modes.size === 1 ? treatment(items[0]) : 'mixed';
-            const scope = esc(`${label} from ${group.name}`);
-            return `<section class="feature-source-group" data-feature-source="${esc(group.id)}" data-source-class="${cls}"><div class="feature-source-heading"><label><input type="checkbox" data-source-toggle aria-label="Show all ${scope}" ${items.every(f => f.enabled) ? 'checked' : ''}/><span>${esc(group.name)}</span><small>${items.length}</small></label><select data-source-treatment aria-label="Treatment for all ${scope}">${treatmentOptions(value, modes.size > 1, items.some(zoneFeature))}</select></div>${group.features.map(f => `<div class="feature-entry ${f.id === selected ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item"><input type="checkbox" data-toggle="${esc(f.id)}" aria-label="Show ${esc(f.name)}" ${f.enabled ? 'checked' : ''}/><span title="${esc(f.name)}">${esc(f.name)}</span><select data-treatment="${esc(f.id)}" aria-label="Treatment for ${esc(f.name)}">${treatmentOptions(treatment(f), false, zoneFeature(f))}</select></div>${gpxFeedback(f)}${featureOptions(f)}</div>`).join('')}</section>`;
-          })
-          .join('')}</div>`;
-      })
-      .join('') || '<p class="empty-note">No matching features.</p>';
-  $('feature-list')
-    .querySelectorAll<HTMLElement>('[data-feature-source]')
-    .forEach(group => {
-      const items = project.features.filter(
-        f =>
-          f.class === group.dataset.sourceClass &&
-          featureSource(f).id === group.dataset.featureSource,
-      );
-      const toggle = group.querySelector<HTMLInputElement>('[data-source-toggle]')!;
-      toggle.indeterminate = items.some(f => f.enabled) && !items.every(f => f.enabled);
-      toggle.onchange = () => setVisibility(items, toggle.checked);
-      const select = group.querySelector<HTMLSelectElement>('[data-source-treatment]')!;
-      select.onchange = () => {
-        if (select.value !== 'mixed') setTreatment(items, select.value as Treatment);
-      };
-    });
-  $('feature-list')
-    .querySelectorAll<HTMLInputElement>('[data-toggle]')
-    .forEach(
-      input =>
-        (input.onchange = () =>
-          setVisibility(
-            [project.features.find(f => f.id === input.dataset.toggle)!],
-            input.checked,
-          )),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLButtonElement>('[data-zoom-feature]')
-    .forEach(button => {
-      button.onclick = () => {
-        const feature = project.features.find(f => f.id === button.dataset.zoomFeature)!;
-        selected = feature.id;
-        viewer.highlight(selected);
-        viewer.focusFeature(feature);
-        mobileSettings(false);
-        status(
-          'Showing the complete GPX footprint in orange. Only sections inside the terrain print. Use Fit model to return.',
-        );
-      };
-    });
-  $('feature-list')
-    .querySelectorAll<HTMLInputElement>('[data-class]')
-    .forEach(input => {
-      const items = project.features.filter(f => f.class === input.dataset.class);
-      input.indeterminate = items.some(f => f.enabled) && !items.every(f => f.enabled);
-      input.onchange = () => setVisibility(items, input.checked);
-    });
-  $('feature-list')
-    .querySelectorAll<HTMLSelectElement>('[data-treatment]')
-    .forEach(
-      input =>
-        (input.onchange = () =>
-          setTreatment(
-            [project.features.find(f => f.id === input.dataset.treatment)!],
-            input.value as Treatment,
-          )),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLSelectElement>('[data-class-treatment]')
-    .forEach(
-      input =>
-        (input.onchange = () => {
-          if (input.value !== 'mixed')
-            setTreatment(
-              project.features.filter(f => f.class === input.dataset.classTreatment),
-              input.value as Treatment,
-            );
-        }),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLElement>('[data-feature]')
-    .forEach(
-      row =>
-        (row.onclick = e => {
-          if ((e.target as HTMLElement).closest('input,select,button')) return;
-          selected = row.dataset.feature!;
-          viewer.highlight(selected);
-          listFeatures();
-        }),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLSelectElement>('[data-surface]')
-    .forEach(
-      input =>
-        (input.onchange = () => {
-          const f = project.features.find(f => f.id === input.dataset.surface)!;
-          f.surface = input.value as Feature['surface'];
-          touch();
-          void updateOverlays();
-        }),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLInputElement>('[data-width]')
-    .forEach(
-      input =>
-        (input.onchange = () => {
-          const f = project.features.find(f => f.id === input.dataset.width)!;
-          f.width_m = Number(input.value);
-          touch();
-          void updateOverlays();
-        }),
-    );
-  $('feature-list')
-    .querySelectorAll<HTMLInputElement>('[data-zone-depth]')
-    .forEach(
-      input =>
-        (input.onchange = () => {
-          const f = project.features.find(f => f.id === input.dataset.zoneDepth)!;
-          f.insert_depth_mm = Number(input.value);
-          touch();
-        }),
-    );
+  featureBrowser.render(project);
 }
 function setVisibility(features: Feature[], enabled: boolean) {
   features.forEach(f => {
@@ -1036,12 +937,10 @@ $('winter-mode').onchange = () => {
   if (enabled && !project.features.some(f => f.class === 'ski_run' || f.class === 'ski_lift'))
     void loadProjectOsm();
 };
-$('feature-search').addEventListener('input', listFeatures);
-$('all-features').onclick = () =>
-  setVisibility(project.features, !project.features.every(f => f.enabled));
 viewer.onPick = id => {
   selected = id;
   viewer.highlight(id);
+  featureBrowser.selectFeature(id);
   setPanel('features');
   listFeatures();
   const row = [...$('feature-list').querySelectorAll<HTMLElement>('[data-feature]')].find(
@@ -1115,6 +1014,10 @@ function syncForm() {
     ($(`material-${group.id}-color`) as HTMLInputElement).value = group.color;
     ($(`material-${group.id}-extruder`) as HTMLInputElement).value = String(group.extruder);
   }
+  $('quality-caption').textContent =
+    s.terrain_max_error_mm === 0
+      ? 'Uses all source elevation samples'
+      : `Sampled height error ≤ ${s.terrain_max_error_mm} mm`;
   const together = s.manufacturing_mode === 'multicolor';
   for (const id of [
     'fit-clearance',
@@ -1134,23 +1037,21 @@ function syncForm() {
   document
     .querySelectorAll<HTMLElement>('[data-fit-only]')
     .forEach(element => element.classList.toggle('hidden', together));
-  $('feature-settings-title').textContent = together
-    ? 'Feature geometry'
-    : 'Feature geometry & fit';
+  $('feature-settings-title').textContent = 'Feature geometry';
   syncFilaments();
   $('manufacturing-guidance').textContent = together
-    ? 'One solid carries painted surface regions. The slicer controls color penetration, walls, and infill; no fitted inserts are generated.'
+    ? 'Print one model with multiple filaments. The slicer controls color depth, walls, and infill.'
     : 'Print the terrain and inserts separately, then assemble. Clearance, tapered lower edges, and optional segmentation help the pieces fit.';
   $('fit-mode-guidance').textContent = together
     ? 'Relative height controls raised or recessed details. Color depth is determined by the slicer, so insert depth and assembly settings do not apply.'
-    : 'Full-bed inserts avoid unnecessary breaks. Model-edge clearance preserves a terrain border around pockets. The visible top stays full-size while buried lower layers taper inward.';
+    : 'Full-model inserts avoid unnecessary breaks. Model-edge clearance preserves a terrain border around pockets. The visible top stays full-size while buried lower layers taper inward.';
   fitGuidance();
 }
 function projectLabels() {
   annotationEditor.sync();
   $('location-name').textContent = project.name;
-  $('project-subtitle').textContent = `${project.name} · Terrain & trail study`;
-  $('project-crumb').textContent = project.name.toUpperCase();
+  $('project-title').textContent = project.name;
+  $('project-subtitle').textContent = project.source.name;
   $('source-name').textContent = project.source.name;
   const b = project.grid.bounds;
   $('coordinates').textContent =
@@ -1183,7 +1084,7 @@ async function rebuild(
     viewer.setTerrain(t.mesh, t.layout, fit, project);
     if (stagedPreview) {
       markPreviewStage('terrain');
-      $('model-caption').textContent = 'TERRAIN READY · ADDING MAP DETAILS';
+      $('model-caption').textContent = 'Terrain ready · loading features';
       await nextPreviewPaint();
     }
     overlays = includeOverlays
@@ -1198,8 +1099,8 @@ async function rebuild(
     annotationEditor.refresh();
     $('model-caption').textContent =
       project.settings.terrain_max_error_mm > 0
-        ? 'DESIGN PREVIEW · OPTIMIZED DETAIL'
-        : 'DESIGN PREVIEW · FULL DETAIL';
+        ? 'Editing model · adaptive detail'
+        : 'Editing model · full source resolution';
     refreshMetrics();
     listFeatures();
     status('');
@@ -1253,7 +1154,7 @@ function design() {
     annotationEditor.refresh();
     viewer.setSection(100);
   }
-  $('model-caption').textContent = 'PREVIEW ONLY · GENERATE TO DOWNLOAD';
+  $('model-caption').textContent = 'Editing model';
   $('review-controls').classList.add('hidden');
 }
 $('mode-design').onclick = design;
@@ -1264,10 +1165,10 @@ $('mode-review').onclick = () => {
   annotationEditor.refresh(true);
   $('mode-review').classList.add('active');
   $('mode-design').classList.remove('active');
-  $('model-caption').textContent = 'GENERATED ASSET · VALIDATED SOLID';
+  $('model-caption').textContent = 'Generated model';
   $('review-controls').classList.remove('hidden');
   $<HTMLInputElement>('explode').disabled = Boolean(asset.faceMaterials);
-  setPanel('print');
+  setPanel('inspect');
 };
 $('generate').onclick = async () => {
   if (busy || !terrain) return;
@@ -1299,7 +1200,7 @@ $('generate').onclick = async () => {
     ($('download') as HTMLButtonElement).disabled = false;
     ($('mode-review') as HTMLButtonElement).disabled = false;
     $('asset-summary').innerHTML =
-      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.faceMaterials ? 'One painted exterior mesh · slicer-controlled color depth' : result.inserts.length + ' independently printable inserts'}<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
+      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.faceMaterials ? 'One multicolor solid · color depth controlled by slicer' : result.inserts.length + ' independently printable inserts'}<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
     $('piece-list').innerHTML = result.inserts
       .map(p => `<div class="review-piece"><span>${esc(p.id)}</span></div>`)
       .join('');
@@ -1308,7 +1209,7 @@ $('generate').onclick = async () => {
     status(
       result.validation.removed_terrain_islands
         ? `Your model is ready. Removed ${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} while preserving the insert gaps.`
-        : 'Your model is ready. Inspect it here or download the print bundle.',
+        : 'Model generated. Inspect the parts or export the model.',
     );
   } catch (e) {
     error(e);
@@ -1503,7 +1404,7 @@ $('fit-download-confirm').onclick = async () => {
   };
   fitDownloadDialog(false);
   updateBusy(true);
-  fitStatus('Creating your fit test…');
+  fitStatus('Generating fit test…');
   try {
     const bytes = await engine.call(
       'calibration',
@@ -1568,7 +1469,10 @@ $('file-project').onchange = async () => {
     error(e);
   }
 };
-$('upload-gpx').onclick = () => $<HTMLInputElement>('file-gpx').click();
+$('upload-gpx').onclick = () => {
+  $<HTMLDialogElement>('sources-dialog').close();
+  $<HTMLInputElement>('file-gpx').click();
+};
 $('file-gpx').onchange = async () => {
   const input = $<HTMLInputElement>('file-gpx');
   const files = Array.from(input.files ?? []);
@@ -1601,7 +1505,10 @@ $('file-gpx').onchange = async () => {
     button.disabled = false;
   }
 };
-$('upload-features').onclick = () => ($('file-features') as HTMLInputElement).click();
+$('upload-features').onclick = () => {
+  $<HTMLDialogElement>('sources-dialog').close();
+  $<HTMLInputElement>('file-features').click();
+};
 $('file-features').onchange = async () => {
   try {
     const f = await readSelectedFile($<HTMLInputElement>('file-features'));
@@ -1858,7 +1765,7 @@ for (const [id, k] of [['quality', 'terrain_max_error_mm']] as const)
     touch();
     $('quality-caption').textContent =
       project.settings.terrain_max_error_mm === 0
-        ? 'Every elevation sample, preserved.'
+        ? 'Uses all source elevation samples'
         : `Sampled height error ≤ ${project.settings.terrain_max_error_mm} mm`;
     void rebuild();
   };
@@ -1974,10 +1881,8 @@ function setWizardStep(step: number) {
   $('wizard-next').classList.toggle('hidden', !wizardMode || wizardStep === 3);
   $('area-reuse').classList.toggle('hidden', wizardMode);
   $('area-load').classList.toggle('hidden', wizardMode && wizardStep !== 3);
-  $('area-eyebrow').textContent = wizardMode ? 'Step one' : 'Choose your landscape';
-  $('area-load').innerHTML = wizardMode
-    ? 'Create landscape ' + icon('arrow-up-right')
-    : 'Load terrain ' + icon('arrow-up-right');
+  $('area-title').textContent = wizardMode ? 'Select model area' : 'Edit model area';
+  $('area-load').textContent = wizardMode ? 'Create model' : 'Load terrain';
   createIcons({ icons });
   updateAreaButtons();
 }
@@ -2054,7 +1959,7 @@ function shapeControls(apply = true) {
   ($('extent-height') as HTMLInputElement).disabled = shape !== 'rectangle';
   ($('extent-angle') as HTMLInputElement).disabled = shape === 'circle';
   ($('extent-radius') as HTMLInputElement).disabled = shape === 'circle' || shape === 'spline';
-  $('polygon-draw').textContent = editable ? 'Draw / redraw' : 'Place center';
+  $('polygon-draw').textContent = editable ? 'Draw boundary' : 'Place center';
   ($('polygon-undo') as HTMLButtonElement).disabled = !editable;
   if (apply)
     extentMap.configure(
@@ -2156,7 +2061,7 @@ $('area-load').onclick = async () => {
     viewer.showLoadingMap(loadingLayout, [...loadingBoundary, loadingBoundary[0]]);
     markPreviewStage('topo', true);
     await nextPreviewPaint();
-    $('model-caption').textContent = 'SELECTED AREA · LOADING TERRAIN';
+    $('model-caption').textContent = 'Loading terrain';
     const data = await loadElevation(
       bounds,
       selectedProduct,
@@ -2168,7 +2073,7 @@ $('area-load').onclick = async () => {
       schema_version: 2,
       winter_mode: featureChoice === 'winter',
       extent_editor: extentMap.state(),
-      name: ($('area-name') as HTMLInputElement).value || 'My landscape',
+      name: ($('area-name') as HTMLInputElement).value || 'Untitled model',
       ...data,
       features: [],
       settings: { ...prior, boundary },
@@ -2181,8 +2086,8 @@ $('area-load').onclick = async () => {
     await rebuild(true, false, true, true, true);
     $('model-caption').textContent =
       project.settings.terrain_max_error_mm > 0
-        ? 'DESIGN PREVIEW · OPTIMIZED DETAIL'
-        : 'DESIGN PREVIEW · FULL DETAIL';
+        ? 'Editing model · adaptive detail'
+        : 'Editing model · full source resolution';
     setPanel('terrain');
     wizardMode = false;
     updateBusy(false);
@@ -2367,6 +2272,20 @@ async function start() {
     await renderLanding();
   }
 }
+setupWorkbenchChrome({
+  newProject: () => {
+    void flushAutosave().then(() => {
+      hideLanding();
+      openArea(true);
+    });
+  },
+  panel: name => {
+    setPanel(name);
+    if (name === 'inspect' && asset && asset.revision === revision && !busy)
+      $('mode-review').click();
+    if (matchMedia('(max-width: 760px)').matches) mobileSettings(true);
+  },
+});
 void start();
 
 $('extent-map').addEventListener('extent-edit', event => {

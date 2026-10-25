@@ -5,7 +5,7 @@
       "id": "post-canyon",
       "name": "Post Canyon",
       "location": "Hood River, Oregon",
-      "description": "A dense trail network across the wooded folds above the Columbia River.",
+      "description": "Terrain, trails, roads, and waterways near Hood River, Oregon.",
       "image": "examples/images/post-canyon.webp",
       "bundle": "examples/presets/post-canyon.cwpack",
       "badges": [

@@ -1,3 +1,4 @@
+import { fileCommand, openSources, closeSources, selectFeature } from './workbench-helpers';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import type { Project } from '../src/types';
@@ -114,14 +115,16 @@ test('GPX uploads append named features and survive project export and reopening
     ),
   };
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Upload GPX', exact: true }).tap();
+  await openSources(page);
+  await page.getByRole('button', { name: 'Import GPX…', exact: true }).tap();
   await (await chooser).setFiles([track, route]);
   await expect(page.locator('[data-feature]')).toHaveCount(4);
   await expect(page.locator('#upload-gpx')).toBeEnabled();
   const ridge = page.locator('[data-feature]').filter({ hasText: 'Ridge & River' });
   await expect(ridge).toHaveCount(1);
   await expect(ridge.locator('[data-toggle]')).toBeChecked();
-  await ridge.locator('[data-treatment]').selectOption('v_carve');
+  await selectFeature(page, ridge);
+  await page.locator('#selection-treatment').selectOption('v_carve');
   await ridge.locator('[data-toggle]').uncheck();
   await expect(ridge.locator('[data-toggle]')).not.toBeChecked();
   await ridge.locator('[data-toggle]').check();
@@ -141,9 +144,10 @@ test('GPX uploads append named features and survive project export and reopening
   await expect(page.locator('#status')).toContainText('No usable tracks or routes');
   await expect(page.locator('[data-feature]')).toHaveCount(5);
   await page.screenshot({ path: testInfo.outputPath('gpx-features.png') });
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   const pendingDownload = page.waitForEvent('download');
-  await page.locator('#save-project').tap();
+  await fileCommand(page, 'save-project');
   const downloaded = await pendingDownload;
   const contents = await readFile((await downloaded.path())!, 'utf8');
   const saved = JSON.parse(contents) as Project;
@@ -161,6 +165,7 @@ test('GPX uploads append named features and survive project export and reopening
   await page.getByRole('button', { name: /^Features/ }).tap();
   await expect(page.locator('[data-feature]')).toHaveCount(5);
   await expect(ridge).toHaveCount(2);
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   await page.locator('#generate').tap();
   await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
@@ -183,12 +188,20 @@ test('GPX placement labels and complete-track zoom work on touch screens', async
   });
   const crossing = page.locator('[data-feature]').filter({ hasText: 'Crossing' });
   const beyond = page.locator('[data-feature]').filter({ hasText: 'Beyond' });
-  await expect(crossing.locator('[data-placement]')).toHaveAttribute('data-placement', 'partial');
-  await expect(beyond.locator('[data-placement]')).toHaveAttribute('data-placement', 'outside');
+  await selectFeature(page, crossing);
+  await expect(page.locator('#feature-properties [data-placement]')).toHaveAttribute(
+    'data-placement',
+    'partial',
+  );
+  await selectFeature(page, beyond);
+  await expect(page.locator('#feature-properties [data-placement]')).toHaveAttribute(
+    'data-placement',
+    'outside',
+  );
   await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
-  await beyond.getByRole('button', { name: 'Zoom to Beyond' }).tap();
+  await page.locator('#selection-zoom').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
-  await expect(page.locator('#status')).toContainText('complete GPX footprint');
+  await expect(page.locator('#status')).toContainText('complete feature footprint');
   await page.screenshot({ path: testInfo.outputPath('gpx-location.png') });
   await page.locator('#fit-view').tap();
 });
@@ -224,14 +237,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const viewport = await page.locator('#viewport').boundingBox();
   expect(viewport!.width).toBe(page.viewportSize()!.width);
-  for (const id of [
-    'mobile-settings',
-    'fit-view',
-    'wireframe',
-    'generate',
-    'open-project',
-    'save-project',
-  ]) {
+  for (const id of ['mobile-settings', 'fit-view', 'wireframe', 'generate']) {
     const b = await page.locator('#' + id).boundingBox();
     expect(b!.width).toBeGreaterThanOrEqual(44);
     expect(b!.height).toBeGreaterThanOrEqual(44);
@@ -241,31 +247,32 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await page.locator('#mobile-settings').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'true');
   await page.getByRole('button', { name: /^Features/, exact: false }).tap();
-  await page.locator('[data-class-treatment="trail"]').selectOption('v_carve');
+  await page.locator('[data-select-class="trail"]').click();
+  await page.locator('#selection-treatment').selectOption('v_carve');
   await page.waitForFunction(() => !(window as any).contourDiagnostics.overlayBusy);
   const trails = page
     .locator('.feature-group')
     .filter({ has: page.locator('[data-class="trail"]') });
   await trails.locator('[data-toggle]').first().uncheck();
   await trails.locator('[data-toggle]').first().check();
-  await expect(trails.locator('[data-treatment]').first()).toHaveValue('v_carve');
+  await selectFeature(page, trails.locator('[data-feature]').first());
+  await expect(page.locator('#selection-treatment')).toHaveValue('v_carve');
   const lake = page.locator('[data-feature]').filter({ hasText: 'Test lake' });
   // The row also contains a treatment selector; select the feature by its name.
-  await lake.locator('.feature-item > span').tap();
-  await expect(lake.locator('[data-surface]')).toBeVisible();
-  await lake.locator('[data-surface]').selectOption('level');
-  await expect(lake.locator('[data-zone-depth]')).toBeVisible();
+  await lake.locator('[data-select-feature]').tap();
+  await expect(page.locator('#selection-surface')).toBeVisible();
+  await page.locator('#selection-surface').selectOption('level');
+  await expect(page.locator('#selection-depth')).toBeVisible();
   await page.getByRole('button', { name: 'Print setup', exact: true }).tap();
   await expect(page.locator('#nozzle-diameter')).toHaveValue('0.4');
   await expect(page.locator('#edge-clearance')).toHaveValue('1');
   await expect(page.locator('#terrain-island-width')).toHaveValue('');
+  await page.getByText('Advanced insert fit', { exact: true }).click();
   await expect(page.locator('#terrain-island-guidance')).toContainText('Auto: 1.35 mm');
-  await expect(page.locator('#download-calibration')).toBeVisible();
+  await expect(page.locator('[data-command="download-calibration"]')).toBeVisible();
   await expect(page.locator('#insert-relative-height')).toHaveValue('0.35');
   await expect(page.locator('#insert-surface-mode')).toHaveCount(0);
-  await expect(
-    page.getByText('Positive stands proud, zero is flush, and negative is inset.'),
-  ).toBeVisible();
+  await expect(page.getByText('Positive: raised · Zero: flush · Negative: recessed')).toBeVisible();
   const terrainBuildsBeforePlacement = await page.evaluate(
     () => (window as any).contourDiagnostics.terrainBuilds,
   );
@@ -282,6 +289,7 @@ test('full-width model, touch controls, settings and feature editing', async ({
   await expect(page.locator('#terrain-island-width')).toBeDisabled();
   await expect(page.locator('#fit-calibration')).toBeHidden();
   await page.locator('#material-trail-extruder').fill('3');
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#mobile-settings')).toHaveAttribute('aria-expanded', 'false');
   await page.locator('#generate').tap();
@@ -361,6 +369,7 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await page.locator('[data-ann-number="width_mm"]').fill('20');
   await expect(page.locator('#annotation-warning')).toHaveText('');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   await expect(page.locator('#generate')).toBeVisible();
 });
@@ -399,6 +408,7 @@ test('Overpass failure keeps terrain usable and offers a successful retry', asyn
   });
   await page.locator('#mobile-settings').tap();
   await page.getByRole('button', { name: /^Features/, exact: false }).tap();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#status')).toContainText('Loading trails and water… Attempt 1 of 4');
   await expect(page.locator('#fetch-osm')).toHaveText('Retry trails and water', {
@@ -413,8 +423,9 @@ test('Overpass failure keeps terrain usable and offers a successful retry', asyn
   await expect(page.locator('#status')).toContainText('Your terrain is ready');
 
   recover = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
-  await expect(page.locator('#fetch-osm')).toHaveText('Pull from OpenStreetMap');
+  await expect(page.locator('#fetch-osm')).toHaveText('Load OpenStreetMap features');
   await expect(page.locator('#status')).toContainText('Added 1 map feature');
   await expect(page.locator('#feature-list')).toContainText('Recovered trail');
 });
@@ -449,10 +460,12 @@ test('leaving a project cancels Overpass work and suppresses its stale response'
   });
   await page.locator('#mobile-settings').tap();
   await page.getByRole('button', { name: /^Features/, exact: false }).tap();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toContainText('Loading trails and water');
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
-  await page.locator('#show-projects').tap();
+  await fileCommand(page, 'show-projects');
   await expect(page.locator('#landing-dialog')).toBeVisible();
   await page.waitForTimeout(800);
   expect(await page.evaluate(() => (window as any).contourDiagnostics.osmLoading)).toBe(false);
@@ -542,9 +555,11 @@ for (const scenario of [
     await page.locator('#mobile-settings').tap();
     await page.getByRole('button', { name: 'Print setup', exact: true }).tap();
     await page.locator('#manufacturing-mode').selectOption('multicolor');
+    await closeSources(page);
     await page.locator('#mobile-close').tap();
     await page.locator('#generate').tap();
     await expect(page.locator('#download')).toBeEnabled({ timeout: 60000 });
+    await page.locator('#download').click();
     await page.locator('#order-print').tap();
     const dialog = page.getByRole('dialog', { name: 'Order a full-color print' });
     await expect(dialog.getByLabel('Marketiger email', { exact: true })).toBeVisible();
@@ -613,6 +628,7 @@ for (const scenario of [
     await dialog.getByRole('button', { name: 'Refresh order status' }).tap();
     await expect(dialog).toContainText('Paid');
     await dialog.getByRole('button', { name: 'Close print order' }).tap();
+    await page.locator('#download').click();
     await page.locator('#order-print').tap();
     await dialog.getByLabel('Marketiger email', { exact: true }).fill('test@example.com');
     await dialog.getByLabel('Password', { exact: true }).fill('test-password-not-real');

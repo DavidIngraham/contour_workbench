@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
 .source-actions {
   display: flex;
   flex-wrap: wrap;
@@ -31,7 +30,11 @@
   overflow-wrap: anywhere;
 }
 :root {
-  font-family: 'DM Sans', sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
   color: #24392f;
   background: #f5f6f0;
   font-synthesis: none;
@@ -110,7 +113,7 @@ header {
   height: 28px;
 }
 .brand h1 {
-  font-family: Manrope, sans-serif;
+  font-family: inherit;
   font-weight: 800;
   font-size: 18px;
   letter-spacing: -0.6px;
@@ -193,7 +196,7 @@ aside {
   color: #83907e;
 }
 .sidebar-heading h2 {
-  font-family: Manrope;
+  font-family: inherit;
   font-size: 19px;
   letter-spacing: -0.7px;
   margin: 5px 0 0;
@@ -258,24 +261,7 @@ aside {
   position: relative;
   overflow: hidden;
 }
-.location-card:after {
-  content: '';
-  position: absolute;
-  width: 120px;
-  height: 120px;
-  border-radius: 50%;
-  right: -60px;
-  top: -30px;
-  border: 1px solid #d3ddc8;
-  box-shadow:
-    0 0 0 12px #0000,
-    0 0 0 13px #dce4d3,
-    0 0 0 25px #0000,
-    0 0 0 26px #dce4d3,
-    0 0 0 38px #0000,
-    0 0 0 39px #dce4d3;
-  pointer-events: none;
-}
+
 .location-card strong {
   font-size: 12px;
   display: block;
@@ -525,7 +511,7 @@ input[type='checkbox'] {
   pointer-events: none;
 }
 .project-heading h2 {
-  font-family: Manrope;
+  font-family: inherit;
   font-size: 23px;
   font-weight: 700;
   letter-spacing: -0.8px;
@@ -631,13 +617,13 @@ input[type='checkbox'] {
   gap: 24px;
 }
 .metric strong {
-  font-family: Manrope;
+  font-family: inherit;
   font-size: 15px;
   letter-spacing: -0.4px;
   font-weight: 700;
 }
 .metric strong small {
-  font-family: 'DM Sans';
+  font-family: inherit;
   font-size: 10px;
   color: #849278;
   font-weight: 400;
@@ -823,7 +809,7 @@ select {
   box-shadow: 0 20px 70px #0004;
 }
 .modal h2 {
-  font-family: Manrope;
+  font-family: inherit;
   letter-spacing: -0.6px;
   margin: 0 0 8px;
   font-size: 22px;
@@ -1780,7 +1766,7 @@ button.compass {
   width: 100%;
 }
 .preset-copy strong {
-  font-family: Manrope;
+  font-family: inherit;
   font-size: 17px;
   letter-spacing: -0.4px;
 }

@@ -1,3 +1,4 @@
+import { fileCommand, closeSources } from './workbench-helpers';
 import { test, expect } from '@playwright/test';
 
 test('preset changes become a durable recent project with a thumbnail', async ({
@@ -14,7 +15,7 @@ test('preset changes become a durable recent project with a thumbnail', async ({
     ['topo', 'terrain', 'features'],
   );
 
-  await page.locator('#show-projects').tap();
+  await fileCommand(page, 'show-projects');
   await expect(page.locator('#recent-section')).toBeHidden();
   const presetThumbnail = page.locator('[data-preset="post-canyon"] img');
   expect(await presetThumbnail.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(640);
@@ -31,9 +32,10 @@ test('preset changes become a durable recent project with a thumbnail', async ({
   await page.locator('#mobile-settings').tap();
   await page.locator('#base-height').fill('1.1');
   await expect(page.locator('#save-status')).toHaveText('Saved locally', { timeout: 30_000 });
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
 
-  await page.locator('#show-projects').tap();
+  await fileCommand(page, 'show-projects');
   await expect(page.locator('#recent-section')).toBeVisible();
   await expect(page.locator('[data-local-project]')).toHaveCount(1);
   const thumbnail = page.locator('[data-local-project] img');
@@ -55,9 +57,10 @@ test('preset changes become a durable recent project with a thumbnail', async ({
   );
   await page.locator('#mobile-settings').tap();
   await expect(page.locator('#base-height')).toHaveValue('1.1');
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
 
-  await page.locator('#show-projects').tap();
+  await fileCommand(page, 'show-projects');
   page.once('dialog', dialog => dialog.accept());
   await page.locator('[data-local-delete]').tap();
   await expect(page.locator('#recent-section')).toBeHidden();

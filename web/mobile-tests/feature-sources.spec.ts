@@ -1,3 +1,4 @@
+import { fileCommand, openSources, closeSources, selectFeature } from './workbench-helpers';
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { defaults, type Feature } from '../src/types';
@@ -55,6 +56,7 @@ async function openProject(page: Page, features: Feature[] = []) {
   );
   await page.locator('#mobile-settings').tap();
   await page.getByRole('button', { name: /^Features/ }).tap();
+  await openSources(page);
 }
 async function addSource(page: Page) {
   await page.locator('#source-new').tap();
@@ -90,6 +92,7 @@ test('OpenStreetMap requests and imports only the selected classes', async ({ pa
   const classes = page.locator('#source-classes');
   for (const label of ['Roads', 'Waterways', 'Lakes & rivers', 'Glaciers', 'Ski runs', 'Ski lifts'])
     await classes.getByLabel(label, { exact: true }).uncheck();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   expect(query).toContain('path|footway');
@@ -97,9 +100,9 @@ test('OpenStreetMap requests and imports only the selected classes', async ({ pa
   expect(query).not.toContain('waterway');
   expect(query).not.toContain('aerialway');
   await expect(page.locator('[data-feature]')).toHaveCount(1);
-  await expect(page.locator('[data-feature-source="overpass"] .feature-item span')).toHaveText(
-    'path',
-  );
+  await expect(
+    page.locator('[data-feature-source="overpass"] .feature-item .tree-name'),
+  ).toHaveText('path');
 });
 
 test('class selections persist per source and only refresh the chosen classes', async ({
@@ -132,6 +135,7 @@ test('class selections persist per source and only refresh the chosen classes', 
   await page.locator('#feature-source').selectOption('openskimap');
   const classes = page.locator('#source-classes');
   await classes.getByLabel('Ski lifts', { exact: true }).uncheck();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
@@ -139,14 +143,16 @@ test('class selections persist per source and only refresh the chosen classes', 
   await classes.getByLabel('Ski runs', { exact: true }).uncheck();
   await expect(page.locator('#fetch-osm')).toBeDisabled();
   await classes.getByLabel('Ski lifts', { exact: true }).check();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(2);
   empty = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
-  await expect(page.locator('[data-feature] .feature-item span')).toHaveText('run');
+  await expect(page.locator('[data-feature] .feature-item .tree-name')).toHaveText('run');
   expect(requests).toEqual(['run', 'lift', 'lift']);
   await page.locator('#feature-source').selectOption('hrc');
   await expect(classes.getByLabel('Trails', { exact: true })).toBeChecked();
@@ -180,17 +186,19 @@ test('each class lists sources and feature names alphabetically and remains edit
     feature('county-trail:1', 'County trail'),
     feature('osm:way:1', 'Alpha trail'),
   ]);
-  await expect(page.locator('.feature-source-heading span')).toHaveText([
+  await expect(page.locator('.feature-source-heading .tree-name')).toHaveText([
     'Hood River County · recreation trails',
     'OpenStreetMap · Overpass',
   ]);
+  await closeSources(page);
   const osm = page.locator('[data-feature-source="overpass"]');
-  await expect(osm.locator('.feature-item span')).toHaveText(['Alpha trail', 'Zulu trail']);
-  await osm.getByLabel('Show Alpha trail', { exact: true }).uncheck();
-  await expect(osm.getByLabel('Show Alpha trail', { exact: true })).not.toBeChecked();
+  await expect(osm.locator('.feature-item .tree-name')).toHaveText(['Alpha trail', 'Zulu trail']);
+  await osm.getByLabel('Include Alpha trail in model', { exact: true }).uncheck();
+  await expect(osm.getByLabel('Include Alpha trail in model', { exact: true })).not.toBeChecked();
+  await closeSources(page);
   await page.getByLabel('Search features').fill('Hood River');
   await expect(page.locator('[data-feature]')).toHaveCount(1);
-  await expect(page.locator('.feature-item span')).toHaveText('County trail');
+  await expect(page.locator('.feature-item .tree-name')).toHaveText('County trail');
 });
 
 test('source controls apply to the whole class group and preserve other sources and classes', async ({
@@ -216,42 +224,53 @@ test('source controls apply to the whole class group and preserve other sources 
     feature('county-trail:1', 'County trail'),
     feature('osm:way:3', 'Access road', 'road'),
   ]);
+  await closeSources(page);
   const trails = page.locator('[data-feature-source="overpass"][data-source-class="trail"]');
   const toggle = trails.locator('[data-source-toggle]');
-  const treatment = trails.locator('[data-source-treatment]');
+  const chooseGroup = async () => trails.locator('[data-select-source]').click();
+  const treatment = page.locator('#selection-treatment');
+  await chooseGroup();
   await expect(toggle).toHaveJSProperty('indeterminate', true);
   await expect(treatment).toHaveValue('mixed');
   await toggle.check();
   await expect(trails.locator('[data-toggle]:checked')).toHaveCount(2);
   await expect(toggle).toHaveJSProperty('indeterminate', false);
   await toggle.uncheck();
-  await expect(trails.locator('[data-toggle]:checked')).toHaveCount(0);
   await treatment.selectOption('v_carve');
   await expect(trails.locator('[data-toggle]:checked')).toHaveCount(0);
-  await expect(trails.locator('[data-treatment]').first()).toHaveValue('v_carve');
-  await expect(trails.locator('[data-treatment]').last()).toHaveValue('v_carve');
+  await selectFeature(page, trails.locator('[data-feature]').first());
+  await expect(treatment).toHaveValue('v_carve');
+  await selectFeature(page, trails.locator('[data-feature]').last());
+  await expect(treatment).toHaveValue('v_carve');
+  await chooseGroup();
   await treatment.selectOption('insert');
-  await expect(trails.locator('[data-treatment]').first()).toHaveValue('insert');
-  await expect(trails.locator('[data-treatment]').last()).toHaveValue('insert');
-  await trails.locator('[data-treatment]').first().selectOption('v_carve');
+  await selectFeature(page, trails.locator('[data-feature]').first());
+  await treatment.selectOption('v_carve');
+  await chooseGroup();
   await expect(treatment).toHaveValue('mixed');
+  await closeSources(page);
   await page.getByLabel('Search features').fill('Alpha');
   await expect(trails.locator('[data-feature]')).toHaveCount(1);
   await toggle.check();
   await treatment.selectOption('v_carve');
+  await closeSources(page);
   await page.getByLabel('Search features').fill('');
   await expect(trails.locator('[data-toggle]:checked')).toHaveCount(2);
-  await expect(trails.locator('[data-treatment]').last()).toHaveValue('v_carve');
+  await selectFeature(page, trails.locator('[data-feature]').last());
+  await expect(treatment).toHaveValue('v_carve');
   const others = page.locator('[data-feature="county-trail:1"], [data-feature="osm:way:3"]');
   await expect(others.locator('[data-toggle]:checked')).toHaveCount(2);
-  for (const select of await others.locator('[data-treatment]').all())
-    await expect(select).toHaveValue('insert');
+  for (const row of await others.all()) {
+    await selectFeature(page, row);
+    await expect(treatment).toHaveValue('insert');
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await trails.scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('source-group-controls.png') });
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   const pending = page.waitForEvent('download');
-  await page.locator('#save-project').tap();
+  await fileCommand(page, 'save-project');
   const saved = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
   expect(saved.features.map((f: Feature) => [f.id, f.enabled, f.treatment])).toEqual([
     ['osm:way:1', true, 'v_carve'],
@@ -291,23 +310,29 @@ test('loaded sources can be removed across classes, saved, and loaded again', as
   await page.locator('#loaded-sources').scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('loaded-sources.png') });
   page.once('dialog', dialog => dialog.dismiss());
+  await openSources(page);
   await remove.tap();
   await expect(page.locator('[data-feature]')).toHaveCount(4);
-  await page.locator('[data-feature="osm:way:1"] .feature-item > span').tap();
+  await closeSources(page);
+  await page.locator('[data-feature="osm:way:1"] [data-select-feature]').tap();
+  await closeSources(page);
   await page.getByLabel('Search features').fill('Alpha');
   page.once('dialog', async dialog => {
     expect(dialog.message()).toContain('all 3 features');
     await dialog.accept();
   });
+  await openSources(page);
   await remove.tap();
   await expect(remove).toHaveCount(0);
   await expect(page.locator('[data-feature]')).toHaveCount(0);
+  await closeSources(page);
   await page.getByLabel('Search features').fill('');
   await expect(page.locator('[data-feature]')).toHaveCount(1);
   await expect(page.locator('[data-feature="county-trail:1"] [data-toggle]')).toBeChecked();
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   const pending = page.waitForEvent('download');
-  await page.locator('#save-project').tap();
+  await fileCommand(page, 'save-project');
   const saved = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
   expect(saved.features.map((f: Feature) => f.id)).toEqual(['county-trail:1']);
   await openProject(page, saved.features);
@@ -329,6 +354,7 @@ test('loaded sources can be removed across classes, saved, and loaded again', as
       },
     }),
   );
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(remove).toBeVisible();
@@ -371,17 +397,21 @@ test('OpenSkiMap loads ski classes, excludes inactive features, and preserves ed
   });
   await openProject(page);
   await page.locator('#feature-source').selectOption('openskimap');
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(2);
   const run = page.locator('[data-feature]').filter({ hasText: 'Ski feature 1' });
+  await closeSources(page);
   await run.locator('[data-toggle]').uncheck();
   revision++;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(2);
   await expect(run.locator('[data-toggle]')).not.toBeChecked();
   inactive = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(0);
@@ -405,30 +435,37 @@ test('custom sources persist, refresh without duplicates, and preserve exported 
   );
   await addSource(page);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   const trail = page.locator('[data-feature]').filter({ hasText: 'Local Ridge' });
-  await trail.locator('[data-treatment]').selectOption('v_carve');
+  await selectFeature(page, trail);
+  await page.locator('#selection-treatment').selectOption('v_carve');
   await trail.locator('[data-toggle]').uncheck();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
-  await expect(trail.locator('[data-treatment]')).toHaveValue('v_carve');
+  await selectFeature(page, trail);
+  await expect(page.locator('#selection-treatment')).toHaveValue('v_carve');
   await expect(trail.locator('[data-toggle]')).not.toBeChecked();
   broken = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toHaveText('Retry source');
   await expect(page.locator('#status')).toContainText('HTTP 503');
   await expect(page.locator('[data-feature]')).toHaveCount(1);
   broken = false;
+  await openSources(page);
   await page.locator('#source-edit').tap();
   await page.getByLabel('Source name', { exact: true }).fill('My local network');
   await page.screenshot({ path: testInfo.outputPath('source-library.png') });
   await page.locator('#source-save').tap();
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   const pending = page.waitForEvent('download');
-  await page.locator('#save-project').tap();
+  await fileCommand(page, 'save-project');
   const download = await pending;
   const saved = JSON.parse(await readFile((await download.path())!, 'utf8'));
   expect(saved.features[0]).toMatchObject({
@@ -447,7 +484,9 @@ test('custom sources persist, refresh without duplicates, and preserve exported 
   await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
   await page.locator('#mobile-settings').tap();
   await page.getByRole('button', { name: /^Features/ }).tap();
+  await openSources(page);
   await page.locator('#feature-source').selectOption({ label: 'My local network' });
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
@@ -469,14 +508,17 @@ test('source cancellation and project changes suppress late downloads', async ({
   });
   await openProject(page);
   await addSource(page);
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await page.locator('#cancel-feature-source').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await page.waitForTimeout(1000);
   await expect(page.locator('[data-feature]')).toHaveCount(0);
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
-  await page.locator('#show-projects').tap();
+  await fileCommand(page, 'show-projects');
   await expect(page.locator('#landing-dialog')).toBeVisible();
   await page.waitForTimeout(1000);
   expect(await page.evaluate(() => (window as any).contourDiagnostics.features)).toBe(0);
@@ -509,13 +551,16 @@ test('HRC uses its built-in ArcGIS source and refreshes bundled county IDs', asy
   });
   await openProject(page);
   await page.locator('#feature-source').selectOption('hrc');
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('[data-feature="county-trail:1"]')).toHaveCount(1);
   await expect(page.locator('#fetch-osm')).toBeEnabled();
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(1);
   closed = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('[data-feature]')).toHaveCount(0);
@@ -553,6 +598,7 @@ test('national and state sources load named trails within the terrain and clear 
   for (const source of sources) {
     await page.locator('#feature-source').selectOption(source.id);
     await expect(page.locator('#source-description')).toHaveText(source.description!);
+    await openSources(page);
     await page.locator('#fetch-osm').tap();
     await expect(page.locator('#fetch-osm')).toBeEnabled();
     await expect(page.locator(`[data-feature="source:${source.id}:1"]`)).toContainText(
@@ -561,6 +607,7 @@ test('national and state sources load named trails within the terrain and clear 
   }
   await expect(page.locator('[data-feature]')).toHaveCount(4);
   empty = true;
+  await openSources(page);
   await page.locator('#fetch-osm').tap();
   await expect(page.locator('#fetch-osm')).toBeEnabled();
   await expect(page.locator('#status')).toContainText('No features from Washington State');

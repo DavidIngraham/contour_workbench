@@ -1,6 +1,6 @@
 # Contour Workbench
 
-Contour Workbench turns elevation and map features into printable terrain models entirely in the browser. Draw or edit a geographic extent, load elevation, import OpenStreetMap features, choose inserts or V-carves, preview the result, and export STL or 3MF files.
+Contour Workbench turns elevation and map features into printable terrain models entirely in the browser. Draw or edit a geographic extent, load elevation, import OpenStreetMap features, choose inserts or V-carves, preview the result, inspect generated parts, and export STL or 3MF files. File, View, Model, Tools, and Help menus organize project and modeling commands.
 
 [Open Contour Workbench](https://davidingraham.github.io/contour_workbench/)
 

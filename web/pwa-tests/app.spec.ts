@@ -56,6 +56,7 @@ test('icons and installable manifest resolve within the deployment path', async 
     window.dispatchEvent(event);
   });
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole('button', { name: 'Help and installation…' }).click();
   await page.locator('#install-app').scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('install-app.png') });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

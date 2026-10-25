@@ -1,3 +1,4 @@
+import { fileCommand, closeSources } from './workbench-helpers';
 import { test, expect } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { defaults, type Project, type Feature } from '../src/types';
@@ -54,7 +55,7 @@ test('class priority reorders the tree, resets, and survives saving and reopenin
   await expect(
     page.getByRole('button', { name: 'Move Ski lifts down', exact: true }),
   ).toBeDisabled();
-  const tree = page.locator('.group-heading > span');
+  const tree = page.locator('.group-heading > .tree-name');
   await expect(tree).toHaveText(['Lakes & rivers', 'Trails', 'Roads']);
   for (let i = 0; i < 4; i++)
     await page.getByRole('button', { name: 'Move Roads up', exact: true }).tap();
@@ -69,9 +70,10 @@ test('class priority reorders the tree, resets, and survives saving and reopenin
   await page.locator('#class-priority-list').scrollIntoViewIfNeeded();
   await page.screenshot({ path: testInfo.outputPath('class-priority.png') });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await closeSources(page);
   await page.locator('#mobile-close').tap();
   const pending = page.waitForEvent('download');
-  await page.locator('#save-project').tap();
+  await fileCommand(page, 'save-project');
   const saved = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
   expect(saved.settings.class_priority).toEqual([
     'road',

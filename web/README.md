@@ -19,7 +19,7 @@ Run these commands from the repository root. The production site is `web/dist`; 
 ## Install and use offline
 
 The production build is an installable PWA on HTTPS (or localhost). Use **Install
-app** on the Projects screen when Chrome offers installation, or the browser's
+app** under Help → Storage and offline use when Chrome offers installation, or the browser's
 install menu. On iPhone/iPad, use **Share → Add to Home Screen**. The favicon and
 install icons reuse the mountain mark, with SVG, ICO, Apple touch, and maskable
 PNG variants. Regenerate the raster variants with `npm run render:app-icons`
@@ -32,25 +32,31 @@ Projects remain in the existing browser-local store; browser storage eviction ca
 remove offline data, so exported project files remain useful backups.
 
 Updates download in the background and wait until all workbench windows/tabs are
-closed. They never force-reload an active model. The Projects screen announces a
+closed. They never force-reload an active model. Help → Storage and offline use announces a
 waiting update. The cache is scoped to this app and never clears project storage.
 Development mode does not register a worker. `npm run test:pwa` tests the built
 site at both `/` and `/contour_workbench/`, including installability, offline
 generation/export, delayed activation, and incomplete-release recovery.
 
+## Workbench controls
+
+File contains project creation, opening, recent projects, and editable project export. View contains camera and display controls. Model contains area editing, generation, inspection, model export. The export dialog also offers print ordering. Tools contains calibration tests and source management. Help contains navigation, terminology, installation, offline status, and local-storage guidance. Menus support arrow keys, Home/End, and Escape; view commands report their current pressed state.
+
+Terrain settings are grouped as Area, Model dimensions, Elevation, and Mesh detail. Maximum model size scales terrain to fit; the status bar shows the resulting footprint. Features starts with a bounded, collapsible tree and a selection-properties editor. Checkbox inclusion affects both preview and export. Bulk actions state their scope and count. Print setup separates Print method, Materials, Feature geometry, and Insert fit, with specialist geometry and fit settings collapsed under Advanced. Inspect contains generated-part controls. Editing invalidates generated geometry and explains why inspection/export are unavailable until generation completes again.
+
 ## Design and export
 
-The bundled Post Canyon example opens automatically with 246,078 elevation samples and the original five-vertex Post Canyon boundary rounded with a default 500 m corner radius. Choose an area on the slippy map: draw a freeform or smooth spline polygon, or select Square, Rectangle, or Circle. Presets have dimensions in meters, a draggable center, and edge handles for resizing. Click the nearby rotation arrow for 15° steps, or drag it for any angle. Spline control points remain editable. Rotate outlines clockwise and round freeform or preset corners with a corner radius in meters (locally limited by short edges). Circle size uses diameter. Shape controls are retained in saved projects. For freeform drawing, click Draw / redraw, place vertices, then Finish polygon. Drag vertices to edit, or undo the last point. Use loaded elevation to crop the current landscape without downloading again, or load new elevation for the outline. Concave simple polygons are supported; self-crossing outlines and holes are rejected. The exact outline clips terrain, overlays, and printable parts and is saved with the project. Load elevation, and pull trails, roads, waterways, lakes, reservoirs, rivers, and glaciers directly from OpenStreetMap. Local geographic GeoTIFF and GeoJSON imports are also supported. The Rust classifier follows the original project classification rules, including named local trails and closed/future exclusions.
+The bundled Post Canyon example opens automatically with 246,078 elevation samples and the original five-vertex Post Canyon boundary rounded with a default 500 m corner radius. Choose an area on the slippy map: draw a freeform or smooth spline polygon, or select Square, Rectangle, or Circle. Presets have dimensions in meters, a draggable center, and edge handles for resizing. Click the nearby rotation arrow for 15° steps, or drag it for any angle. Spline control points remain editable. Rotate outlines clockwise and round freeform or preset corners with a corner radius in meters (locally limited by short edges). Circle size uses diameter. Shape controls are retained in saved projects. For freeform drawing, click Draw boundary, place vertices, then Finish polygon. Drag vertices to edit, or undo the last point. Use loaded elevation to crop the current landscape without downloading again, or load new elevation for the outline. Concave simple polygons are supported; self-crossing outlines and holes are rejected. The exact outline clips terrain, overlays, and printable parts and is saved with the project. Load elevation, and pull trails, roads, waterways, lakes, reservoirs, rivers, and glaciers directly from OpenStreetMap. Local geographic GeoTIFF and GeoJSON imports are also supported. The Rust classifier follows the original project classification rules, including named local trails and closed/future exclusions.
 
-When a new area starts loading, the viewport first shows the regional topo map and selected polygon. Terrain replaces that flat footprint as soon as elevation meshing finishes and the editing controls become available; OpenStreetMap trails and zones continue loading in the background and are draped afterward. The status reports each bounded mirror attempt. If every mirror fails, the terrain remains usable and the Features panel offers **Retry trails and water**. Starting another area or project cancels the old feature request. Preset packs perform the same terrain-then-features reveal using their prebuilt meshes.
+When a new area starts loading, the viewport first shows the regional topo map and selected polygon. Terrain replaces that flat footprint as soon as elevation meshing finishes and the editing controls become available; OpenStreetMap trails and zones continue loading in the background and are draped afterward. The status reports each bounded mirror attempt. If every mirror fails, the terrain remains usable and Add features offers **Retry trails and water**. Starting another area or project cancels the old feature request. Preset packs perform the same terrain-then-features reveal using their prebuilt meshes.
 
-Full source resolution is the default. Adaptive detail is opt-in and constrains sampled vertical error in model millimeters. Polygon zones preserve multipolygon islands and source DEM samples across their interiors. Each feature and class has a visibility checkbox and an Insert/V-carve selector. Hide/unhide preserves the selected treatment. Treatment, visibility, manufacturing mode, and insert relative-height changes refresh overlays while reusing terrain. Class selectors apply to all members; individual overrides display a Mixed class selection. Width and V-carve depth changes rebuild overlays only. Base thickness directly shifts cached surface vertices and creates no worker jobs. Bed size, elevation exaggeration, detail, and boundary changes rebuild terrain. Insert segmentation defaults to the print bed; pockets remain continuous across optional insert divisions.
+Full source resolution is the default. Adaptive detail is opt-in and constrains sampled vertical error in model millimeters. Polygon zones preserve multipolygon islands and source DEM samples across their interiors. Each feature and group has an Include in model checkbox. Select a feature, class, or source/class group to edit its treatment in Selection properties. Multicolor mode labels insert treatments Color region. Hide/unhide preserves the selected treatment. Treatment, visibility, manufacturing mode, and insert relative-height changes refresh overlays while reusing terrain. Group properties offer all-member or search-result scope; individual overrides display a Mixed class selection. Width and V-carve depth changes rebuild overlays only. Base thickness directly shifts cached surface vertices and creates no worker jobs. Bed size, elevation exaggeration, detail, and boundary changes rebuild terrain. Insert segmentation defaults to the print bed; pockets remain continuous across optional insert divisions.
 
 Water, glacier, and ski-run areas appear as configurable zone features. Water defaults to a level blue insert; glaciers and runs follow the terrain. Each zone can switch between Insert and Recess, level and conformal surfaces, and an individual insert depth. A shallow pocket leaves a configurable continuous terrain floor under large inserts. Zone inserts remain continuous until explicit bed segmentation is selected, and the same level is retained across segments. Wide rivers that cross the terrain boundary are clipped against a small retaining rim.
 
 Winter mode extends the Overpass query with `piste:type=downhill` and `aerialway=*`. Mapped piste areas are used directly; centerline pistes use the configurable ground width. Ski runs and glaciers preview as white inserts, chair lifts default to dark V-carves, and ordinary trails are hidden while the preset is active. Turning winter mode off restores the prior feature choices. Snowfields are intentionally excluded because their OSM coverage and tagging are inconsistent.
 
-Generate constructs the printable terrain and fitted inserts. Review supports exploded inserts and sectioning. Download produces a ZIP containing terrain and insert STLs in millimeters, assembly origins, settings, source attribution, validation, and the editable project. The first edit to an example creates a local project automatically. New and imported designs are saved locally as they change. The landing page lists recent projects with generated scene thumbnails and actions to open, rename, duplicate, export, or delete them. Export/Open project files remain available for portable backups and preserve elevation and feature selections without requiring the services again.
+Generate constructs the printable terrain and fitted inserts. Inspect contains generated-part validation, triangle counts, exploded inserts, and sectioning. Download produces a ZIP containing terrain and insert STLs in millimeters, assembly origins, settings, source attribution, validation, and the editable project. The first edit to an example creates a local project automatically. New and imported designs are saved locally as they change. The landing page lists recent projects with generated scene thumbnails and actions to open, rename, duplicate, export, or delete them. Export/Open project files remain available for portable backups and preserve elevation and feature selections without requiring the services again.
 
 ## Sources and current limits
 
@@ -104,7 +110,7 @@ After generation, Download offers an STL parts bundle, portable 3MF, Bambu Studi
 
 ## Feature sources
 
-In **Features**, choose a **Feature source**, then load it. The library includes
+In **Features**, choose **Add features…**, select a **Feature source**, then load it. The same dialog is available from **Tools → Manage data sources…**. The library includes
 OpenStreetMap (the existing Overpass service), Hood River County recreation
 trails, US Forest Service trails, National Park Service trails, BLM public trails,
 Washington State trails, and OpenSkiMap ski runs and lifts. You can load several sources into one landscape. The new-landscape wizard
@@ -124,20 +130,19 @@ classes in the current model after confirmation, including search-hidden feature
 The source stays in the library so it can be loaded again. **Remove from library**
 only removes a custom source definition and keeps its loaded model features.
 
-Open **Class priority** in Features and use the up/down buttons to change which
+Open **Overlap priority** in Features and use the up/down buttons to change which
 classes take precedence at overlaps. Highest priority is first; within a class,
 inserts take precedence over grooves. The tree, preview, and exported geometry
 follow this order in both print modes. Priority is saved with the model; **Reset
 priority** restores the original order. Older models keep that original order.
 
 The feature tree groups each class by source, then sorts sources and feature names
-alphabetically. Each source group has an on/off checkbox and an Insert/V-carve
-selector (Recess for area features), scoped to that source and class. Mixed states
-reflect individual edits. Group controls affect all members, including those hidden
-by search; treatment changes preserve visibility. Search also matches source names. Older OpenStreetMap and county
+alphabetically. Each source group has an inclusion checkbox scoped to that source and class. Select its name to edit treatment in Selection properties (Insert or Color region, V-carve, or Recess for area features). Mixed states
+reflect individual edits. Group checkboxes affect all members, including those hidden
+by search. The properties editor offers explicit all-member or search-result scope; treatment changes preserve inclusion. Search also matches source names. Older OpenStreetMap and county
 features are recognized from their IDs, GPX uploads use their filenames, and new
 GeoJSON uploads retain their filename as the source. Unattributed features appear
-under **Other features**. Existing class-wide and individual feature controls remain available.
+under **Other features**. Class-wide and individual edits use the same properties editor.
 
 The four national/state trail entries use official public ArcGIS services and
 request only features intersecting the terrain's bounding box. Their name fields

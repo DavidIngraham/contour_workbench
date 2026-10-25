@@ -346,6 +346,10 @@ test('multicolor coupon downloads three painted filaments and a dimensional lege
   await expect(page.locator('#fit-clearance')).toBeHidden();
   await expect(page.locator('#path-width')).toBeVisible();
   const pending = page.waitForEvent('download');
+  await page
+    .locator('.command-menu > summary')
+    .filter({ hasText: /^Tools$/ })
+    .click();
   await page.locator('#download-color-calibration').click();
   const file = await pending;
   const bytes = await readFile((await file.path())!);
