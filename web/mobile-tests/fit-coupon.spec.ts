@@ -5,6 +5,8 @@ test('coupon settings and unit labels are usable without loading a project', asy
   await page.locator('#landing-calibration').click();
   await expect(page.locator('#coupon-path_width_mm')).toHaveValue('0.9');
   await expect(page.locator('#coupon-label-preview')).toContainText('0.15 MM');
+  await expect(page.locator('#coupon-size')).toContainText('100.0 × 28.0 mm');
+  await expect(page.locator('#fit-download-dialog')).toContainText('Labels engraved underneath');
   await page.locator('#coupon-floor-thickness').fill('5');
   await expect(page.locator('#coupon-label-preview')).toContainText('FLOOR 5.00 MM');
   await expect(page.locator('#coupon-size')).toContainText('total height 7.20 mm');

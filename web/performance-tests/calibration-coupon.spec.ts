@@ -38,6 +38,9 @@ for (const floorMm of [1, 5, 20])
       floor_thickness_mm: floorMm,
       total_height_mm: floorMm + 2.7,
       nozzle_diameter_mm: 0.4,
+      label_surface: 'bottom',
+      label_depth_mm: 0.4,
+      minimum_floor_after_engraving_mm: floorMm - 0.4,
       terrain: { name: 'Mt. Hood Meadows', relief_mm: 1.2 },
     });
     expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
@@ -61,7 +64,7 @@ for (const floorMm of [1, 5, 20])
     ].map(match => match.slice(1).map(Number));
     for (const [axis, size] of [
       [0, 100],
-      [1, 76],
+      [1, 28],
     ]) {
       expect(Math.min(...vertices.map(v => v[axis]))).toBeCloseTo(0, 3);
       expect(Math.max(...vertices.map(v => v[axis]))).toBeCloseTo(size, 3);
@@ -70,21 +73,24 @@ for (const floorMm of [1, 5, 20])
     expect(terrainVertices.length).toBeGreaterThan(1000);
     expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
     expect(Math.max(...vertices.map(([, , z]) => z))).toBeCloseTo(floorMm + 2.7, 3);
-    expect(Math.max(...vertices.filter(([, y]) => y > 28).map(([, , z]) => z))).toBeCloseTo(
-      floorMm + 1.5,
-      3,
-    );
-    // Engraving must exist in the exported mesh in every pocket and settings row.
-    for (const y0 of [31, 40, 46, 52, 58, 64, 70])
+    // Every lettering row opens from the bottom, mirrored in Y for a long-edge flip.
+    for (let row = 0; row < 7; row++) {
+      const y0 = 28 - (1 + row * 3.8) - 3.15;
       expect(
-        vertices.filter(
-          ([, y, z]) => y >= y0 - 0.01 && y <= y0 + 3.2 && Math.abs(z - (floorMm + 0.9)) < 1e-4,
-        ).length,
+        vertices.filter(([, y, z]) => y >= y0 - 0.01 && y <= y0 + 3.2 && Math.abs(z - 0.4) < 1e-4)
+          .length,
       ).toBeGreaterThan(30);
-    await expect(page.locator('#path-width')).toHaveValue('0.9');
-    await expect(page.locator('#insert-depth')).toHaveValue('2');
+    }
     await mkdir('../temp', { recursive: true });
     await writeFile('../temp/custom-fit-coupon.stl', files['coupon-base.stl']);
+    expect(
+      vertices
+        .filter(([, , z]) => z > 1e-5 && z < floorMm - 1e-5)
+        // Boolean triangulation can add vertices along the recessed letter walls.
+        .every(([, , z]) => z <= 0.4 + 1e-4),
+    ).toBe(true);
+    await expect(page.locator('#path-width')).toHaveValue('0.9');
+    await expect(page.locator('#insert-depth')).toHaveValue('2');
     // Relief must span every insert region, rather than occupy a separate patch.
     for (const center of [14, 38, 62, 86]) {
       const region = terrainVertices.filter(

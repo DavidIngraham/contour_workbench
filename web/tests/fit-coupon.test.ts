@@ -8,6 +8,16 @@ import {
 import { defaults } from '../src/types';
 
 describe('dimensioned fit coupon', () => {
+  it('fits underside lettering inside the terrain footprint without a label extension', () => {
+    for (const nozzle of [0.2, 0.4, 0.6, 0.8]) {
+      const s = { ...defaults, nozzle_diameter_mm: nozzle, path_width_mm: nozzle * 2.25 };
+      const layout = couponLayout(s, defaultCouponOptions(s));
+      expect(layout.depthMm).toBe(layout.terrainDepthMm);
+      expect((1 + 6 * 3.8 + 7 * 0.45) * layout.textScale).toBeLessThan(layout.depthMm);
+      expect(layout.floorMm - layout.engravingDepthMm).toBeCloseTo(0.6);
+    }
+    expect(couponLayout(defaults, defaultCouponOptions(defaults)).depthMm).toBe(28);
+  });
   it('adds floor thickness without changing pocket engagement or clearance', () => {
     const options = defaultCouponOptions(defaults);
     const before = couponLayout(defaults, options);

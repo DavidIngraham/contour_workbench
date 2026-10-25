@@ -23,6 +23,22 @@ pub fn coupon_label_rectangles(text: &str, pixel_mm: f64) -> Result<String, JsVa
     serde_json::to_string(&coupon_text_rectangles(text, pixel_mm).map_err(err)?).map_err(err)
 }
 
+/// Underside lettering positioned by the core, readable after a long-edge flip.
+#[wasm_bindgen]
+pub fn coupon_underside_label_rectangles(
+    text: &str,
+    pixel_mm: f64,
+    x_mm: f64,
+    y_mm: f64,
+    face_depth_mm: f64,
+) -> Result<String, JsValue> {
+    serde_json::to_string(
+        &coupon_underside_text_rectangles(text, pixel_mm, [x_mm, y_mm], face_depth_mm)
+            .map_err(err)?,
+    )
+    .map_err(err)
+}
+
 fn push_u32(out: &mut Vec<u8>, value: usize) -> Result<(), JsValue> {
     let value = u32::try_from(value).map_err(|_| err("Mesh packet exceeds 32-bit limits"))?;
     out.extend_from_slice(&value.to_le_bytes());

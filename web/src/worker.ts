@@ -230,7 +230,16 @@ function calibrationFiles(
   const clearances = options.clearances_mm;
   const layout = couponLayout(s, options);
   const labels = couponLabels(s, options);
-  const { pathScale, textScale, widthMm, terrainDepthMm, depthMm, surfaceMm, floorMm } = layout;
+  const {
+    pathScale,
+    textScale,
+    widthMm,
+    terrainDepthMm,
+    depthMm,
+    surfaceMm,
+    floorMm,
+    engravingDepthMm,
+  } = layout;
   const centers = [14, 38, 62, 86].map(x => x * pathScale);
   const owned: Manifold[] = [];
   const own = (solid: Manifold) => {
@@ -259,7 +268,6 @@ function calibrationFiles(
         'Could not generate the labeled taper. Reduce draft or elephant-foot relief and try again.',
       );
     const insertMesh = validatedMesh(tapered.solid, 'Calibration switchback insert');
-    const strip = box([widthMm, depthMm - terrainDepthMm, surfaceMm], [0, terrainDepthMm, 0]);
     // This private session cannot replace the active project's terrain or settings.
     const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
     let relief: Manifold;
@@ -290,15 +298,17 @@ function calibrationFiles(
     } finally {
       terrainSession.free();
     }
-    const base = own(M.Manifold.union([strip, relief]));
+    const base = relief;
     const cutters: Manifold[] = [];
     const pixel = 0.45 * textScale;
     const engrave = (text: string, x: number, y: number) => {
-      const rectangles: number[][] = JSON.parse(core.coupon_label_rectangles(text, pixel));
+      const rectangles: number[][] = JSON.parse(
+        core.coupon_underside_label_rectangles(text, pixel, x, y, depthMm),
+      );
       for (const [dx, dy, w, h] of rectangles)
         // Tiny overlap removes point-touching corners between neighboring pixels.
         cutters.push(
-          box([w + 0.01, h + 0.01, 0.7], [x + dx - 0.005, y + dy - 0.005, surfaceMm - 0.6]),
+          box([w + 0.01, h + 0.01, engravingDepthMm + 0.1], [dx - 0.005, dy - 0.005, -0.1]),
         );
     };
     clearances.forEach((clearance, index) => {
@@ -316,14 +326,10 @@ function calibrationFiles(
         ),
       );
       const label = labels.pockets[index];
-      engrave(
-        label,
-        centers[index] - ((label.length * 6 - 1) * pixel) / 2,
-        terrainDepthMm + 3 * textScale,
-      );
+      engrave(label, centers[index] - ((label.length * 6 - 1) * pixel) / 2, textScale);
     });
     labels.settings.forEach((label, i) =>
-      engrave(label, 4 * textScale, terrainDepthMm + (42 - i * 6) * textScale),
+      engrave(label, 4 * textScale, (1 + (6 - i) * 3.8) * textScale),
     );
     const combined = own(M.Manifold.union(cutters));
     const cut = own(base.subtract(combined));
@@ -350,7 +356,9 @@ function calibrationFiles(
           floor_thickness_mm: floorMm,
           total_height_mm: surfaceMm + 1.2,
           engraved_labels: labels,
-          label_depth_mm: 0.6,
+          label_surface: 'bottom',
+          label_depth_mm: engravingDepthMm,
+          minimum_floor_after_engraving_mm: floorMm - engravingDepthMm,
           label_stroke_mm: pixel,
           terrain: {
             name: calibrationTerrain.name,
@@ -371,9 +379,9 @@ function calibrationFiles(
       ),
     );
     files['README.txt'] = strToU8(
-      'CONTOUR WORKBENCH FIT TEST\n\nPrint the base and four identical switchback inserts with their flat, narrow ends on the build plate. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
-        'The base records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees, and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
-        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the floor thickness engraved on the base. Increasing it adds material below the pockets without changing fit or insert dimensions. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
+      'CONTOUR WORKBENCH FIT TEST\n\nPrint the base terrain-side up with the recessed writing against the build plate. Print the four identical switchback inserts with their flat, narrow ends on the build plate. Flip the base over its long edge to read the underside; each clearance stays aligned with its pocket across the width. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
+        'The underside records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees, and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
+        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Increasing it adds material below the pockets without changing fit or insert dimensions. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
         labels.settings.join('\n') +
         '\nPOCKETS: ' +
         labels.pockets.join(', '),

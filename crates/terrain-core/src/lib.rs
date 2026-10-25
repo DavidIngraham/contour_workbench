@@ -5,7 +5,7 @@
 //! geometry uses millimeters in the printer coordinate system.
 mod carve;
 mod coupon_text;
-pub use coupon_text::coupon_text_rectangles;
+pub use coupon_text::{coupon_text_rectangles, coupon_underside_text_rectangles};
 mod model;
 pub use model::{Layout, Mesh, Overlay, Piece, Plan};
 #[cfg(test)]

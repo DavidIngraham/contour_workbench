@@ -1429,7 +1429,7 @@ function updateCouponPreview() {
       '\n',
     );
     $('coupon-size').textContent =
-      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${(layout.surfaceMm + 1.2).toFixed(2)} mm, including terrain relief. Labels are engraved 0.6 mm deep. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
+      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${(layout.surfaceMm + 1.2).toFixed(2)} mm, including terrain relief. Labels are recessed ${layout.engravingDepthMm.toFixed(1)} mm into the underside, leaving at least ${(layout.floorMm - layout.engravingDepthMm).toFixed(2)} mm beneath the pockets. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
     $('coupon-error').textContent = '';
     $<HTMLButtonElement>('fit-download-confirm').disabled = false;
   } catch (e) {

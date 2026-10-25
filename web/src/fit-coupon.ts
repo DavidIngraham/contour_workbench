@@ -92,7 +92,8 @@ export function couponLayout(settings: Settings, options: FitCouponOptions) {
     textScale,
     widthMm: 100 * pathScale,
     terrainDepthMm: 28 * pathScale,
-    depthMm: 28 * pathScale + 48 * textScale,
+    depthMm: 28 * pathScale,
+    engravingDepthMm: 0.4,
     floorMm: options.floor_thickness_mm ?? 1,
     surfaceMm: settings.insert_depth_mm + (options.floor_thickness_mm ?? 1) - 1,
   };
@@ -123,9 +124,9 @@ export function couponForm() {
     )
     .join('')}</div>
     <label for="coupon-floor-thickness">Coupon base thickness (mm)<input id="coupon-floor-thickness" type="number" required min="1" max="20" step="0.1" value="1" aria-describedby="coupon-floor-help"/></label>
-    <p class="help" id="coupon-floor-help">Solid material beneath the pockets. Increase this for a thicker, stiffer coupon; insert dimensions and pocket fit stay the same. Engraved as FLOOR on the base.</p>
+    <p class="help" id="coupon-floor-help">Thickness from the flat bottom to the pocket floors. Underside lettering removes 0.4 mm locally. Increase this for a thicker coupon; insert dimensions and pocket fit stay the same. Recorded as FLOOR underneath.</p>
     <fieldset class="coupon-clearances"><legend>Pocket clearance · each side (mm)</legend><div class="coupon-fields">${[1, 2, 3, 4].map(n => `<label for="coupon-clearance-${n}">Pocket ${n}<input id="coupon-clearance-${n}" type="number" required min="0" max="1" step="0.01"/></label>`).join('')}</div></fieldset>
     <p class="help">Choose four increasing clearances. All four inserts have the same dimensions; try any insert in each pocket. Copy the smallest clearance that seats without force into Print setup → Pocket clearance · each side.</p>
-    <details open><summary>Labels engraved on your coupon</summary><div id="coupon-label-preview" class="coupon-label-preview"></div></details>
+    <details open><summary>Labels engraved underneath</summary><p class="help">Flip over the long edge to read the settings. Each clearance lines up with its pocket across the width. Print terrain-side up, with the recessed writing against the bed.</p><div id="coupon-label-preview" class="coupon-label-preview"></div></details>
     <p class="help" id="coupon-size"></p><p id="coupon-error" role="alert"></p>`;
 }

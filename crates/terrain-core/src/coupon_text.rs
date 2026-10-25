@@ -68,9 +68,42 @@ pub fn coupon_text_rectangles(text: &str, pixel_mm: f64) -> Result<Vec<[f64; 4]>
     Ok(rectangles)
 }
 
+/// Place lettering on the underside, readable after flipping about the long X edge.
+/// Reflect Y, not X, so each clearance remains in its pocket's X column.
+pub fn coupon_underside_text_rectangles(
+    text: &str,
+    pixel_mm: f64,
+    origin_mm: [f64; 2],
+    face_depth_mm: f64,
+) -> Result<Vec<[f64; 4]>, String> {
+    if !face_depth_mm.is_finite()
+        || face_depth_mm <= 0.0
+        || origin_mm.iter().any(|v| !v.is_finite() || *v < 0.0)
+        || origin_mm[1] + 7.0 * pixel_mm > face_depth_mm
+    {
+        return Err("Invalid underside label placement".into());
+    }
+    Ok(coupon_text_rectangles(text, pixel_mm)?
+        .into_iter()
+        .map(|[x, y, w, h]| [origin_mm[0] + x, face_depth_mm - origin_mm[1] - y - h, w, h])
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn underside_text_reads_normally_after_long_edge_flip() {
+        let top = coupon_text_rectangles("F 0.15 MM", 0.45).unwrap();
+        let bottom = coupon_underside_text_rectangles("F 0.15 MM", 0.45, [4.0, 1.0], 28.0).unwrap();
+        for (a, b) in top.iter().zip(&bottom) {
+            assert!((b[0] - (a[0] + 4.0)).abs() < 1e-9);
+            assert!((28.0 - b[1] - b[3] - (a[1] + 1.0)).abs() < 1e-9);
+            assert_eq!(a[2..], b[2..]);
+        }
+        assert!(coupon_underside_text_rectangles("F", 0.45, [0.0, 26.0], 28.0).is_err());
+    }
 
     #[test]
     fn labels_have_mm_strokes_and_read_from_above() {
