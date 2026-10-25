@@ -7,6 +7,47 @@ async function ready(page: Page) {
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
 }
+
+async function importProject(page: Page, name: string) {
+  await page.locator('#file-project').setInputFiles({
+    name: 'update.contour.json',
+    mimeType: 'application/json',
+    buffer: Buffer.from(
+      JSON.stringify({
+        schema_version: 2,
+        name,
+        grid: {
+          bounds: [0, 0, 0.001, 0.001],
+          width: 5,
+          height: 5,
+          elevations: Array(25).fill(100),
+        },
+        source: {
+          product: 'test',
+          name: 'Local data',
+          attribution: 'Test',
+          retrieved: '2026-10-25',
+        },
+        settings: { ...defaults, max_print_size_mm: [50, 50] },
+        features: [],
+      }),
+    ),
+  });
+  await page.waitForFunction(
+    () => (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
+  );
+}
+
+async function stageUpdate(page: Page, request: import('@playwright/test').APIRequestContext) {
+  await request.post('http://127.0.0.1:5182/__test/release?version=2');
+  await page.evaluate(async () => {
+    await (await navigator.serviceWorker.getRegistration())!.update();
+  });
+  await page.waitForFunction(async () =>
+    Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
+  );
+  await expect(page.locator('#pwa-reload')).toBeVisible();
+}
 test.beforeEach(async ({ request }) => {
   await request.post('http://127.0.0.1:5182/__test/release?version=1');
 });
@@ -169,4 +210,122 @@ test('updates wait for open windows and a failed release keeps the working versi
   await next.reload();
   await expect(next.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
   await next.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
+});
+
+test('explicit update saves pending edits and reloads every open Workbench window', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  await importProject(page, 'First project');
+  const second = await context.newPage();
+  await second.goto(baseURL!);
+  await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
+  await importProject(second, 'Second project');
+  await stageUpdate(page, request);
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await page.locator('#base-height').fill('2.3');
+  await second.locator('#base-height').fill('3.4');
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  for (const [window, name, height] of [
+    [page, 'First project', '2.3'],
+    [second, 'Second project', '3.4'],
+  ] as const) {
+    await window.getByRole('button', { name: `Open ${name}`, exact: true }).click();
+    await window.waitForFunction(
+      () =>
+        (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
+    );
+    await expect(window.locator('#base-height')).toHaveValue(height);
+    await expect(window.locator('#pwa-update-banner')).toBeHidden();
+  }
+});
+
+test('another window with an unfinished operation postpones activation and can retry', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  const second = await context.newPage();
+  await second.goto(baseURL!);
+  await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
+  await importProject(second, 'Area edit');
+  await second.locator('#change-area').click();
+  await stageUpdate(page, request);
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('#pwa-update-message')).toContainText(
+    'Finish or cancel the open dialog',
+  );
+  await expect(page.locator('#pwa-reload')).toBeEnabled();
+  await expect(second.locator('#pwa-update-progress')).toBeHidden();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await second.locator('#area-close').click();
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+});
+
+test('failed durable storage keeps the current release and project open', async ({
+  page,
+  request,
+}) => {
+  await ready(page);
+  await importProject(page, 'Unsaved backup');
+  await expect(page.locator('#save-status')).toHaveText('Saved locally');
+  await stageUpdate(page, request);
+  await page.evaluate(() => {
+    const original = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      ...args: Parameters<typeof original>
+    ) {
+      if (args[1] === 'readwrite')
+        throw new DOMException('Test storage failure', 'QuotaExceededError');
+      return original.apply(this, args);
+    };
+  });
+  await page.locator('#base-height').fill('4.5');
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('#pwa-update-message')).toContainText('Export a project backup');
+  await expect(page.locator('#pwa-reload')).toBeEnabled();
+  await expect(page.locator('#pwa-update-progress')).toBeHidden();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expect(page.locator('#base-height')).toHaveValue('4.5');
+  expect(
+    await page.evaluate(async () =>
+      Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
+    ),
+  ).toBe(true);
+});
+
+test('an older or unresponsive window postpones the update without freezing the editor', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  const older = await context.newPage();
+  await older.route('**/unresponsive-window', route =>
+    route.fulfill({ contentType: 'text/html', body: '<h1>Older Workbench window</h1>' }),
+  );
+  await older.goto(new URL('unresponsive-window', baseURL!).href);
+  await stageUpdate(page, request);
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('#pwa-update-message')).toContainText('did not respond', {
+    timeout: 20000,
+  });
+  await expect(page.locator('#pwa-update-progress')).toBeHidden();
+  await expect(page.locator('#pwa-reload')).toBeEnabled();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await older.close();
+  await page.locator('#pwa-reload').click();
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
 });

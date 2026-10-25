@@ -31,9 +31,14 @@ tiles, source requests, and bundled example downloads require a connection.
 Projects remain in the existing browser-local store; browser storage eviction can
 remove offline data, so exported project files remain useful backups.
 
-Updates download in the background and wait until all workbench windows/tabs are
-closed. They never force-reload an active model. Help → Storage and offline use announces a
-waiting update. The cache is scoped to this app and never clears project storage.
+Updates download in the background. **Update available — Reload** saves projects
+in all open Workbench windows, activates the completed download, and reloads those
+windows. The action is also available under Help → Storage and offline use.
+Finish or cancel active operations and dialogs first. If saving fails or another
+window cannot respond, the current version remains open; export a project backup
+or close the unresponsive window before retrying. Without an explicit update,
+activation waits until all Workbench windows close. Background downloads never
+force-reload an editor. The cache is scoped to this app and never clears project storage.
 Development mode does not register a worker. `npm run test:pwa` tests the built
 site at both `/` and `/contour_workbench/`, including installability, offline
 generation/export, delayed activation, and incomplete-release recovery.

@@ -147,7 +147,6 @@ const esc = (s: unknown) =>
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
 $('app').innerHTML = renderAppShell(icon);
-setupPwa();
 const legacyFeatureMaterialRow = $('feature-color').closest<HTMLElement>('.input-row');
 if (legacyFeatureMaterialRow)
   legacyFeatureMaterialRow.outerHTML =
@@ -433,7 +432,7 @@ function ensureLocalIdentity() {
   if (!localIdentity) activateNewLocalWorkspace(presetOriginId);
   return localIdentity!;
 }
-async function persistCurrentProject() {
+async function persistCurrentProject(requireDurable = false) {
   if (!project || !localIdentity) return;
   const identity = localIdentity,
     snapshot = project,
@@ -451,14 +450,18 @@ async function persistCurrentProject() {
       persistenceRequested = true;
       void requestPersistentProjectStorage();
     }
+    if (requireDurable && !durable)
+      throw new Error('Project storage is unavailable. Export a project backup before updating.');
   } catch (e) {
     if (localIdentity?.id === identity.id)
       $('save-status').textContent = 'Local save failed · export a backup';
     console.error(e);
+    if (requireDurable)
+      throw new Error('The project could not be saved. Export a project backup before updating.');
   }
 }
 function queueAutosave() {
-  autosaveQueue = autosaveQueue.catch(() => undefined).then(persistCurrentProject);
+  autosaveQueue = autosaveQueue.catch(() => undefined).then(() => persistCurrentProject());
   return autosaveQueue;
 }
 function scheduleAutosave() {
@@ -2285,6 +2288,18 @@ setupWorkbenchChrome({
       $('mode-review').click();
     if (matchMedia('(max-width: 760px)').matches) mobileSettings(true);
   },
+});
+setupPwa(async () => {
+  if (busy || osmLoading || overlayRunning)
+    throw new Error('Finish or cancel the current operation before updating.');
+  if (
+    document.querySelector(
+      '.print-order-dialog[open], #sources-dialog[open], .modal-backdrop:not(.hidden):not(#landing-dialog)',
+    )
+  )
+    throw new Error('Finish or cancel the open dialog before updating.');
+  await flushAutosave();
+  await persistCurrentProject(true);
 });
 void start();
 

@@ -1,4 +1,27 @@
 /* Workbench controls use neutral surfaces; scene colors describe the model. */
+.update-banner {
+  position: fixed;
+  top: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(620px, calc(100vw - 24px));
+  z-index: 40;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #b8cee6;
+  border-radius: 3px;
+  background: #f5f9ff;
+  color: #26323e;
+  box-shadow: 0 3px 12px #14243320;
+  font-size: 13px;
+}
+.update-banner span {
+  flex: 1 1 220px;
+}
 :root {
   color: #26323e;
   background: #f3f4f6;

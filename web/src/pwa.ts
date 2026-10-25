@@ -4,9 +4,43 @@ interface InstallPrompt extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-export function setupPwa() {
+/** Connect installation and explicit updates to the application's durable-save boundary. */
+export function setupPwa(prepareUpdate: () => Promise<void>) {
   const button = document.querySelector<HTMLButtonElement>('#install-app')!;
   const message = document.querySelector<HTMLElement>('#pwa-status')!;
+  const banner = document.querySelector<HTMLElement>('#pwa-update-banner')!;
+  const updateMessage = document.querySelector<HTMLElement>('#pwa-update-message')!;
+  const reloadButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-pwa-reload]')];
+  const progress = document.querySelector<HTMLDialogElement>('#pwa-update-progress')!;
+  let updating = false;
+  let preparedRequest: string | undefined;
+  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
+  const showMessage = (text: string) => {
+    message.textContent = text;
+    updateMessage.textContent = text;
+  };
+  const finish = () => {
+    updating = false;
+    preparedRequest = undefined;
+    clearTimeout(recoveryTimer);
+    progress.close();
+    reloadButtons.forEach(button => {
+      button.disabled = false;
+    });
+  };
+  const begin = () => {
+    updating = true;
+    reloadButtons.forEach(button => {
+      button.disabled = true;
+    });
+    if (!progress.open) progress.showModal();
+    clearTimeout(recoveryTimer);
+    recoveryTimer = setTimeout(() => {
+      finish();
+      showMessage('The update did not finish. Check the other Workbench windows, then try again.');
+    }, 30000);
+  };
+  progress.addEventListener('cancel', event => event.preventDefault());
   let prompt: InstallPrompt | undefined;
   const standalone = matchMedia('(display-mode: standalone)');
   const hideInstall = () => {
@@ -36,17 +70,66 @@ export function setupPwa() {
   };
   if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return;
   const base = new URL(import.meta.env.BASE_URL, document.baseURI);
+  const workerUrl = new URL('sw.js', base);
+  navigator.serviceWorker.addEventListener('message', event => {
+    const worker = event.source as ServiceWorker | null;
+    if (!worker || worker.scriptURL !== workerUrl.href) return;
+    const data = event.data;
+    if (data?.type === 'PREPARE_UPDATE' && typeof data.requestId === 'string') {
+      if (preparedRequest === data.requestId) return;
+      preparedRequest = data.requestId;
+      begin();
+      void (async () => {
+        try {
+          await prepareUpdate();
+          if (preparedRequest === data.requestId)
+            worker.postMessage({ type: 'UPDATE_READY', requestId: data.requestId });
+        } catch (error) {
+          worker.postMessage({
+            type: 'UPDATE_BLOCKED',
+            requestId: data.requestId,
+            reason: error instanceof Error ? error.message : 'A project could not be saved.',
+          });
+        }
+      })();
+    } else if (
+      data?.type === 'UPDATE_CANCELED' &&
+      (!preparedRequest || data.requestId === preparedRequest)
+    ) {
+      finish();
+      banner.classList.remove('hidden');
+      showMessage(`Update postponed: ${data.reason}`);
+    }
+  });
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    // Only windows that acknowledged a durable save participate in an explicit update.
+    if (preparedRequest) location.reload();
+  });
   void navigator.serviceWorker
-    .register(new URL('sw.js', base), {
+    .register(workerUrl, {
       scope: base.pathname,
       updateViaCache: 'none',
     })
     .then(registration => {
       const showUpdate = () => {
-        if (registration.waiting && navigator.serviceWorker.controller)
-          message.textContent =
-            'An update is ready. Let your project finish saving, then close all Contour Workbench windows and reopen to update.';
+        if (registration.waiting && navigator.serviceWorker.controller) {
+          banner.classList.remove('hidden');
+          reloadButtons.forEach(button => {
+            button.classList.remove('hidden');
+          });
+          if (!updating)
+            showMessage(
+              'An update is ready. Reload saves projects and updates all open Workbench windows.',
+            );
+        }
       };
+      reloadButtons.forEach(button => {
+        button.onclick = () => {
+          if (updating || !registration.waiting) return;
+          begin();
+          registration.waiting.postMessage({ type: 'APPLY_UPDATE' });
+        };
+      });
       showUpdate();
       const watchInstallation = () => {
         const worker = registration.installing;

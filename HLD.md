@@ -56,14 +56,23 @@ all bundled/lazy JS and WASM, icons, catalog, and thumbnails; large preset bundl
 external provider responses, and user project data are excluded.
 
 The worker installs a complete version atomically, serves that version's shell
-and assets from its own cache, and waits for old clients to close before activation.
-It does not call `skipWaiting` or reload clients. Activation only removes older
+and assets from its own cache, and normally waits for old clients to close before activation.
+A visible Update available — Reload action is also available in Help. Its worker
+message protocol snapshots open windows in the app's scope and requests a durable
+save from each. `main.ts` rejects preparation during active geometry/source work
+or unfinished dialogs, flushes queued autosaves, and requires IndexedDB persistence
+rather than the tab-only fallback. Prepared windows are held behind a native
+progress dialog. Only after every window acknowledges saving does the waiting
+worker call `skipWaiting`; `controllerchange` reloads the prepared windows. A
+blocked save or a 15-second missing response cancels activation and restores the
+current sessions. A 30-second client timer recovers from an interrupted protocol.
+Background installation never initiates this protocol or reloads an editor. Activation only removes older
 Contour Workbench shell caches in the same scope; IndexedDB/project data and
 other applications' caches are untouched. `pwa.ts` offers browser-supported
 installation, reports offline readiness/waiting updates, and rechecks updates
 when returning after an hour. Registration is production-only. CI runs production
 PWA tests for installability, offline local model generation/export, multi-window
-updates, and failed-release recovery under both deployment path layouts.
+updates, pending edits, failed durable storage, postponed operations, and failed-release recovery under both deployment path layouts.
 
 ## System context
 
