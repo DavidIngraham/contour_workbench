@@ -1,6 +1,44 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
+import calibrationTerrain from '../src/calibration-terrain.json' with { type: 'json' };
+import { calibrationSwitchbackCenterlineMm } from '../src/calibration-path';
+
+const highest = (vertices: number[][]) => vertices.reduce((z, v) => Math.max(z, v[2]), -Infinity);
+
+// Vertical ray against exported triangles: test physical surfaces rather than
+// relying on labels or particular Boolean triangulation vertices.
+function surfaceAt(vertices: number[][], x: number, y: number) {
+  let top = -Infinity;
+  for (let i = 0; i < vertices.length; i += 3) {
+    const [a, b, c] = vertices.slice(i, i + 3);
+    const denominator = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    if (Math.abs(denominator) < 1e-10) continue;
+    const u = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / denominator;
+    const v = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / denominator;
+    if (Math.min(u, v, 1 - u - v) >= -1e-6)
+      top = Math.max(top, u * a[2] + v * b[2] + (1 - u - v) * c[2]);
+  }
+  return top;
+}
+
+// Independent elevation expectation from the bundled DEM and its regular grid
+// triangles, without using the coupon worker's remapped geometry.
+function reliefAt(x: number, y: number) {
+  const { width, height, elevations } = calibrationTerrain.grid;
+  const gx = (x / 25) * (width - 1),
+    gy = (y / 28) * (height - 1);
+  const ix = Math.min(width - 2, Math.floor(gx)),
+    iy = Math.min(height - 2, Math.floor(gy));
+  const u = gx - ix,
+    v = gy - iy;
+  const a = elevations[iy * width + ix],
+    b = elevations[iy * width + ix + 1];
+  const c = elevations[(iy + 1) * width + ix + 1],
+    d = elevations[(iy + 1) * width + ix];
+  const z = u >= v ? a * (1 - u) + b * (u - v) + c * v : a * (1 - v) + c * u + d * (v - u);
+  return (4 * (z - Math.min(...elevations))) / (Math.max(...elevations) - Math.min(...elevations));
+}
 
 test('one thickness control grows the coupon and inserts without changing the lower taper', async ({
   page,
@@ -20,7 +58,11 @@ test('one thickness control grows the coupon and inserts without changing the lo
     expect(manifest).toMatchObject({
       insert_depth_mm: depth,
       floor_thickness_mm: 1,
-      total_height_mm: depth + 1.2,
+      total_height_mm: depth + 5,
+      minimum_insert_thickness_mm: depth,
+      insert_top: 'terrain_conforming',
+      insert_relative_height_mm: 0,
+      terrain: { repeat_count: 4, relief_mm: 4, tile_size_mm: [25, 28] },
       draft_angle_deg: 1.5,
       draft_height_mm: 1.7,
       draft_height_limit_mm: 1.7,
@@ -32,9 +74,41 @@ test('one thickness control grows the coupon and inserts without changing the lo
       );
     const insert = vertices(manifest.pieces[0].file);
     expect(Math.min(...insert.map(v => v[2]))).toBeCloseTo(0, 4);
-    expect(Math.max(...insert.map(v => v[2]))).toBeCloseTo(depth, 4);
-    const baseHeight = Math.max(...vertices('coupon-base.stl').map(v => v[2]));
-    expect(baseHeight).toBeCloseTo(depth + 1.2, 3);
+    expect(highest(insert)).toBeGreaterThan(depth + 1.5);
+    expect(highest(insert)).toBeLessThanOrEqual(depth + 4.001);
+    const base = vertices('coupon-base.stl');
+    const baseHeight = highest(base);
+    expect(baseHeight).toBeCloseTo(depth + 5, 3);
+    for (const piece of manifest.pieces) {
+      expect(strFromU8(files[piece.file])).toBe(strFromU8(files[manifest.pieces[0].file]));
+      expect(piece).toMatchObject({ conformal: true, surface_offset_mm: 0 });
+      const [ox, oy, oz] = piece.assembly_origin_mm;
+      // Compare the entire switchback centerline to the original source terrain.
+      const heights: number[] = [];
+      for (let i = 1; i < calibrationSwitchbackCenterlineMm.length; i++) {
+        const [ax, ay] = calibrationSwitchbackCenterlineMm[i - 1];
+        const [bx, by] = calibrationSwitchbackCenterlineMm[i];
+        for (const t of [0.13, 0.37, 0.63, 0.87]) {
+          const x = 8 + ax + (bx - ax) * t,
+            y = 6.2 + ay + (by - ay) * t;
+          const actual = surfaceAt(insert, x, y);
+          const expected = depth + reliefAt(x + (ox % 25), y + oy);
+          expect(actual).toBeCloseTo(expected, 3);
+          // Pocket floor must remain flat beneath every terrain-following insert.
+          expect(surfaceAt(base, x + ox, y + oy)).toBeCloseTo(oz, 3);
+          heights.push(actual);
+        }
+      }
+      expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1.5);
+    }
+    // Away from the pockets, all four terrain tiles must repeat the source DEM.
+    for (let tile = 0; tile < 4; tile++)
+      for (const [x, y] of [
+        [2.3, 4.2],
+        [22.7, 13.1],
+        [11.7, 5.6],
+      ])
+        expect(surfaceAt(base, x + tile * 25, y)).toBeCloseTo(1 + depth + reliefAt(x, y), 3);
     results.push({ insert, baseHeight });
   }
   expect(results[1].baseHeight - results[0].baseHeight).toBeCloseTo(3, 3);
@@ -105,7 +179,7 @@ for (const floorMm of [1, 5, 20])
     await page.locator('#coupon-insert_depth_mm').fill('2.50');
     for (const [i, value] of ['0.06', '0.14', '0.22', '0.30'].entries())
       await page.locator(`#coupon-clearance-${i + 1}`).fill(value);
-    await expect(page.locator('#coupon-label-preview')).toContainText('INSERT DEPTH 2.50 MM');
+    await expect(page.locator('#coupon-label-preview')).toContainText('MIN INSERT 2.50 MM');
     await page.locator('#fit-download-format').selectOption('stl');
     await page.locator('#fit-download-confirm').click();
     const download = await pending,
@@ -118,12 +192,12 @@ for (const floorMm of [1, 5, 20])
       path_width_mm: 1.1,
       insert_depth_mm: 2.5,
       floor_thickness_mm: floorMm,
-      total_height_mm: floorMm + 2.7,
+      total_height_mm: floorMm + 6.5,
       nozzle_diameter_mm: 0.4,
       label_surface: 'bottom',
       label_depth_mm: 0.4,
       minimum_floor_after_engraving_mm: floorMm - 0.4,
-      terrain: { name: 'Mt. Hood Meadows', relief_mm: 1.2 },
+      terrain: { name: 'Mt. Hood Meadows', relief_mm: 4, repeat_count: 4 },
     });
     expect(manifest.pieces.map((piece: any) => piece.clearance_per_side_mm)).toEqual([
       0.06, 0.14, 0.22, 0.3,
@@ -138,7 +212,8 @@ for (const floorMm of [1, 5, 20])
       ),
     ].map(match => match.slice(1).map(Number));
     expect(Math.min(...insertVertices.map(v => v[2]))).toBeCloseTo(0, 3);
-    expect(Math.max(...insertVertices.map(v => v[2]))).toBeCloseTo(2.5, 3);
+    expect(highest(insertVertices)).toBeGreaterThan(4);
+    expect(highest(insertVertices)).toBeLessThanOrEqual(6.501);
     const vertices = [
       ...strFromU8(files['coupon-base.stl']).matchAll(
         /vertex ([\d.e+-]+) ([\d.e+-]+) ([\d.e+-]+)/g,
@@ -148,13 +223,13 @@ for (const floorMm of [1, 5, 20])
       [0, 100],
       [1, 28],
     ]) {
-      expect(Math.min(...vertices.map(v => v[axis]))).toBeCloseTo(0, 3);
-      expect(Math.max(...vertices.map(v => v[axis]))).toBeCloseTo(size, 3);
+      expect(vertices.reduce((min, v) => Math.min(min, v[axis]), Infinity)).toBeCloseTo(0, 3);
+      expect(vertices.reduce((max, v) => Math.max(max, v[axis]), -Infinity)).toBeCloseTo(size, 3);
     }
     const terrainVertices = vertices.filter(([, y, z]) => y < 28 && z > floorMm + 1.5);
     expect(terrainVertices.length).toBeGreaterThan(1000);
     expect(new Set(terrainVertices.map(([, , z]) => z.toFixed(3))).size).toBeGreaterThan(100);
-    expect(Math.max(...vertices.map(([, , z]) => z))).toBeCloseTo(floorMm + 2.7, 3);
+    expect(highest(vertices)).toBeCloseTo(floorMm + 6.5, 3);
     // Every lettering row opens from the bottom, mirrored in Y for a long-edge flip.
     for (let row = 0; row < 7; row++) {
       const y0 = 28 - (1 + row * 3.8) - 3.15;
@@ -174,7 +249,7 @@ for (const floorMm of [1, 5, 20])
     await expect(page.locator('#path-width')).toHaveValue('0.9');
     await expect(page.locator('#insert-depth')).toHaveValue('2');
     // Relief must span every insert region, rather than occupy a separate patch.
-    for (const center of [14, 38, 62, 86]) {
+    for (const center of [12.5, 37.5, 62.5, 87.5]) {
       const region = terrainVertices.filter(
         ([x, y]) => Math.abs(x - center) < 8 && y > 5 && y < 23,
       );
@@ -215,7 +290,11 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
           variant === 'bambu-mini' ? 'Bambu Lab A1 mini 0.4 nozzle' : 'Bambu Lab P1S 0.4 nozzle',
         filament_colour: ['#8BAA73', '#E78A43'],
       });
-      expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
+      // Taller conformal inserts need full toolhead clearance. Small beds may
+      // require multiple plates; all pieces remain in the same 3MF download.
+      expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(
+        variant === 'bambu-mini' ? 2 : 1,
+      );
       expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
         'key="print_sequence" value="by object"',
       );

@@ -235,13 +235,17 @@ function calibrationFiles(
     pathScale,
     textScale,
     widthMm,
+    tileWidthMm,
+    pocketCenterYMm,
     terrainDepthMm,
     depthMm,
     surfaceMm,
     floorMm,
     engravingDepthMm,
+    reliefMm,
+    totalHeightMm,
   } = layout;
-  const centers = [14, 38, 62, 86].map(x => x * pathScale);
+  const centers = layout.pocketCentersMm;
   const owned: Manifold[] = [];
   const own = (solid: Manifold) => {
     owned.push(solid);
@@ -250,25 +254,6 @@ function calibrationFiles(
   const box = (size: [number, number, number], xyz: [number, number, number]) =>
     own(own(M.Manifold.cube(size)).translate(xyz));
   try {
-    // All inserts are identical. Fail instead of silently reducing a labeled taper.
-    const prism = own(
-      switchbackSolid(
-        M,
-        8 * pathScale,
-        6.2 * pathScale,
-        s.path_width_mm,
-        s.insert_depth_mm,
-        0,
-        pathScale,
-      ),
-    );
-    const tapered = taperedSolid(M, prism, 'trail', s, s.insert_depth_mm);
-    if (tapered.solid !== prism) own(tapered.solid);
-    if (tapered.solid === prism && tapered.profile.maximumInsetMm > 1e-7)
-      throw new Error(
-        'Could not generate the labeled taper. Reduce draft or elephant-foot relief and try again.',
-      );
-    const insertMesh = validatedMesh(tapered.solid, 'Calibration switchback insert');
     // This private session cannot replace the active project's terrain or settings.
     const terrainSession = new core.TerrainSession(JSON.stringify(calibrationTerrain.grid));
     let relief: Manifold;
@@ -278,7 +263,7 @@ function calibrationFiles(
           JSON.stringify({
             ...s,
             boundary: [],
-            max_print_size_mm: [96, 36],
+            max_print_size_mm: [tileWidthMm, terrainDepthMm],
             base_height_mm: 0.6,
             height_factor: 1,
             terrain_max_error_mm: 0,
@@ -289,17 +274,50 @@ function calibrationFiles(
       let top = 0;
       for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
       for (let i = 0; i < mesh.positions.length; i += 3) {
-        mesh.positions[i] *= widthMm / packet.metadata.layout.width;
+        mesh.positions[i] *= tileWidthMm / packet.metadata.layout.width;
         mesh.positions[i + 1] *= terrainDepthMm / packet.metadata.layout.depth;
         if (mesh.positions[i + 2] > 0.6)
-          mesh.positions[i + 2] = surfaceMm + ((mesh.positions[i + 2] - 0.6) * 1.2) / (top - 0.6);
+          mesh.positions[i + 2] =
+            surfaceMm + ((mesh.positions[i + 2] - 0.6) * reliefMm) / (top - 0.6);
         else if (mesh.positions[i + 2] > 0) mesh.positions[i + 2] = surfaceMm;
       }
       relief = own(solidFromMesh(M, mesh));
     } finally {
       terrainSession.free();
     }
-    const base = relief;
+    // Repeat one tile without mirroring: each clearance sees exactly the same
+    // terrain and switchback orientation. Union removes internal seam faces.
+    const tiles = clearances.map((_, i) => own(relief.translate([i * tileWidthMm, 0, 0])));
+    const base = own(M.Manifold.union(tiles));
+    const prism = own(
+      switchbackSolid(
+        M,
+        centers[0],
+        pocketCenterYMm,
+        s.path_width_mm,
+        s.insert_depth_mm + reliefMm,
+        floorMm,
+        pathScale,
+      ),
+    );
+    // As for real inserts, intersect a tall tapered prism with the original
+    // uncut terrain. Keep the same flat bottom and fit profile for every trial.
+    const tapered = taperedSolid(M, prism, 'trail', s, s.insert_depth_mm);
+    if (tapered.solid !== prism) own(tapered.solid);
+    if (tapered.solid === prism && tapered.profile.maximumInsetMm > 1e-7)
+      throw new Error(
+        'Could not generate the labeled taper. Reduce draft or elephant-foot relief and try again.',
+      );
+    const conformal = own(tapered.solid.intersect(relief));
+    const insertOrigin: [number, number, number] = [
+      centers[0] - 8 * pathScale,
+      pocketCenterYMm - 6.2 * pathScale,
+      floorMm,
+    ];
+    const printable = own(
+      conformal.translate(insertOrigin.map(v => -v) as [number, number, number]),
+    );
+    const insertMesh = validatedMesh(printable, 'Terrain-conforming calibration switchback insert');
     const cutters: Manifold[] = [];
     const pixel = 0.45 * textScale;
     const engrave = (text: string, x: number, y: number) => {
@@ -318,9 +336,9 @@ function calibrationFiles(
           switchbackSolid(
             M,
             centers[index],
-            12 * pathScale,
+            pocketCenterYMm,
             s.path_width_mm + 2 * clearance,
-            surfaceMm + 2,
+            totalHeightMm - floorMm + 0.1,
             floorMm,
             pathScale,
           ),
@@ -346,6 +364,9 @@ function calibrationFiles(
         file,
         geometry: 'trail_switchback',
         path_width_mm: s.path_width_mm,
+        conformal: true,
+        surface_offset_mm: 0,
+        assembly_origin_mm: [insertOrigin[0] + i * tileWidthMm, insertOrigin[1], floorMm],
       };
     });
     files['calibration_manifest.json'] = strToU8(
@@ -355,7 +376,7 @@ function calibrationFiles(
           geometry: 'trail_switchback',
           size_mm: [widthMm, depthMm],
           floor_thickness_mm: floorMm,
-          total_height_mm: surfaceMm + 1.2,
+          total_height_mm: totalHeightMm,
           engraved_labels: labels,
           label_surface: 'bottom',
           label_depth_mm: engravingDepthMm,
@@ -365,11 +386,17 @@ function calibrationFiles(
             name: calibrationTerrain.name,
             attribution: calibrationTerrain.attribution,
             source_url: calibrationTerrain.source_url,
-            relief_mm: 1.2,
+            relief_mm: reliefMm,
+            repeat_count: clearances.length,
+            tile_size_mm: [tileWidthMm, terrainDepthMm],
+            arrangement: 'identical_tiles_along_x',
           },
           path_width_mm: s.path_width_mm,
           nozzle_diameter_mm: s.nozzle_diameter_mm,
           insert_depth_mm: s.insert_depth_mm,
+          minimum_insert_thickness_mm: s.insert_depth_mm,
+          insert_top: 'terrain_conforming',
+          insert_relative_height_mm: 0,
           elephant_foot_relief_mm: s.insert_elephant_foot_relief_mm,
           elephant_foot_height_mm: s.insert_elephant_foot_height_mm,
           draft_angle_deg: s.insert_draft_angle_deg,
@@ -383,8 +410,8 @@ function calibrationFiles(
     );
     files['README.txt'] = strToU8(
       'CONTOUR WORKBENCH FIT TEST\n\nPrint the base terrain-side up with the recessed writing against the build plate. Print the four identical switchback inserts with their flat, narrow ends on the build plate. Flip the base over its long edge to read the underside; each clearance stays aligned with its pocket across the width. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
-        'The underside records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees and actual draft height (H), and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
-        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Change coupon / insert thickness to grow the coupon and inserts together while keeping the floor fixed. The separate floor control adds material below the pockets without changing insert dimensions. Draft and elephant-foot taper heights do not grow with insert thickness; extra height adds a straight section above them. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
+        'The underside records nozzle diameter, path width, minimum insert thickness (MIN INSERT), elephant-foot relief per side, its taper height (H), draft angle in degrees and actual draft height (H), and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
+        'Each pocket repeats the same Mt. Hood Meadows terrain subset using USGS 3DEP elevations, normalized to 4 mm relief. The four tiles are joined into one base; tile boundaries can have a terrain step. All four inserts have identical terrain-conforming tops, flush with the original terrain (zero relative height), and flat bottoms. Rotate none of them when comparing pockets: use the same switchback orientation. MIN INSERT is the guaranteed minimum thickness; actual thickness varies with the relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Change coupon / insert thickness to grow the coupon and inserts together while keeping the floor fixed. The separate floor control adds material below the pockets without changing insert dimensions. Draft and elephant-foot taper heights do not grow with insert thickness; extra height adds a straight section above them. Use this sample to compare fit, terrain tracking, and layer stepping.\n\n' +
         labels.settings.join('\n') +
         '\nPOCKETS: ' +
         labels.pockets.join(', '),
@@ -832,7 +859,6 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       };
       const packageFiles = unzipSync(
         buildThreeMf(asset, project, p.format, undefined, {
-          sequentialSinglePlate: true,
           bambuPrinter: p.bambuPrinter,
         }),
       );

@@ -34,6 +34,17 @@ describe('dimensioned fit coupon', () => {
         'base thickness',
       );
   });
+  it('repeats four equal terrain tiles with minimum insert thickness below the relief', () => {
+    const layout = couponLayout(defaults, defaultCouponOptions(defaults));
+    expect(layout.tileWidthMm * 4).toBe(layout.widthMm);
+    expect(layout.pocketCentersMm).toEqual([12.5, 37.5, 62.5, 87.5]);
+    expect(layout.surfaceMm - layout.floorMm).toBe(defaults.insert_depth_mm);
+    expect(layout.reliefMm).toBe(4);
+    expect(layout.totalHeightMm).toBe(layout.surfaceMm + layout.reliefMm);
+    const labels = couponLabels(defaults, defaultCouponOptions(defaults)).settings.join(' ');
+    expect(labels).toContain('MIN INSERT 2.00 MM');
+    expect(labels).toContain('RELIEF 4.00 MM');
+  });
   it('keeps clearance trials distinct even for a zero-clearance starting project', () => {
     const s = { ...defaults, insert_fit_clearance_per_side_mm: 0 };
     const options = defaultCouponOptions(s);

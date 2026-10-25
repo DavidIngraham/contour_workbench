@@ -2,6 +2,9 @@
 import { calibrationClearances, fitProfile } from './insert-fit';
 import type { Settings } from './types';
 
+/** Repeated terrain relief, large enough to exercise terrain-conforming inserts. */
+export const couponReliefMm = 4;
+
 export interface FitCouponOptions {
   clearances_mm: number[];
   /** Solid material beneath the pockets; older requests retain the 1 mm floor. */
@@ -94,11 +97,16 @@ export function couponLayout(settings: Settings, options: FitCouponOptions) {
     pathScale,
     textScale,
     widthMm: 100 * pathScale,
+    tileWidthMm: 25 * pathScale,
+    pocketCentersMm: [12.5, 37.5, 62.5, 87.5].map(x => x * pathScale),
+    pocketCenterYMm: 20 * pathScale,
     terrainDepthMm: 28 * pathScale,
     depthMm: 28 * pathScale,
     engravingDepthMm: 0.4,
     floorMm: options.floor_thickness_mm ?? 1,
-    surfaceMm: settings.insert_depth_mm + (options.floor_thickness_mm ?? 1) - 1,
+    surfaceMm: settings.insert_depth_mm + (options.floor_thickness_mm ?? 1),
+    reliefMm: couponReliefMm,
+    totalHeightMm: settings.insert_depth_mm + (options.floor_thickness_mm ?? 1) + couponReliefMm,
   };
 }
 
@@ -110,10 +118,10 @@ export function couponLabels(settings: Settings, options: FitCouponOptions) {
     pockets: options.clearances_mm.map(v => `${n(v)} MM`),
     settings: [
       `NOZZLE ${n(settings.nozzle_diameter_mm)} MM  PATH ${n(settings.path_width_mm)} MM`,
-      `INSERT DEPTH ${n(settings.insert_depth_mm)} MM`,
+      `MIN INSERT ${n(settings.insert_depth_mm)} MM`,
       `FOOT/SIDE ${n(settings.insert_elephant_foot_relief_mm)} MM  H ${n(settings.insert_elephant_foot_height_mm)} MM`,
       `DRAFT ${n(settings.insert_draft_angle_deg)} DEG  H ${n(profile.draftHeightMm)} MM`,
-      `FLOOR ${n(options.floor_thickness_mm ?? 1)} MM  RELIEF 1.20 MM`,
+      `FLOOR ${n(options.floor_thickness_mm ?? 1)} MM  RELIEF ${n(couponReliefMm)} MM`,
       'POCKET CLEARANCE PER SIDE',
     ],
   };
@@ -121,7 +129,7 @@ export function couponLabels(settings: Settings, options: FitCouponOptions) {
 
 /** Coupon-only form: edits never change the loaded project's Print setup. */
 export function couponForm() {
-  return `<p class="help">Coupon / insert thickness grows the base and all four inserts together. The solid floor below the pockets stays fixed; extra height extends the straight section above the taper. No need to increase the floor too.</p><div class="coupon-fields">${couponFields
+  return `<p class="help">Each pocket repeats the same Mt. Hood Meadows terrain patch with 4 mm of relief. All four inserts follow that surface and remain interchangeable. Coupon / insert thickness sets their minimum thickness and grows the base and inserts together. The solid floor below the pockets stays fixed; extra height extends the straight section above the taper. No need to increase the floor too.</p><div class="coupon-fields">${couponFields
     .map(
       ([key, label, unit, min, max, step]) =>
         `<label for="coupon-${key}">${label} (${unit})<input id="coupon-${key}" type="number" required min="${min}" max="${max}" step="${step}"/></label>`,

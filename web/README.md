@@ -225,10 +225,20 @@ The radius is in meters. The editable polygon remains intact and the rounded bou
 
 ### Coupon thickness and taper height
 
-**Coupon / insert thickness** changes the insert height and automatically grows
+**Coupon / insert thickness** sets minimum insert thickness and automatically grows
 its matching coupon base. Leave the advanced **Floor thickness** at 1 mm unless
 you need more solid material beneath the pockets. That floor control alone does
 not change insert dimensions.
+
+Each clearance trial repeats the same Mt. Hood Meadows terrain subset with
+4 mm of relief. The switchback runs across the steeper part of every tile, and
+all four inserts have identical tops that follow that terrain at zero relative
+height (flush). Try each pocket with the insert facing the same direction.
+The four tiles form one base; terrain can step at tile boundaries. MIN INSERT
+underneath records minimum thickness; actual insert thickness varies with the
+terrain. With the defaults, the base is 100 × 28 × 7 mm including its 1 mm floor.
+Bambu exports keep all pieces in one file and may use multiple plates on small
+printers to preserve printhead clearance around the taller parts.
 
 Draft angle acts over a separately set **Draft taper height · maximum**, default
 1.7 mm, instead of nearly the full insert depth. Extra thickness adds a straight
