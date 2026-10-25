@@ -61,6 +61,8 @@ pub struct Settings {
     pub insert_elephant_foot_relief_mm: f64,
     /// Height over which elephant-foot relief is applied, in millimeters.
     pub insert_elephant_foot_height_mm: f64,
+    /// Maximum height of the draft lead-in above the insert bottom, in millimeters.
+    pub insert_draft_height_mm: f64,
     /// Assembly draft applied to buried insert walls, in degrees.
     pub insert_draft_angle_deg: f64,
     /// Default depth of line-feature inserts, in millimeters.
@@ -99,6 +101,7 @@ impl Default for Settings {
             insert_fit_clearance_per_side_mm: 0.15,
             insert_elephant_foot_relief_mm: 0.18,
             insert_elephant_foot_height_mm: 0.4,
+            insert_draft_height_mm: 1.7,
             insert_draft_angle_deg: 1.5,
             insert_depth_mm: 2.,
             zone_insert_depth_mm: 0.8,
@@ -129,6 +132,7 @@ struct SettingsDef {
     insert_fit_clearance_per_side_mm: f64,
     insert_elephant_foot_relief_mm: f64,
     insert_elephant_foot_height_mm: f64,
+    insert_draft_height_mm: f64,
     insert_draft_angle_deg: f64,
     insert_depth_mm: f64,
     zone_insert_depth_mm: f64,
@@ -295,6 +299,7 @@ impl Settings {
             self.insert_fit_clearance_per_side_mm,
             self.insert_elephant_foot_relief_mm,
             self.insert_elephant_foot_height_mm,
+            self.insert_draft_height_mm,
             self.insert_draft_angle_deg,
             self.insert_relative_height_mm.abs(),
             self.terrain_max_error_mm,
@@ -307,6 +312,7 @@ impl Settings {
             || self.insert_fit_clearance_per_side_mm > 2.
             || self.insert_elephant_foot_relief_mm > 2.
             || self.insert_elephant_foot_height_mm > 5.
+            || self.insert_draft_height_mm > 5.
             || self.insert_draft_angle_deg > 10.
             || self.insert_relative_height_mm.abs() > 10.
         {

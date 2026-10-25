@@ -9,12 +9,13 @@ export interface FitCouponOptions {
 }
 
 export const couponFields = [
+  ['insert_depth_mm', 'Coupon / insert thickness', 'mm', 1.5, 20, 0.01],
   ['nozzle_diameter_mm', 'Nozzle diameter', 'mm', 0.2, 0.8, 0.01],
   ['path_width_mm', 'Path width', 'mm', 0.45, 3, 0.01],
-  ['insert_depth_mm', 'Insert depth', 'mm', 1.5, 5, 0.01],
   ['insert_elephant_foot_relief_mm', 'Elephant-foot relief · each side', 'mm', 0, 1, 0.01],
   ['insert_elephant_foot_height_mm', 'Elephant-foot taper height', 'mm', 0, 3, 0.01],
   ['insert_draft_angle_deg', 'Insert draft angle', '°', 0, 10, 0.01],
+  ['insert_draft_height_mm', 'Draft taper height · maximum', 'mm', 0, 5, 0.01],
 ] as const;
 
 /** Starting values preserve the project's selected fit without duplicate pockets. */
@@ -76,6 +77,8 @@ export function validateCoupon(settings: Settings, options: FitCouponOptions) {
     );
   if (settings.insert_elephant_foot_relief_mm > 0 && settings.insert_elephant_foot_height_mm === 0)
     throw new Error('Set a positive taper height when using elephant-foot relief.');
+  if (settings.insert_draft_angle_deg > 0 && settings.insert_draft_height_mm === 0)
+    throw new Error('Set a positive draft taper height when using a draft angle.');
   if (profile.footHeightMm < settings.insert_elephant_foot_height_mm - 1e-6)
     throw new Error('Reduce elephant-foot taper height to leave room for the insert seating band.');
 }
@@ -102,14 +105,15 @@ export function couponLayout(settings: Settings, options: FitCouponOptions) {
 /** Labels use the same validated values as the generated geometry. */
 export function couponLabels(settings: Settings, options: FitCouponOptions) {
   const n = (v: number) => v.toFixed(2);
+  const profile = fitProfile(settings, 'trail', settings.insert_depth_mm);
   return {
     pockets: options.clearances_mm.map(v => `${n(v)} MM`),
     settings: [
       `NOZZLE ${n(settings.nozzle_diameter_mm)} MM  PATH ${n(settings.path_width_mm)} MM`,
       `INSERT DEPTH ${n(settings.insert_depth_mm)} MM`,
       `FOOT/SIDE ${n(settings.insert_elephant_foot_relief_mm)} MM  H ${n(settings.insert_elephant_foot_height_mm)} MM`,
-      `DRAFT ${n(settings.insert_draft_angle_deg)} DEG  FLOOR ${n(options.floor_thickness_mm ?? 1)} MM`,
-      'TERRAIN RELIEF 1.20 MM',
+      `DRAFT ${n(settings.insert_draft_angle_deg)} DEG  H ${n(profile.draftHeightMm)} MM`,
+      `FLOOR ${n(options.floor_thickness_mm ?? 1)} MM  RELIEF 1.20 MM`,
       'POCKET CLEARANCE PER SIDE',
     ],
   };
@@ -117,14 +121,15 @@ export function couponLabels(settings: Settings, options: FitCouponOptions) {
 
 /** Coupon-only form: edits never change the loaded project's Print setup. */
 export function couponForm() {
-  return `<div class="coupon-fields">${couponFields
+  return `<p class="help">Coupon / insert thickness grows the base and all four inserts together. The solid floor below the pockets stays fixed; extra height extends the straight section above the taper. No need to increase the floor too.</p><div class="coupon-fields">${couponFields
     .map(
       ([key, label, unit, min, max, step]) =>
         `<label for="coupon-${key}">${label} (${unit})<input id="coupon-${key}" type="number" required min="${min}" max="${max}" step="${step}"/></label>`,
     )
     .join('')}</div>
-    <label for="coupon-floor-thickness">Coupon base thickness (mm)<input id="coupon-floor-thickness" type="number" required min="1" max="20" step="0.1" value="1" aria-describedby="coupon-floor-help"/></label>
-    <p class="help" id="coupon-floor-help">Thickness from the flat bottom to the pocket floors. Underside lettering removes 0.4 mm locally. Increase this for a thicker coupon; insert dimensions and pocket fit stay the same. Recorded as FLOOR underneath.</p>
+    <p class="help">Draft angle applies only over its taper height, not the overall insert thickness. Shallow inserts shorten that height to retain a straight seating band. H in each engraved taper row records that taper's height.</p>
+    <details><summary>Solid floor beneath pockets · advanced</summary><label for="coupon-floor-thickness">Floor thickness (mm)<input id="coupon-floor-thickness" type="number" required min="1" max="20" step="0.01" value="1" aria-describedby="coupon-floor-help"/></label>
+    <p class="help" id="coupon-floor-help">Only changes material beneath the pockets, not insert thickness. Underside lettering removes 0.4 mm locally. Keep 1 mm unless you need a stronger floor. Recorded as FLOOR underneath.</p></details>
     <fieldset class="coupon-clearances"><legend>Pocket clearance · each side (mm)</legend><div class="coupon-fields">${[1, 2, 3, 4].map(n => `<label for="coupon-clearance-${n}">Pocket ${n}<input id="coupon-clearance-${n}" type="number" required min="0" max="1" step="0.01"/></label>`).join('')}</div></fieldset>
     <p class="help">Choose four increasing clearances. All four inserts have the same dimensions; try any insert in each pocket. Copy the smallest clearance that seats without force into Print setup → Pocket clearance · each side.</p>
     <details open><summary>Labels engraved underneath</summary><p class="help">Flip over the long edge to read the settings. Each clearance lines up with its pocket across the width. Print terrain-side up, with the recessed writing against the bed.</p><div id="coupon-label-preview" class="coupon-label-preview"></div></details>

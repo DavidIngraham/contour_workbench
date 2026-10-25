@@ -1088,6 +1088,7 @@ function syncForm() {
     ['foot-relief', 'insert_elephant_foot_relief_mm'],
     ['foot-height', 'insert_elephant_foot_height_mm'],
     ['draft-angle', 'insert_draft_angle_deg'],
+    ['draft-height', 'insert_draft_height_mm'],
     ['insert-depth', 'insert_depth_mm'],
     ['zone-depth', 'zone_insert_depth_mm'],
     ['zone-floor', 'zone_floor_mm'],
@@ -1120,6 +1121,7 @@ function syncForm() {
     'foot-relief',
     'foot-height',
     'draft-angle',
+    'draft-height',
     'insert-gap',
     'segment',
     'terrain-island-width',
@@ -1429,7 +1431,7 @@ function updateCouponPreview() {
       '\n',
     );
     $('coupon-size').textContent =
-      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${(layout.surfaceMm + 1.2).toFixed(2)} mm, including terrain relief. Labels are recessed ${layout.engravingDepthMm.toFixed(1)} mm into the underside, leaving at least ${(layout.floorMm - layout.engravingDepthMm).toFixed(2)} mm beneath the pockets. H means elephant-foot taper height. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
+      `Base: ${layout.widthMm.toFixed(1)} × ${layout.depthMm.toFixed(1)} mm; total height ${(layout.surfaceMm + 1.2).toFixed(2)} mm, including terrain relief. Labels are recessed ${layout.engravingDepthMm.toFixed(1)} mm into the underside, leaving at least ${(layout.floorMm - layout.engravingDepthMm).toFixed(2)} mm beneath the pockets. H records the actual height of each taper; increasing thickness adds straight material above it. Larger nozzles and wider paths increase the coupon size. Match the nozzle and filament in your slicer; layer height is selected there.`;
     $('coupon-error').textContent = '';
     $<HTMLButtonElement>('fit-download-confirm').disabled = false;
   } catch (e) {
@@ -1889,6 +1891,7 @@ for (const [id, k] of [
   ['foot-relief', 'insert_elephant_foot_relief_mm'],
   ['foot-height', 'insert_elephant_foot_height_mm'],
   ['draft-angle', 'insert_draft_angle_deg'],
+  ['draft-height', 'insert_draft_height_mm'],
   ['insert-depth', 'insert_depth_mm'],
   ['zone-depth', 'zone_insert_depth_mm'],
   ['zone-floor', 'zone_floor_mm'],

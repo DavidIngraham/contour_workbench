@@ -36,4 +36,23 @@ describe('nozzle-aware insert fit', () => {
   it('builds four useful calibration clearances around the selected fit', () => {
     expect(calibrationClearances(defaults)).toEqual([0.1, 0.15, 0.2, 0.25]);
   });
+  it('keeps the same taper when thicker inserts extend the straight seating section', () => {
+    const reference = fitProfile(defaults, 'trail', 2);
+    for (const depth of [2.5, 5, 10, 20]) {
+      const profile = fitProfile(defaults, 'trail', depth);
+      expect(profile.draftHeightMm).toBeCloseTo(1.7);
+      expect(profile.footHeightMm).toBe(reference.footHeightMm);
+      for (const height of [0, 0.2, 0.4, 1, 1.7, 2])
+        expect(insetAtHeight(profile, height)).toBeCloseTo(insetAtHeight(reference, height), 10);
+      expect(insetAtHeight(profile, depth)).toBe(0);
+    }
+  });
+  it('shortens the draft only when a shallow insert needs room for its seating band', () => {
+    const shallow = fitProfile(defaults, 'water', 0.8);
+    expect(shallow.draftHeightMm).toBeCloseTo(0.5);
+    expect(insetAtHeight(shallow, 0.8)).toBe(0);
+    const custom = fitProfile({ ...defaults, insert_draft_height_mm: 0.6 }, 'trail', 5);
+    expect(custom.draftHeightMm).toBe(0.6);
+    expect(custom.draftBottomInsetMm).toBeCloseTo(Math.tan((1.5 * Math.PI) / 180) * 0.6);
+  });
 });

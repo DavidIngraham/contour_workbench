@@ -48,7 +48,10 @@ export function fitProfile(
     lineMaximum,
   );
   const seatingBand = Math.min(Math.max(0.25, settings.nozzle_diameter_mm * 0.75), depth * 0.4);
-  const draftHeight = Math.max(0, depth - seatingBand);
+  // Draft belongs to a fixed-height lead-in, not the entire insert wall.
+  // Deeper inserts extend the straight seating section above this region.
+  // A shallow insert still reserves a seating band and shortens the lead-in.
+  const draftHeight = Math.min(settings.insert_draft_height_mm, Math.max(0, depth - seatingBand));
   const requestedDraft = Math.tan((settings.insert_draft_angle_deg * Math.PI) / 180) * draftHeight;
   const draftBottomInset = Math.min(requestedDraft, Math.max(0, lineMaximum - footRelief));
   return {

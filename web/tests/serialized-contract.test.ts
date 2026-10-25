@@ -16,6 +16,10 @@ describe('serialized Rust/TypeScript contract', () => {
   it('lists every serialized Settings field', () => {
     expect([...serializedContract.fields.Settings].sort()).toEqual(Object.keys(defaults).sort());
   });
+  it('gives older projects the same independent draft-height default as new projects', () => {
+    expect(normalizeSettings({ insert_depth_mm: 5 }).insert_draft_height_mm).toBe(1.7);
+    expect(normalizeSettings({ insert_draft_height_mm: 0.8 }).insert_draft_height_mm).toBe(0.8);
+  });
   it('migrates class priority without sharing mutable defaults and preserves saved orders', () => {
     const old = normalizeSettings({});
     expect(old.class_priority).toEqual(defaultClassPriority);

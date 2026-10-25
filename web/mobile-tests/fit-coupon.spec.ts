@@ -7,6 +7,14 @@ test('coupon settings and unit labels are usable without loading a project', asy
   await expect(page.locator('#coupon-label-preview')).toContainText('0.15 MM');
   await expect(page.locator('#coupon-size')).toContainText('100.0 × 28.0 mm');
   await expect(page.locator('#fit-download-dialog')).toContainText('Labels engraved underneath');
+  await expect(page.getByLabel('Coupon / insert thickness (mm)', { exact: true })).toHaveValue('2');
+  await page.locator('#coupon-insert_depth_mm').fill('5');
+  await expect(page.locator('#fit-download-confirm')).toBeEnabled();
+  await expect(page.locator('#coupon-label-preview')).toContainText('DRAFT 1.50 DEG  H 1.70 MM');
+  await expect(page.locator('#coupon-size')).toContainText('total height 6.20 mm');
+  await expect(page.locator('#coupon-floor-thickness')).toHaveValue('1');
+  await page.locator('#coupon-insert_depth_mm').fill('2');
+  await page.getByText('Solid floor beneath pockets · advanced', { exact: true }).click();
   await page.locator('#coupon-floor-thickness').fill('5');
   await expect(page.locator('#coupon-label-preview')).toContainText('FLOOR 5.00 MM');
   await expect(page.locator('#coupon-size')).toContainText('total height 7.20 mm');

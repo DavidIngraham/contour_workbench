@@ -128,6 +128,24 @@ fn class_priority_applies_to_grooves_and_disabled_classes_do_not_claim_space() {
 }
 
 #[test]
+fn draft_height_defaults_for_old_projects_and_validates_its_own_range() {
+    let old: Settings = serde_json::from_str(r#"{"insert_depth_mm":5}"#).unwrap();
+    assert_eq!(old.insert_draft_height_mm, 1.7);
+    let custom: Settings = serde_json::from_str(r#"{"insert_draft_height_mm":0.6}"#).unwrap();
+    custom.validate().unwrap();
+    let roundtrip: Settings =
+        serde_json::from_value(serde_json::to_value(&custom).unwrap()).unwrap();
+    assert_eq!(roundtrip.insert_draft_height_mm, 0.6);
+    for height in [f64::NAN, f64::INFINITY, -0.1, 5.01] {
+        let invalid = Settings {
+            insert_draft_height_mm: height,
+            ..Settings::default()
+        };
+        assert!(invalid.validate().is_err());
+    }
+}
+
+#[test]
 fn class_priority_migrates_old_and_partial_settings_and_validates_direct_settings() {
     let old: Settings = serde_json::from_str("{}").unwrap();
     assert_eq!(old.class_priority, Settings::default().class_priority);

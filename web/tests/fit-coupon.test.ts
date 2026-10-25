@@ -40,6 +40,23 @@ describe('dimensioned fit coupon', () => {
     expect(new Set(options.clearances_mm).size).toBe(4);
     expect(() => validateCoupon(s, options)).not.toThrow();
   });
+  it('grows coupon and insert height together with a fixed floor and unchanged taper', () => {
+    const options = defaultCouponOptions(defaults);
+    const reference = couponLayout(defaults, options);
+    const taperLabel = couponLabels(defaults, options).settings.find(s => s.startsWith('DRAFT'));
+    for (const depth of [2.5, 3, 5, 10, 20]) {
+      const settings = { ...defaults, insert_depth_mm: depth };
+      expect(() => validateCoupon(settings, options)).not.toThrow();
+      const layout = couponLayout(settings, options);
+      expect(layout.floorMm).toBe(reference.floorMm);
+      expect(layout.surfaceMm - reference.surfaceMm).toBeCloseTo(depth - defaults.insert_depth_mm);
+      expect(couponLabels(settings, options).settings.find(s => s.startsWith('DRAFT'))).toBe(
+        taperLabel,
+      );
+    }
+    const settings = { ...defaults, insert_depth_mm: 5 };
+    expect(() => validateCoupon(settings, { ...options, floor_thickness_mm: 5 })).not.toThrow();
+  });
   it('labels geometry values in units and rejects rounding or silently clamped taper', () => {
     const options = defaultCouponOptions(defaults);
     expect(couponLabels(defaults, options).pockets).toEqual([
@@ -53,6 +70,8 @@ describe('dimensioned fit coupon', () => {
       { ...defaults, path_width_mm: 0.901 },
       { ...defaults, insert_draft_angle_deg: 10 },
       { ...defaults, insert_elephant_foot_height_mm: 0 },
+      { ...defaults, insert_draft_height_mm: 0 },
+      { ...defaults, insert_draft_height_mm: NaN },
     ])
       expect(() => validateCoupon(settings, options)).toThrow();
     for (const values of [

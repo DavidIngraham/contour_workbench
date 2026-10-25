@@ -42,6 +42,7 @@ export interface Settings {
   insert_fit_clearance_per_side_mm: number;
   insert_elephant_foot_relief_mm: number;
   insert_elephant_foot_height_mm: number;
+  insert_draft_height_mm: number;
   insert_draft_angle_deg: number;
   insert_depth_mm: number;
   zone_insert_depth_mm: number;
@@ -69,6 +70,7 @@ export const defaults: Settings = {
   insert_fit_clearance_per_side_mm: 0.15,
   insert_elephant_foot_relief_mm: 0.18,
   insert_elephant_foot_height_mm: 0.4,
+  insert_draft_height_mm: 1.7,
   insert_draft_angle_deg: 1.5,
   insert_depth_mm: 2,
   zone_insert_depth_mm: 0.8,

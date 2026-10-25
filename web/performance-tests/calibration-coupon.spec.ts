@@ -2,6 +2,87 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
 
+test('one thickness control grows the coupon and inserts without changing the lower taper', async ({
+  page,
+}) => {
+  await page.goto('/');
+  const results: { insert: number[][]; baseHeight: number }[] = [];
+  for (const depth of [2, 5]) {
+    await page.locator('#landing-calibration').click();
+    await page.locator('#coupon-insert_depth_mm').fill(String(depth));
+    await expect(page.locator('#fit-download-confirm')).toBeEnabled();
+    await page.locator('#fit-download-format').selectOption('stl');
+    const pending = page.waitForEvent('download');
+    await page.locator('#fit-download-confirm').click();
+    const download = await pending;
+    const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
+    const manifest = JSON.parse(strFromU8(files['calibration_manifest.json']));
+    expect(manifest).toMatchObject({
+      insert_depth_mm: depth,
+      floor_thickness_mm: 1,
+      total_height_mm: depth + 1.2,
+      draft_angle_deg: 1.5,
+      draft_height_mm: 1.7,
+      draft_height_limit_mm: 1.7,
+      elephant_foot_height_mm: 0.4,
+    });
+    const vertices = (name: string) =>
+      [...strFromU8(files[name]).matchAll(/vertex ([\d.e+-]+) ([\d.e+-]+) ([\d.e+-]+)/g)].map(
+        match => match.slice(1).map(Number),
+      );
+    const insert = vertices(manifest.pieces[0].file);
+    expect(Math.min(...insert.map(v => v[2]))).toBeCloseTo(0, 4);
+    expect(Math.max(...insert.map(v => v[2]))).toBeCloseTo(depth, 4);
+    const baseHeight = Math.max(...vertices('coupon-base.stl').map(v => v[2]));
+    expect(baseHeight).toBeCloseTo(depth + 1.2, 3);
+    results.push({ insert, baseHeight });
+  }
+  expect(results[1].baseHeight - results[0].baseHeight).toBeCloseTo(3, 3);
+  // Boolean triangulation can change vertices. Compare physical contours at
+  // several heights instead, within 0.002 mm of native meshing tolerance.
+  const slice = (mesh: number[][], z: number) => {
+    const segments: number[][][] = [];
+    for (let i = 0; i < mesh.length; i += 3) {
+      const points: number[][] = [];
+      for (const [a, b] of [
+        [0, 1],
+        [1, 2],
+        [2, 0],
+      ]) {
+        const from = mesh[i + a],
+          to = mesh[i + b];
+        if ((from[2] - z) * (to[2] - z) >= 0) continue;
+        const t = (z - from[2]) / (to[2] - from[2]);
+        points.push([from[0] + t * (to[0] - from[0]), from[1] + t * (to[1] - from[1])]);
+      }
+      if (points.length === 2) segments.push(points);
+    }
+    return segments;
+  };
+  const distance = (point: number[], segment: number[][]) => {
+    const [a, b] = segment,
+      dx = b[0] - a[0],
+      dy = b[1] - a[1];
+    const t = Math.max(
+      0,
+      Math.min(1, ((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)),
+    );
+    return Math.hypot(point[0] - a[0] - t * dx, point[1] - a[1] - t * dy);
+  };
+  for (const height of [0.05, 0.3, 0.7, 1.1, 1.6, 1.9]) {
+    const a = slice(results[0].insert, height),
+      b = slice(results[1].insert, height);
+    expect(a.length).toBeGreaterThan(20);
+    expect(b.length).toBeGreaterThan(20);
+    for (const [from, to] of [
+      [a, b],
+      [b, a],
+    ])
+      for (const point of from.flat())
+        expect(Math.min(...to.map(segment => distance(point, segment)))).toBeLessThan(0.002);
+  }
+});
+
 for (const floorMm of [1, 5, 20])
   test(`fit coupon with a ${floorMm} mm floor preserves switchback fit`, async ({ page }) => {
     await page.goto('/?preset=post-canyon', { waitUntil: 'domcontentloaded' });
@@ -15,6 +96,7 @@ for (const floorMm of [1, 5, 20])
     await page.getByRole('button', { name: 'Print setup', exact: true }).click();
     const pending = page.waitForEvent('download');
     await page.locator('#download-calibration').click();
+    await page.getByText('Solid floor beneath pockets · advanced', { exact: true }).click();
     await page.locator('#coupon-floor-thickness').fill(String(floorMm));
     await expect(page.locator('#coupon-label-preview')).toContainText(
       `FLOOR ${floorMm.toFixed(2)} MM`,

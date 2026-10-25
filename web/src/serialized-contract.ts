@@ -33,6 +33,7 @@ export const serializedContract = {
       'insert_fit_clearance_per_side_mm',
       'insert_elephant_foot_relief_mm',
       'insert_elephant_foot_height_mm',
+      'insert_draft_height_mm',
       'insert_draft_angle_deg',
       'insert_depth_mm',
       'zone_insert_depth_mm',

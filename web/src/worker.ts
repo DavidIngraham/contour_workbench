@@ -113,7 +113,8 @@ function taperedSolid(
   const epsilon = Math.min(0.001, totalDepth / 100),
     section = prism.slice(bounds.min[2] + epsilon),
     layerMm = Math.max(0.1, Math.min(0.25, s.nozzle_diameter_mm / 2));
-  const profiledDepth = Math.min(totalDepth, profile.depthMm),
+  // Use identical lower bands when only the overall insert height changes.
+  const profiledDepth = Math.min(totalDepth, Math.max(profile.footHeightMm, profile.draftHeightMm)),
     divisions = Math.max(1, Math.ceil(profiledDepth / layerMm)),
     bands: Manifold[] = [];
   try {
@@ -372,6 +373,8 @@ function calibrationFiles(
           elephant_foot_relief_mm: s.insert_elephant_foot_relief_mm,
           elephant_foot_height_mm: s.insert_elephant_foot_height_mm,
           draft_angle_deg: s.insert_draft_angle_deg,
+          draft_height_mm: fitProfile(s, 'trail', s.insert_depth_mm).draftHeightMm,
+          draft_height_limit_mm: s.insert_draft_height_mm,
           pieces,
         },
         null,
@@ -380,8 +383,8 @@ function calibrationFiles(
     );
     files['README.txt'] = strToU8(
       'CONTOUR WORKBENCH FIT TEST\n\nPrint the base terrain-side up with the recessed writing against the build plate. Print the four identical switchback inserts with their flat, narrow ends on the build plate. Flip the base over its long edge to read the underside; each clearance stays aligned with its pocket across the width. Any insert fits any pocket. Choose the smallest engraved clearance that seats through all turns without force, then enter that value in Print setup → Pocket clearance · each side. Values are per side, in mm.\n\n' +
-        'The underside records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees, and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
-        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Increasing it adds material below the pockets without changing fit or insert dimensions. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
+        'The underside records nozzle diameter, path width, insert depth, elephant-foot relief per side, its taper height (H), draft angle in degrees and actual draft height (H), and terrain relief. These are the settings used for this coupon; the project settings are unchanged. Geometry does not force slicer settings: use matching nozzle/filament and your intended layer height.\n\n' +
+        'The Mt. Hood Meadows sample uses USGS 3DEP elevations, normalized to 1.2 mm relief. Pockets share the nominal floor thickness engraved underneath. Lettering removes 0.4 mm locally, leaving at least 0.6 mm of material with the default 1 mm floor. Change coupon / insert thickness to grow the coupon and inserts together while keeping the floor fixed. The separate floor control adds material below the pockets without changing insert dimensions. Draft and elephant-foot taper heights do not grow with insert thickness; extra height adds a straight section above them. Inserts have a constant height, so their tops need not follow the terrain. Use this sample to compare fit and layer stepping.\n\n' +
         labels.settings.join('\n') +
         '\nPOCKETS: ' +
         labels.pockets.join(', '),

@@ -221,3 +221,21 @@ node scripts/set-corner-radius.mjs input.contour.json output.contour.json 1000
 ```
 
 The radius is in meters. The editable polygon remains intact and the rounded boundary is stored as the terrain extent. Arc sampling adapts to the configured print-bed scale with a 0.05 mm maximum chord error, up to the serialized boundary's vertex limit.
+
+
+### Coupon thickness and taper height
+
+**Coupon / insert thickness** changes the insert height and automatically grows
+its matching coupon base. Leave the advanced **Floor thickness** at 1 mm unless
+you need more solid material beneath the pockets. That floor control alone does
+not change insert dimensions.
+
+Draft angle acts over a separately set **Draft taper height · maximum**, default
+1.7 mm, instead of nearly the full insert depth. Extra thickness adds a straight
+section above the taper; shallow inserts shorten the draft height to leave a
+seating band. Elephant-foot relief retains its separate bottom taper height.
+Coupon and terrain inserts use this same profile. The coupon still rejects a
+requested taper that would consume too much of a narrow path, so its engraved
+labels describe the actual geometry. The draft row now records both angle and
+actual height; both limits are included in export metadata. Older saved projects
+receive the 1.7 mm draft-height default when loaded.

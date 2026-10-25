@@ -19,6 +19,7 @@ export function renderAppShell(icon: (name: string) => string) {
     ['foot-relief', 'Elephant-foot relief · each side', '0.18', '0.01', 'mm', '2', '0'],
     ['foot-height', 'Elephant-foot taper height', '0.4', '0.1', 'mm', '5', '0'],
     ['draft-angle', 'Insert draft angle', '1.5', '0.25', '°', '10', '0'],
+    ['draft-height', 'Draft taper height · maximum', '1.7', '0.1', 'mm', '5', '0'],
     ['insert-depth', 'Line insert depth', '2', '0.1', 'mm', '20', '0.2'],
     ['zone-depth', 'Zone insert depth', '0.8', '0.1', 'mm', '20', '0.2'],
     ['zone-floor', 'Minimum solid floor', '0.8', '0.1', 'mm', '20', '0.2'],
@@ -28,7 +29,7 @@ export function renderAppShell(icon: (name: string) => string) {
   ]
     .map(
       ([id, label, value, step, unit, max, min]) =>
-        `<div ${['fit-clearance', 'foot-relief', 'foot-height', 'draft-angle', 'insert-depth', 'zone-depth', 'insert-gap'].includes(id) ? 'data-fit-only' : ''}><label class="section-label" for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/><span>${unit}</span></div></div>`,
+        `<div ${['fit-clearance', 'foot-relief', 'foot-height', 'draft-angle', 'draft-height', 'insert-depth', 'zone-depth', 'insert-gap'].includes(id) ? 'data-fit-only' : ''}><label class="section-label" for="${id}">${label}</label><div class="input-wrap"><input id="${id}" type="number" min="${min}" max="${max}" step="${step}" value="${value}"/><span>${unit}</span></div></div>`,
     )
     .join(
       '',
