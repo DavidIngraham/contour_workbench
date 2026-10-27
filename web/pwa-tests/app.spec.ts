@@ -329,3 +329,37 @@ test('an older or unresponsive window postpones the update without freezing the 
   await page.locator('#pwa-reload').click();
   await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
 });
+
+for (const hard of [false, true]) {
+  test(`${hard ? 'hard' : 'normal'} browser reload activates a fresh release and saves other windows`, async ({
+    page,
+    context,
+    request,
+    baseURL,
+  }) => {
+    await ready(page);
+    const second = await context.newPage();
+    await second.goto(baseURL!);
+    await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
+    await importProject(second, 'Reload survivor');
+    await second.locator('#base-height').fill('3.7');
+    // Do not stage the worker: reload must discover the deployment itself.
+    await request.post('http://127.0.0.1:5182/__test/release?version=2');
+    if (hard) {
+      const session = await context.newCDPSession(page);
+      await session.send('Page.reload', { ignoreCache: true });
+    } else await page.reload();
+    await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+    await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+    await second.getByRole('button', { name: 'Open Reload survivor', exact: true }).click();
+    await second.waitForFunction(
+      () =>
+        (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
+    );
+    await expect(second.locator('#base-height')).toHaveValue('3.7');
+    // The active offline shell must also be the new release, not just network HTML.
+    await context.setOffline(true);
+    await page.reload();
+    await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  });
+}

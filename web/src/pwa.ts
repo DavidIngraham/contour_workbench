@@ -13,6 +13,7 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
   const reloadButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-pwa-reload]')];
   const progress = document.querySelector<HTMLDialogElement>('#pwa-update-progress')!;
   let updating = false;
+  let updatePostponed = false;
   let preparedRequest: string | undefined;
   let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
   const showMessage = (text: string) => {
@@ -30,6 +31,7 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
   };
   const begin = () => {
     updating = true;
+    updatePostponed = false;
     reloadButtons.forEach(button => {
       button.disabled = true;
     });
@@ -37,6 +39,7 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
     clearTimeout(recoveryTimer);
     recoveryTimer = setTimeout(() => {
       finish();
+      updatePostponed = true;
       showMessage('The update did not finish. Check the other Workbench windows, then try again.');
     }, 30000);
   };
@@ -71,6 +74,11 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
   if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return;
   const base = new URL(import.meta.env.BASE_URL, document.baseURI);
   const workerUrl = new URL('sw.js', base);
+  // Browser reload is an explicit request for the current release, including
+  // hard reloads that temporarily bypass the controlling worker.
+  const browserReload =
+    (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)
+      ?.type === 'reload';
   navigator.serviceWorker.addEventListener('message', event => {
     const worker = event.source as ServiceWorker | null;
     if (!worker || worker.scriptURL !== workerUrl.href) return;
@@ -97,6 +105,7 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
       (!preparedRequest || data.requestId === preparedRequest)
     ) {
       finish();
+      updatePostponed = true;
       banner.classList.remove('hidden');
       showMessage(`Update postponed: ${data.reason}`);
     }
@@ -111,24 +120,40 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
       updateViaCache: 'none',
     })
     .then(registration => {
+      let reloadUpdateRequested = false;
+      let pendingApply = false;
+      const applyUpdate = () => {
+        if (updating) return;
+        if (!registration.waiting) {
+          pendingApply = true;
+          void registration
+            .update()
+            .then(showUpdate)
+            .catch(() => {});
+          return;
+        }
+        pendingApply = false;
+        begin();
+        registration.waiting.postMessage({ type: 'APPLY_UPDATE' });
+      };
       const showUpdate = () => {
-        if (registration.waiting && navigator.serviceWorker.controller) {
+        if (registration.waiting) {
           banner.classList.remove('hidden');
           reloadButtons.forEach(button => {
             button.classList.remove('hidden');
           });
-          if (!updating)
+          if (!updating && !updatePostponed)
             showMessage(
               'An update is ready. Reload saves projects and updates all open Workbench windows.',
             );
+          if (pendingApply || (browserReload && !reloadUpdateRequested)) {
+            reloadUpdateRequested = true;
+            applyUpdate();
+          }
         }
       };
       reloadButtons.forEach(button => {
-        button.onclick = () => {
-          if (updating || !registration.waiting) return;
-          begin();
-          registration.waiting.postMessage({ type: 'APPLY_UPDATE' });
-        };
+        button.onclick = applyUpdate;
       });
       showUpdate();
       const watchInstallation = () => {
@@ -142,6 +167,12 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
       };
       watchInstallation();
       registration.addEventListener('updatefound', watchInstallation);
+      // Do not rely on the browser's periodic worker-update schedule after reload.
+      if (browserReload)
+        void registration
+          .update()
+          .then(showUpdate)
+          .catch(() => {});
       void navigator.serviceWorker.ready.then(() => {
         if (!message.textContent) message.textContent = 'Ready to reopen local projects offline.';
         showUpdate();
