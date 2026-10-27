@@ -366,6 +366,17 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   await page.getByRole('button', { name: 'Annotations', exact: true }).tap();
   await page.locator('#add-text').tap();
   await page.locator('#ann-text').fill('Mobile');
+  const originalMask = await page
+    .locator('#annotation-mask')
+    .evaluate((el: HTMLCanvasElement) => el.toDataURL());
+  await page.locator('#ann-font').selectOption('serif');
+  expect(
+    await page.locator('#annotation-mask').evaluate((el: HTMLCanvasElement) => el.toDataURL()),
+  ).not.toBe(originalMask);
+  await page.locator('#ann-treatment').selectOption('engraved');
+  await expect(page.locator('#ann-font')).toHaveValue('serif');
+  await page.locator('#ann-duplicate').tap();
+  await expect(page.locator('#ann-font')).toHaveValue('serif');
   await page.locator('[data-ann-number="width_mm"]').fill('20');
   await expect(page.locator('#annotation-warning')).toHaveText('');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

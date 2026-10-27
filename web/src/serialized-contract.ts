@@ -16,6 +16,32 @@ import type {
 } from './types';
 
 export const serializedContract = {
+  browserFields: {
+    Annotation: [
+      'id',
+      'name',
+      'kind',
+      'text',
+      'font',
+      'image',
+      'threshold',
+      'invert',
+      'mask',
+      'pixels_w',
+      'pixels_h',
+      'enabled',
+      'placement',
+      'treatment',
+      'x_mm',
+      'y_mm',
+      'width_mm',
+      'height_mm',
+      'angle_deg',
+      'depth_mm',
+      'porch_depth_mm',
+      'porch_align',
+    ],
+  },
   fields: {
     Asset: ['terrain', 'faceMaterials', 'inserts', 'validation', 'revision'],
     Settings: [

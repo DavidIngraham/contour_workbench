@@ -1,11 +1,24 @@
 /** Printable text and monochrome artwork geometry shared by preview and generation. */
 import type { Grid, Layout, Mesh, Settings } from './types';
+/** Local font families; the saved raster mask preserves the exact printable glyphs. */
+export const annotationFonts = {
+  'sans-serif': 'Sans serif',
+  serif: 'Serif',
+  monospace: 'Monospace',
+} as const;
+/** Older projects and unknown font values retain the original sans-serif default. */
+export function annotationFont(value?: string): keyof typeof annotationFonts {
+  return value && Object.hasOwn(annotationFonts, value)
+    ? (value as keyof typeof annotationFonts)
+    : 'sans-serif';
+}
 /** Serializable text or monochrome PNG annotation. */
 export interface Annotation {
   id: string;
   name: string;
   kind: 'text' | 'png';
   text: string;
+  font?: keyof typeof annotationFonts;
   image?: string;
   threshold: number;
   invert: boolean;

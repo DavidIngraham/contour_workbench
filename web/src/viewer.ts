@@ -499,8 +499,10 @@ export class Viewer {
     if (this.layout) {
       ctx.fillStyle = 'white';
       for (const m of meshes) {
-        ctx.beginPath();
         for (let i = 0; i < m.indices.length; i += 3) {
+          // Fill triangles independently: top/bottom winding otherwise cancels
+          // the closed prism's projected footprint under Canvas's nonzero rule.
+          ctx.beginPath();
           for (let k = 0; k < 3; k++) {
             const j = m.indices[i + k] * 3;
             const x = (m.positions[j] / this.layout.width) * 2048,
@@ -509,8 +511,8 @@ export class Viewer {
             else ctx.lineTo(x, y);
           }
           ctx.closePath();
+          ctx.fill();
         }
-        ctx.fill();
       }
     }
     this.carveTexture.needsUpdate = true;

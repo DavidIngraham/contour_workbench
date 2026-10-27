@@ -2,7 +2,13 @@
 import * as THREE from 'three';
 import type { Viewer } from './viewer';
 import type { Project, Terrain, Mesh } from './types';
-import { annotationGeometry, combineMeshes, type Annotation } from './annotations';
+import {
+  annotationGeometry,
+  combineMeshes,
+  annotationFonts,
+  annotationFont,
+  type Annotation,
+} from './annotations';
 const esc = (s: string) =>
   s.replace(
     /[&<>"']/g,
@@ -145,7 +151,7 @@ export class AnnotationEditor {
       ctx.fillStyle = 'white';
       ctx.fillRect(0, 0, 128, 48);
       ctx.fillStyle = 'black';
-      ctx.font = 'bold 36px sans-serif';
+      ctx.font = 'bold 36px ' + annotationFont(a.font);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(a.text.slice(0, 80), 64, 24, 124);
@@ -217,13 +223,27 @@ export class AnnotationEditor {
       a.name = (e.target as HTMLInputElement).value;
       this.commit();
     };
-    if (a.kind === 'text')
+    if (a.kind === 'text') {
+      const label = document.createElement('label');
+      label.textContent = 'Font';
+      const picker = document.createElement('select');
+      picker.id = 'ann-font';
+      for (const [value, name] of Object.entries(annotationFonts))
+        picker.add(new Option(name, value));
+      picker.value = annotationFont(a.font);
+      label.append(picker);
+      this.el('ann-text').parentElement!.after(label);
+      picker.onchange = async () => {
+        a.font = annotationFont(picker.value);
+        await this.raster(a);
+        this.commit();
+      };
       this.el<HTMLInputElement>('ann-text').oninput = async e => {
         a.text = (e.target as HTMLInputElement).value;
         await this.raster(a);
         this.commit();
       };
-    else {
+    } else {
       this.el<HTMLInputElement>('ann-threshold').oninput = async e => {
         a.threshold = Number((e.target as HTMLInputElement).value);
         await this.raster(a);
