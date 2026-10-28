@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { defaults } from '../src/types';
 
 test('engraved preview opens the terrain mask and restores it when removed', async ({ page }) => {
   await page.goto('/');
@@ -67,3 +68,60 @@ test('engraved preview opens the terrain mask and restores it when removed', asy
   });
   expect(result).toEqual({ cut: 255, cleared: 0, feature: 255 });
 });
+
+for (const treatment of ['raised', 'engraved']) {
+  test(`high-resolution ${treatment} lettering generates on terrain and a porch`, async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.locator('#file-project').setInputFiles({
+      name: 'label.contour.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(
+        JSON.stringify({
+          schema_version: 2,
+          name: 'Label resolution',
+          grid: {
+            bounds: [0, 0, 0.001, 0.001],
+            width: 5,
+            height: 5,
+            elevations: Array(25).fill(100),
+          },
+          source: { product: 'test', name: 'Test', attribution: 'Test', retrieved: 'today' },
+          features: [],
+          settings: { ...defaults, max_print_size_mm: [50, 50], base_height_mm: 4 },
+        }),
+      ),
+    });
+    await page.waitForFunction(
+      () =>
+        (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
+    );
+    await page.getByRole('button', { name: 'Annotations', exact: true }).click();
+    await page.locator('#add-text').click();
+    await page.locator('#ann-text').fill('B8O');
+    await page.locator('#ann-font').selectOption('serif');
+    await page.locator('#ann-treatment').selectOption(treatment);
+    await expect(page.locator('#annotation-mask')).toHaveAttribute('width', '512');
+    await expect(page.locator('#annotation-mask')).toHaveAttribute('height', '192');
+    for (const placement of ['terrain', 'porch']) {
+      await page.locator('#mode-design').click();
+      await page.getByRole('button', { name: 'Annotations', exact: true }).click();
+      await page.locator('#ann-placement').selectOption(placement);
+      await expect(page.locator('#annotation-warning')).toHaveText('');
+      await page.locator('#generate').click();
+      await page.waitForFunction(
+        () =>
+          !(window as any).contourDiagnostics.busy &&
+          ((window as any).contourDiagnostics.asset || document.querySelector('#status.error')),
+      );
+      expect(
+        await page.locator('#status.error').count(),
+        await page.locator('#status').innerText(),
+      ).toBe(0);
+      expect(await page.evaluate(() => (window as any).contourDiagnostics.asset.watertight)).toBe(
+        true,
+      );
+    }
+  });
+}

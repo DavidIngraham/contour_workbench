@@ -144,17 +144,17 @@ export class AnnotationEditor {
   }
   private async raster(a: Annotation) {
     const canvas = document.createElement('canvas');
-    canvas.width = 128;
-    canvas.height = 48;
+    canvas.width = 512;
+    canvas.height = 192;
     const ctx = canvas.getContext('2d')!;
     if (a.kind === 'text') {
       ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, 128, 48);
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = 'black';
-      ctx.font = 'bold 36px ' + annotationFont(a.font);
+      ctx.font = 'bold 144px ' + annotationFont(a.font);
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(a.text.slice(0, 80), 64, 24, 124);
+      ctx.fillText(a.text.slice(0, 80), 256, 96, 496);
     } else if (a.image) {
       const image = new Image();
       await new Promise<void>((resolve, reject) => {
@@ -162,8 +162,8 @@ export class AnnotationEditor {
         image.onerror = () => reject(new Error('PNG could not be decoded'));
         image.src = a.image!;
       });
-      canvas.height = Math.max(8, Math.min(128, Math.round((128 * image.height) / image.width)));
-      ctx.drawImage(image, 0, 0, 128, canvas.height);
+      canvas.height = Math.max(32, Math.min(512, Math.round((512 * image.height) / image.width)));
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
       if (!a.mask.length) a.height_mm = (a.width_mm * image.height) / image.width;
     }
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;

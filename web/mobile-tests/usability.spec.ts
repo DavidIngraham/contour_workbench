@@ -369,6 +369,8 @@ test('polygon picker and annotation controls stay reachable', async ({ page }) =
   const originalMask = await page
     .locator('#annotation-mask')
     .evaluate((el: HTMLCanvasElement) => el.toDataURL());
+  await expect(page.locator('#annotation-mask')).toHaveAttribute('width', '512');
+  await expect(page.locator('#annotation-mask')).toHaveAttribute('height', '192');
   await page.locator('#ann-font').selectOption('serif');
   expect(
     await page.locator('#annotation-mask').evaluate((el: HTMLCanvasElement) => el.toDataURL()),

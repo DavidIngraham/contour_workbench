@@ -571,7 +571,16 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               batch.metadata.batch_total,
             );
             await checkpoint(request.id);
-            const combined = solidFromMesh(M, combineMeshes(batch.meshes));
+            // Clearance-expanded pockets can overlap at different floor heights.
+            // Concatenating them creates self-intersections; union actual solids.
+            const cutterSolids: Manifold[] = [];
+            let combined: Manifold;
+            try {
+              for (const mesh of batch.meshes) cutterSolids.push(solidFromMesh(M, mesh));
+              combined = M.Manifold.union(cutterSolids);
+            } finally {
+              cutterSolids.forEach(cutter => cutter.delete());
+            }
             batch.meshes.length = 0;
             try {
               const next = result.subtract(combined);
@@ -660,7 +669,38 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               );
             try {
               await checkpoint(request.id);
-              const prism = solidFromMesh(M, piece.mesh),
+              let prism = solidFromMesh(M, piece.mesh);
+              let tapered: ReturnType<typeof safeTaperedSolid> | undefined;
+              try {
+                // Fit first: relief must be checked against the real thin insert,
+                // not a tall temporary prism whose top will later be clipped away.
+                if (piece.conformal) {
+                  const surfaceOffsetMm =
+                    piece.surface_offset_mm ?? settings.insert_relative_height_mm;
+                  if (
+                    !raisedTerrain ||
+                    raisedTerrainOffset === undefined ||
+                    Math.abs(raisedTerrainOffset - surfaceOffsetMm) > 1e-9
+                  ) {
+                    raisedTerrain?.delete();
+                    const originalTerrain = solidFromMesh(M, terrain.mesh);
+                    try {
+                      raisedTerrain = originalTerrain.translate([0, 0, surfaceOffsetMm]);
+                      raisedTerrainOffset = surfaceOffsetMm;
+                    } finally {
+                      originalTerrain.delete();
+                    }
+                  }
+                  const global = prism.translate(piece.origin),
+                    fitted = global.intersect(raisedTerrain);
+                  global.delete();
+                  const local = fitted.translate(
+                    piece.origin.map(v => -v) as [number, number, number],
+                  );
+                  fitted.delete();
+                  prism.delete();
+                  prism = local;
+                }
                 tapered =
                   settings.manufacturing_mode === 'separate' &&
                   shouldTaperInsert(piece.mesh.indices.length)
@@ -679,38 +719,12 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
                           0,
                         ),
                       };
-              let raw = tapered.solid;
-              try {
                 piece.taper_relief_mm = tapered.profile.footReliefMm;
                 piece.taper_height_mm = tapered.profile.footHeightMm;
                 piece.draft_angle_deg = tapered.profile.draftAngleDeg;
-                if (piece.conformal) {
-                  const surfaceOffsetMm =
-                    piece.surface_offset_mm ?? settings.insert_relative_height_mm;
-                  if (
-                    !raisedTerrain ||
-                    raisedTerrainOffset === undefined ||
-                    Math.abs(raisedTerrainOffset - surfaceOffsetMm) > 1e-9
-                  ) {
-                    raisedTerrain?.delete();
-                    const originalTerrain = solidFromMesh(M, terrain.mesh);
-                    try {
-                      raisedTerrain = originalTerrain.translate([0, 0, surfaceOffsetMm]);
-                      raisedTerrainOffset = surfaceOffsetMm;
-                    } finally {
-                      originalTerrain.delete();
-                    }
-                  }
-                  const global = tapered.solid.translate(piece.origin),
-                    fitted = global.intersect(raisedTerrain);
-                  global.delete();
-                  raw = fitted.translate(piece.origin.map(v => -v) as [number, number, number]);
-                  fitted.delete();
-                }
-                piece.mesh = validatedMesh(raw, piece.id);
+                piece.mesh = validatedMesh(tapered.solid, piece.id);
               } finally {
-                if (raw !== tapered.solid) raw.delete();
-                if (tapered.solid !== prism) tapered.solid.delete();
+                if (tapered && tapered.solid !== prism) tapered.solid.delete();
                 prism.delete();
               }
             } catch (error) {

@@ -308,3 +308,52 @@ fn v_carves_ignore_insert_surface_placement() {
         );
     }
 }
+
+#[test]
+fn disconnected_inserts_in_one_cell_use_their_own_lowest_surface() {
+    let (mut grid, mut settings, mut feature) = fixture();
+    grid.elevations = (0..11)
+        .flat_map(|row| vec![100. + row as f64 * 10.; 11])
+        .collect();
+    settings.base_height_mm = 4.;
+    settings.insert_depth_mm = 0.8;
+    settings.insert_segment_size_mm = Some(100.);
+    feature.treatment = Treatment::Insert;
+    feature.lines = vec![
+        vec![[0.00025, 0.0002], [0.00075, 0.0002]],
+        vec![[0.00025, 0.0008], [0.00075, 0.0008]],
+    ];
+    for mode in [ManufacturingMode::Separate, ManufacturingMode::Multicolor] {
+        settings.manufacturing_mode = mode;
+        let terrain = terrain(&grid, &settings).unwrap();
+        let result = plan(&grid, &settings, &[feature.clone()], &terrain.layout).unwrap();
+        assert_eq!(result.inserts.len(), 2);
+        let mut pieces: Vec<_> = result.inserts.iter().collect();
+        pieces.sort_by(|a, b| a.origin[2].total_cmp(&b.origin[2]));
+        assert!(pieces[1].origin[2] - pieces[0].origin[2] > 3.);
+        result.terrain.validate().unwrap();
+        for piece in pieces {
+            piece.mesh.validate().unwrap();
+            let minimum_top = piece
+                .mesh
+                .positions
+                .chunks_exact(3)
+                .map(|p| p[2])
+                .filter(|z| *z > 0.001)
+                .fold(f64::INFINITY, f64::min);
+            assert!((minimum_top - settings.insert_depth_mm).abs() < 0.01,
+                "each insert needs only the requested depth below its lowest surface: {minimum_top}");
+            let pocket_floor = settings.insert_pocket_bottom_mm(piece.origin[2], 0.4);
+            assert!(
+                result
+                    .terrain
+                    .positions
+                    .chunks_exact(3)
+                    .any(|p| (p[2] - pocket_floor).abs() < 1e-5
+                        && p[1] >= piece.origin[1] - 0.2
+                        && p[1] <= piece.origin[1] + 1.2),
+                "the matching pocket must use the same local floor"
+            );
+        }
+    }
+}

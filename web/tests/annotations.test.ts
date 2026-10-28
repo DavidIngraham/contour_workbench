@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { annotationGeometry, type Annotation } from '../src/annotations';
+import { annotationGeometry, annotationPatches, type Annotation } from '../src/annotations';
 import { defaults, type Grid, type Layout } from '../src/types';
 const g: Grid = { bounds: [0, 0, 1, 1], width: 2, height: 2, elevations: [100, 100, 100, 100] };
 const l: Layout = {
@@ -85,4 +85,34 @@ describe('annotation solids', () => {
     expect(() => annotationGeometry({ ...a, mask: [0, 0, 0, 0] }, g, defaults, l)).toThrow(
       'empty',
     ));
+});
+
+it('merges spans without changing coverage, including holes and split/join rows', () => {
+  const rows = ['00111100', '00111100', '00100100', '00100100', '00111100', '00011000'];
+  const mask = rows.join('').split('').map(Number);
+  const reconstructed = Array(mask.length).fill(0);
+  const patches = annotationPatches(mask, 8, rows.length);
+  for (const p of patches)
+    for (let y = p.top; y < p.bottom; y++)
+      for (let x = p.left; x < p.right; x++) reconstructed[y * 8 + x]++;
+  expect(reconstructed).toEqual(mask);
+  expect(patches.length).toBeLessThan(rows.length + 2);
+});
+
+it('uses one solid for a high-resolution rectangular label on a flat porch', () => {
+  const high = {
+    ...a,
+    placement: 'porch' as const,
+    width_mm: 10,
+    height_mm: 5,
+    pixels_w: 512,
+    pixels_h: 192,
+    mask: Array(512 * 192).fill(1),
+  };
+  expect(annotationPatches(high.mask, high.pixels_w, high.pixels_h)).toHaveLength(1);
+  for (const treatment of ['raised', 'engraved'] as const) {
+    const geometry = annotationGeometry({ ...high, treatment }, g, defaults, l);
+    expect(geometry.solids).toHaveLength(1);
+    expect(geometry.preview).toHaveLength(1);
+  }
 });

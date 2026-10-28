@@ -8,6 +8,9 @@ for (const preset of [
   { id: 'mt-hood-meadows', name: 'Mt. Hood Meadows' },
 ]) {
   test(`${preset.name} builds a watertight asset`, async ({ page }) => {
+    page.on('console', message => {
+      if (message.type() === 'error') console.log('Browser:', message.text());
+    });
     await page.goto('/?preset=' + preset.id, { waitUntil: 'domcontentloaded' });
     await page.waitForFunction(
       () =>
@@ -16,6 +19,14 @@ for (const preset of [
       null,
       { timeout: 120000 },
     );
+    const progressTimer = setInterval(() => {
+      void page
+        .locator('#status')
+        .innerText()
+        .then(value => console.log('Build progress:', value))
+        .catch(() => {});
+    }, 30000);
+    page.on('close', () => clearInterval(progressTimer));
     const started = Date.now();
     await page.locator('#generate').click();
     await page.waitForFunction(
@@ -25,6 +36,7 @@ for (const preset of [
       null,
       { timeout: completionTimeoutMs },
     );
+    clearInterval(progressTimer);
     const elapsedMs = Date.now() - started,
       status = await page.locator('#status').innerText(),
       asset = await page.evaluate(() => (window as any).contourDiagnostics.asset);

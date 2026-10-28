@@ -1664,13 +1664,24 @@ struct PocketSurface {
     height_mm: f64,
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PocketTerrainStrategy {
     Direct,
     BoundedCutters,
 }
 
+#[cfg(test)]
 fn classify_pocket_topology(pockets: &[PocketSurface]) -> PocketTerrainStrategy {
+    if pocket_fallback_flags(pockets).iter().any(|flag| *flag) {
+        PocketTerrainStrategy::BoundedCutters
+    } else {
+        PocketTerrainStrategy::Direct
+    }
+}
+
+fn pocket_fallback_flags(pockets: &[PocketSurface]) -> Vec<bool> {
+    let mut fallback = vec![false; pockets.len()];
     struct BoundedPocket {
         index: usize,
         min_x: f64,
@@ -1718,11 +1729,12 @@ fn classify_pocket_topology(pockets: &[PocketSurface]) -> PocketTerrainStrategy 
                 continue;
             }
             if left_pocket.polygon.intersects(&right_pocket.polygon) {
-                return PocketTerrainStrategy::BoundedCutters;
+                fallback[left.index] = true;
+                fallback[right.index] = true;
             }
         }
     }
-    PocketTerrainStrategy::Direct
+    fallback
 }
 
 #[cfg(test)]
@@ -1795,6 +1807,15 @@ mod pocket_topology_tests {
         }
     }
 
+    #[test]
+    fn independent_pockets_do_not_join_a_different_height_fallback() {
+        let pockets = vec![
+            pocket(&[[0., 0.], [2., 0.], [2., 2.], [0., 2.]], 1.),
+            pocket(&[[1., 0.], [3., 0.], [3., 2.], [1., 2.]], 2.),
+            pocket(&[[5., 0.], [7., 0.], [7., 2.], [5., 2.]], 3.),
+        ];
+        assert_eq!(pocket_fallback_flags(&pockets), vec![true, true, false]);
+    }
     fn pocket(points: &[[f64; 2]], height_mm: f64) -> PocketSurface {
         PocketSurface {
             polygon: polygon(points),
@@ -2312,79 +2333,90 @@ fn add_insert_layer(
             } else {
                 cell.buffer(-gap / 2.)
             };
-            let raw_parts = layer.intersection(&part_cell);
-            let parts = printable_parts(raw_parts, s.nozzle_diameter_mm);
-            if parts.0.is_empty() {
-                continue;
-            }
-            // Print-together pockets use the exact post-repair insert boundary. This keeps
-            // canonical interface coordinates even when polygon cleanup changes a narrow feature.
-            let pockets = if s.manufacturing_mode == ManufacturingMode::Multicolor {
-                parts.clone()
-            } else {
-                raw_pockets
-            };
-            let surface = |q| fixed_level.unwrap_or_else(|| l.z(g, q));
-            let requested_offset = s.insert_relative_height_mm;
-            let minimum_surface_mm = pockets
-                .0
-                .iter()
-                .map(|pocket| minimum_insert_surface(pocket, g, l, fixed_level))
-                .fold(f64::INFINITY, f64::min);
-            if !minimum_surface_mm.is_finite() {
-                continue;
-            }
-            let surface_offset_mm =
-                effective_insert_surface_offset(minimum_surface_mm, requested_offset, floor);
-            let top = |q| surface(q) + surface_offset_mm;
-            let base = (minimum_surface_mm + surface_offset_mm - depth)
-                .max(floor + INSERT_SUBSTRATE_CLEARANCE_MM);
-            for (i, part) in parts.0.iter().enumerate() {
-                // Terrain-following inserts are emitted as simple prisms here.
-                // The browser solid engine intersects each prism with the
-                // original terrain shifted upward by the visible protrusion.
-                // That reuses the exact terrain triangles and avoids a second,
-                // independently triangulated surface along the zone boundary.
-                let conformal = zone && fixed_level.is_none();
-                let mut mesh = if conformal {
-                    polygon_surface(part, |_| roof, base)
-                } else {
-                    polygon_surface(part, top, base)
-                };
-                mesh.validate()
-                    .map_err(|e| format!("{class} insert {row},{col},{i}: {e}"))?;
-                let mut origin = [f64::INFINITY; 3];
-                for p in mesh.positions.chunks_exact(3) {
-                    for k in 0..3 {
-                        origin[k] = origin[k].min(p[k]);
-                    }
-                }
-                for p in mesh.positions.chunks_exact_mut(3) {
-                    for k in 0..3 {
-                        p[k] -= origin[k];
-                    }
-                }
-                *serial += 1;
-                out.inserts.push(Piece {
-                    id: format!("{class}-z{}-r{}-c{}-{}", *serial, row + 1, col + 1, i + 1),
-                    class: class.into(),
-                    mesh,
-                    origin,
-                    insert_depth_mm: depth,
-                    surface_offset_mm,
-                    conformal,
-                });
-            }
-            for raw_pocket in pockets.buffer(s.effective_insert_clearance_mm()).0 {
-                let (pocket, removed) = remove_unprintable_terrain_islands(
-                    &raw_pocket,
-                    s.effective_minimum_terrain_island_width_mm(),
+            let printable = printable_parts(layer.intersection(&part_cell), s.nozzle_diameter_mm);
+            // Disconnected footprints in one packing cell are independent inserts.
+            // A low trail must not pull an unrelated uphill insert down to its floor.
+            for raw_pocket in raw_pockets.0 {
+                let parts = MultiPolygon(
+                    printable
+                        .0
+                        .iter()
+                        .filter(|part| raw_pocket.intersects(*part))
+                        .cloned()
+                        .collect(),
                 );
-                out.removed_terrain_islands += removed;
-                pocket_surfaces.push(PocketSurface {
-                    polygon: pocket,
-                    height_mm: s.insert_pocket_bottom_mm(base, floor),
-                });
+                if parts.0.is_empty() {
+                    continue;
+                }
+                // Print-together pockets use the exact post-repair insert boundary. This keeps
+                // canonical interface coordinates even when polygon cleanup changes a narrow feature.
+                let pockets = if s.manufacturing_mode == ManufacturingMode::Multicolor {
+                    parts.clone()
+                } else {
+                    MultiPolygon(vec![raw_pocket])
+                };
+                let surface = |q| fixed_level.unwrap_or_else(|| l.z(g, q));
+                let requested_offset = s.insert_relative_height_mm;
+                let minimum_surface_mm = pockets
+                    .0
+                    .iter()
+                    .map(|pocket| minimum_insert_surface(pocket, g, l, fixed_level))
+                    .fold(f64::INFINITY, f64::min);
+                if !minimum_surface_mm.is_finite() {
+                    continue;
+                }
+                let surface_offset_mm =
+                    effective_insert_surface_offset(minimum_surface_mm, requested_offset, floor);
+                let top = |q| surface(q) + surface_offset_mm;
+                let base = (minimum_surface_mm + surface_offset_mm - depth)
+                    .max(floor + INSERT_SUBSTRATE_CLEARANCE_MM);
+                for (i, part) in parts.0.iter().enumerate() {
+                    // Terrain-following inserts are emitted as simple prisms here.
+                    // The browser solid engine intersects each prism with the
+                    // original terrain shifted upward by the visible protrusion.
+                    // That reuses the exact terrain triangles and avoids a second,
+                    // independently triangulated surface along the zone boundary.
+                    let conformal = zone && fixed_level.is_none();
+                    let mut mesh = if conformal {
+                        polygon_surface(part, |_| roof, base)
+                    } else {
+                        polygon_surface(part, top, base)
+                    };
+                    mesh.validate()
+                        .map_err(|e| format!("{class} insert {row},{col},{i}: {e}"))?;
+                    let mut origin = [f64::INFINITY; 3];
+                    for p in mesh.positions.chunks_exact(3) {
+                        for k in 0..3 {
+                            origin[k] = origin[k].min(p[k]);
+                        }
+                    }
+                    for p in mesh.positions.chunks_exact_mut(3) {
+                        for k in 0..3 {
+                            p[k] -= origin[k];
+                        }
+                    }
+                    *serial += 1;
+                    out.inserts.push(Piece {
+                        id: format!("{class}-z{}-r{}-c{}-{}", *serial, row + 1, col + 1, i + 1),
+                        class: class.into(),
+                        mesh,
+                        origin,
+                        insert_depth_mm: depth,
+                        surface_offset_mm,
+                        conformal,
+                    });
+                }
+                for raw_pocket in pockets.buffer(s.effective_insert_clearance_mm()).0 {
+                    let (pocket, removed) = remove_unprintable_terrain_islands(
+                        &raw_pocket,
+                        s.effective_minimum_terrain_island_width_mm(),
+                    );
+                    out.removed_terrain_islands += removed;
+                    pocket_surfaces.push(PocketSurface {
+                        polygon: pocket,
+                        height_mm: s.insert_pocket_bottom_mm(base, floor),
+                    });
+                }
             }
         }
     }
@@ -2533,26 +2565,27 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
     if pocket_surfaces.is_empty() {
         out.terrain = base_terrain.mesh;
     } else {
-        let direct_terrain =
-            if classify_pocket_topology(&pocket_surfaces) == PocketTerrainStrategy::Direct {
-                feature_aware_terrain(&base_terrain, g, s, l, &pocket_surfaces).ok()
-            } else {
-                None
-            };
-        if let Some(terrain) = direct_terrain {
+        let flags = pocket_fallback_flags(&pocket_surfaces);
+        let (fallback, direct): (Vec<_>, Vec<_>) = pocket_surfaces
+            .into_iter()
+            .zip(flags)
+            .partition(|(_, needs_fallback)| *needs_fallback);
+        let direct: Vec<_> = direct.into_iter().map(|(pocket, _)| pocket).collect();
+        let mut cutters: Vec<_> = fallback.into_iter().map(|(pocket, _)| pocket).collect();
+        // Only touching, different-height pockets need Boolean junction repair.
+        // Independent pockets retain direct meshing even when another pair conflicts.
+        if let Ok(terrain) = feature_aware_terrain(&base_terrain, g, s, l, &direct) {
             out.terrain = terrain;
         } else {
-            // Multi-height regions can meet in a non-manifold vertical junction.
-            // Preserve correctness with the established bounded Boolean path.
             out.terrain = base_terrain.mesh;
-            for pocket in pocket_surfaces {
-                let cutter =
-                    polygon_surface_detail(&pocket.polygon, |_| roof, pocket.height_mm, false);
-                cutter
-                    .validate()
-                    .map_err(|error| format!("Fallback pocket: {error}"))?;
-                out.cutters.push(cutter);
-            }
+            cutters.extend(direct);
+        }
+        for pocket in cutters {
+            let cutter = polygon_surface_detail(&pocket.polygon, |_| roof, pocket.height_mm, false);
+            cutter
+                .validate()
+                .map_err(|error| format!("Fallback pocket: {error}"))?;
+            out.cutters.push(cutter);
         }
     }
     Ok(out)

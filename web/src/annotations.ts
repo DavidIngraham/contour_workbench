@@ -145,6 +145,32 @@ function prism(
     ],
   };
 }
+/** Merge identical horizontal spans across rows without filling holes or moving edges. */
+export function annotationPatches(mask: number[], width: number, height: number) {
+  type Patch = { left: number; right: number; top: number; bottom: number };
+  const patches: Patch[] = [];
+  let active = new Map<string, Patch>();
+  for (let row = 0; row < height; row++) {
+    const next = new Map<string, Patch>();
+    for (let col = 0; col < width;) {
+      if (!mask[row * width + col]) {
+        col++;
+        continue;
+      }
+      const left = col;
+      while (col < width && mask[row * width + col]) col++;
+      const key = `${left}:${col}`;
+      const patch = active.get(key) ?? { left, right: col, top: row, bottom: row };
+      patch.bottom = row + 1;
+      next.set(key, patch);
+      active.delete(key);
+    }
+    patches.push(...active.values());
+    active = next;
+  }
+  patches.push(...active.values());
+  return patches;
+}
 /** Build preview solids, boolean solids, and an optional attached porch. */
 export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layout) {
   if (
@@ -157,7 +183,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
     a.depth_mm > 10 ||
     a.pixels_w < 1 ||
     a.pixels_h < 1 ||
-    a.pixels_w * a.pixels_h > 32768 ||
+    a.pixels_w * a.pixels_h > 262144 ||
     a.mask.length !== a.pixels_w * a.pixels_h
   )
     throw new Error('Invalid annotation dimensions or image.');
@@ -202,20 +228,20 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
     preview: Mesh[] = [];
   const dx = a.width_mm / a.pixels_w,
     dy = a.height_mm / a.pixels_h;
-  for (let row = 0; row < a.pixels_h; row++)
-    for (let col = 0; col < a.pixels_w;) {
-      if (!a.mask[row * a.pixels_w + col]) {
-        col++;
-        continue;
-      }
-      let end = col + 1;
-      while (end < a.pixels_w && a.mask[row * a.pixels_w + end]) end++;
-      const segments = Math.max(1, Math.ceil(((end - col) * dx) / 1));
-      for (let k = 0; k < segments; k++) {
-        const left = -a.width_mm / 2 + (col + ((end - col) * k) / segments) * dx,
-          right = -a.width_mm / 2 + (col + ((end - col) * (k + 1)) / segments) * dx,
-          lo = a.height_mm / 2 - (row + 1) * dy,
-          hi = lo + dy;
+  for (const patch of annotationPatches(a.mask, a.pixels_w, a.pixels_h)) {
+    // Flat porches need one prism per patch. Terrain patches stay below 1 mm
+    // in both directions so merging does not bridge over local relief.
+    const columns = porch ? 1 : Math.max(1, Math.ceil((patch.right - patch.left) * dx));
+    const rows = porch ? 1 : Math.max(1, Math.ceil((patch.bottom - patch.top) * dy));
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < columns; col++) {
+        const left =
+          -a.width_mm / 2 + (patch.left + ((patch.right - patch.left) * col) / columns) * dx;
+        const right =
+          -a.width_mm / 2 + (patch.left + ((patch.right - patch.left) * (col + 1)) / columns) * dx;
+        const hi = a.height_mm / 2 - (patch.top + ((patch.bottom - patch.top) * row) / rows) * dy;
+        const lo =
+          a.height_mm / 2 - (patch.top + ((patch.bottom - patch.top) * (row + 1)) / rows) * dy;
         const points = [
           [left - 0.0002, lo - 0.0002],
           [right + 0.0002, lo - 0.0002],
@@ -243,8 +269,8 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
           ),
         );
       }
-      col = end;
     }
+  }
   if (!solids.length)
     throw new Error('The annotation is empty. Adjust its text, threshold, or selected colors.');
   return {
