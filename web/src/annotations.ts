@@ -145,25 +145,99 @@ function prism(
     ],
   };
 }
-/** Merge identical horizontal spans across rows without filling holes or moving edges. */
+/** Trace the mask at half coverage and decompose its outline into horizontal trapezoids. */
 export function annotationPatches(mask: number[], width: number, height: number) {
-  type Patch = { left: number; right: number; top: number; bottom: number };
+  type Patch = {
+    left: number;
+    right: number;
+    bottomLeft: number;
+    bottomRight: number;
+    top: number;
+    bottom: number;
+  };
+  type Point = [number, number];
+  const bands = new Map<number, { topX: number; bottomX: number }[]>();
+  const sample = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < width && y < height && !!mask[y * width + x];
+  // Marching squares on pixel centers. At diagonal contacts, keep the two
+  // foreground islands separate instead of creating a zero-width connection.
+  const cases: number[][][] = [
+    [],
+    [[3, 0]],
+    [[0, 1]],
+    [[3, 1]],
+    [[1, 2]],
+    [
+      [3, 0],
+      [1, 2],
+    ],
+    [[0, 2]],
+    [[3, 2]],
+    [[2, 3]],
+    [[0, 2]],
+    [
+      [0, 1],
+      [2, 3],
+    ],
+    [[1, 2]],
+    [[1, 3]],
+    [[0, 1]],
+    [[3, 0]],
+    [],
+  ];
+  for (let y = -1; y < height; y++)
+    for (let x = -1; x < width; x++) {
+      const code =
+        Number(sample(x, y)) +
+        2 * Number(sample(x + 1, y)) +
+        4 * Number(sample(x + 1, y + 1)) +
+        8 * Number(sample(x, y + 1));
+      if (!code || code === 15) continue;
+      const points: Point[] = [
+        [x + 1, y + 0.5],
+        [x + 1.5, y + 1],
+        [x + 1, y + 1.5],
+        [x + 0.5, y + 1],
+      ];
+      for (const [i, j] of cases[code]) {
+        let a = points[i],
+          b = points[j];
+        if (a[1] === b[1]) continue;
+        if (a[1] > b[1]) [a, b] = [b, a];
+        const at = (v: number) => a[0] + ((b[0] - a[0]) * (v - a[1])) / (b[1] - a[1]);
+        for (let top = a[1]; top < b[1]; top += 0.5) {
+          const edges = bands.get(top) ?? [];
+          edges.push({ topX: at(top), bottomX: at(top + 0.5) });
+          bands.set(top, edges);
+        }
+      }
+    }
   const patches: Patch[] = [];
   let active = new Map<string, Patch>();
-  for (let row = 0; row < height; row++) {
+  for (const [top, edges] of [...bands].sort((a, b) => a[0] - b[0])) {
+    edges.sort((a, b) => a.topX + a.bottomX - b.topX - b.bottomX);
     const next = new Map<string, Patch>();
-    for (let col = 0; col < width;) {
-      if (!mask[row * width + col]) {
-        col++;
-        continue;
-      }
-      const left = col;
-      while (col < width && mask[row * width + col]) col++;
-      const key = `${left}:${col}`;
-      const patch = active.get(key) ?? { left, right: col, top: row, bottom: row };
-      patch.bottom = row + 1;
-      next.set(key, patch);
-      active.delete(key);
+    for (let i = 0; i + 1 < edges.length; i += 2) {
+      const left = edges[i],
+        right = edges[i + 1];
+      const ls = (left.bottomX - left.topX) * 2,
+        rs = (right.bottomX - right.topX) * 2;
+      const key = `${left.topX}:${right.topX}:${ls}:${rs}`;
+      let patch = active.get(key);
+      if (!patch || patch.bottom !== top)
+        patch = {
+          left: left.topX,
+          right: right.topX,
+          bottomLeft: left.topX,
+          bottomRight: right.topX,
+          top,
+          bottom: top,
+        };
+      else active.delete(key);
+      patch.bottom = top + 0.5;
+      patch.bottomLeft = left.bottomX;
+      patch.bottomRight = right.bottomX;
+      next.set(`${left.bottomX}:${right.bottomX}:${ls}:${rs}`, patch);
     }
     patches.push(...active.values());
     active = next;
@@ -229,25 +303,44 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
   const dx = a.width_mm / a.pixels_w,
     dy = a.height_mm / a.pixels_h;
   for (const patch of annotationPatches(a.mask, a.pixels_w, a.pixels_h)) {
-    // Flat porches need one prism per patch. Terrain patches stay below 1 mm
-    // in both directions so merging does not bridge over local relief.
-    const columns = porch ? 1 : Math.max(1, Math.ceil((patch.right - patch.left) * dx));
-    const rows = porch ? 1 : Math.max(1, Math.ceil((patch.bottom - patch.top) * dy));
+    // Flat porches need one prism per patch. Sample terrain at 1 mm intervals
+    // across the width and along each side's displacement to retain relief.
+    const columns = porch
+      ? 1
+      : Math.max(
+          1,
+          Math.ceil(Math.max(patch.right - patch.left, patch.bottomRight - patch.bottomLeft) * dx),
+        );
+    const rows = porch
+      ? 1
+      : Math.max(
+          1,
+          Math.ceil(
+            Math.max(
+              (patch.bottom - patch.top) * dy,
+              Math.abs(patch.bottomLeft - patch.left) * dx,
+              Math.abs(patch.bottomRight - patch.right) * dx,
+            ),
+          ),
+        );
+    const corner = (u: number, v: number, ex: number, ey: number) => {
+      const left = patch.left + (patch.bottomLeft - patch.left) * v;
+      const right = patch.right + (patch.bottomRight - patch.right) * v;
+      return point(
+        -a.width_mm / 2 + (left + (right - left) * u) * dx + ex,
+        a.height_mm / 2 - (patch.top + (patch.bottom - patch.top) * v) * dy + ey,
+      );
+    };
     for (let row = 0; row < rows; row++) {
       for (let col = 0; col < columns; col++) {
-        const left =
-          -a.width_mm / 2 + (patch.left + ((patch.right - patch.left) * col) / columns) * dx;
-        const right =
-          -a.width_mm / 2 + (patch.left + ((patch.right - patch.left) * (col + 1)) / columns) * dx;
-        const hi = a.height_mm / 2 - (patch.top + ((patch.bottom - patch.top) * row) / rows) * dy;
-        const lo =
-          a.height_mm / 2 - (patch.top + ((patch.bottom - patch.top) * (row + 1)) / rows) * dy;
+        // Tiny overlaps keep adjacent Boolean pieces connected, including
+        // triangular end caps represented as collapsed trapezoids.
         const points = [
-          [left - 0.0002, lo - 0.0002],
-          [right + 0.0002, lo - 0.0002],
-          [right + 0.0002, hi + 0.0002],
-          [left - 0.0002, hi + 0.0002],
-        ].map(([x, y]) => point(x, y));
+          corner(col / columns, (row + 1) / rows, -0.0002, -0.0002),
+          corner((col + 1) / columns, (row + 1) / rows, 0.0002, -0.0002),
+          corner((col + 1) / columns, row / rows, 0.0002, 0.0002),
+          corner(col / columns, row / rows, -0.0002, 0.0002),
+        ];
         if (!porch && points.some(p => !inside(p, poly)))
           throw new Error(
             'Move the annotation fully inside the terrain, or choose an attached porch.',

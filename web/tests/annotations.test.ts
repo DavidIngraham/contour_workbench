@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { annotationGeometry, annotationPatches, type Annotation } from '../src/annotations';
+import {
+  annotationGeometry,
+  annotationPatches,
+  surfaceZ,
+  type Annotation,
+} from '../src/annotations';
 import { defaults, type Grid, type Layout } from '../src/types';
 const g: Grid = { bounds: [0, 0, 1, 1], width: 2, height: 2, elevations: [100, 100, 100, 100] };
 const l: Layout = {
@@ -87,19 +92,24 @@ describe('annotation solids', () => {
     ));
 });
 
-it('merges spans without changing coverage, including holes and split/join rows', () => {
+it('preserves foreground and holes at pixel centers through split/join rows', () => {
   const rows = ['00111100', '00111100', '00100100', '00100100', '00111100', '00011000'];
   const mask = rows.join('').split('').map(Number);
   const reconstructed = Array(mask.length).fill(0);
   const patches = annotationPatches(mask, 8, rows.length);
-  for (const p of patches)
-    for (let y = p.top; y < p.bottom; y++)
-      for (let x = p.left; x < p.right; x++) reconstructed[y * 8 + x]++;
+  for (let y = 0; y < rows.length; y++)
+    for (let x = 0; x < 8; x++)
+      for (const p of patches) {
+        if (y + 0.5 < p.top || y + 0.5 >= p.bottom) continue;
+        const v = (y + 0.5 - p.top) / (p.bottom - p.top);
+        const left = p.left + (p.bottomLeft - p.left) * v;
+        const right = p.right + (p.bottomRight - p.right) * v;
+        if (x + 0.5 > left && x + 0.5 < right) reconstructed[y * 8 + x]++;
+      }
   expect(reconstructed).toEqual(mask);
-  expect(patches.length).toBeLessThan(rows.length + 2);
 });
 
-it('uses one solid for a high-resolution rectangular label on a flat porch', () => {
+it('uses three patches including interpolated corner caps for a large filled mask', () => {
   const high = {
     ...a,
     placement: 'porch' as const,
@@ -109,10 +119,62 @@ it('uses one solid for a high-resolution rectangular label on a flat porch', () 
     pixels_h: 192,
     mask: Array(512 * 192).fill(1),
   };
-  expect(annotationPatches(high.mask, high.pixels_w, high.pixels_h)).toHaveLength(1);
+  expect(annotationPatches(high.mask, high.pixels_w, high.pixels_h)).toHaveLength(3);
   for (const treatment of ['raised', 'engraved'] as const) {
     const geometry = annotationGeometry({ ...high, treatment }, g, defaults, l);
-    expect(geometry.solids).toHaveLength(1);
-    expect(geometry.preview).toHaveLength(1);
+    expect(geometry.solids).toHaveLength(3);
+    expect(geometry.preview).toHaveLength(3);
+  }
+});
+
+it('merges a long diagonal into a sloped trapezoid instead of pixel steps', () => {
+  const width = 40,
+    height = 30;
+  const mask = Array.from({ length: width * height }, (_, i) => {
+    const x = i % width,
+      y = Math.floor(i / width);
+    return Number(x >= y && x < y + 8);
+  });
+  const patches = annotationPatches(mask, width, height);
+  const diagonal = patches.find(p => p.bottom - p.top > 20);
+  expect(diagonal).toBeDefined();
+  expect(diagonal!.bottomLeft - diagonal!.left).toBe(diagonal!.bottom - diagonal!.top);
+  expect(diagonal!.bottomRight - diagonal!.right).toBe(diagonal!.bottom - diagonal!.top);
+  expect(patches.length).toBeLessThan(8);
+});
+
+it('keeps diagonal contacts separate and caps isolated pixels', () => {
+  const patches = annotationPatches([1, 0, 0, 1], 2, 2);
+  const area = patches.reduce(
+    (sum, p) =>
+      sum + ((p.right - p.left + (p.bottomRight - p.bottomLeft)) * (p.bottom - p.top)) / 2,
+    0,
+  );
+  expect(area).toBe(1);
+  expect(patches).toHaveLength(4);
+  expect(patches.every(p => p.bottom <= 1 || p.top >= 1)).toBe(true);
+});
+
+it('subdivides sloped patches and samples their height on non-flat terrain', () => {
+  const grid = { ...g, elevations: [100, 110, 105, 120] };
+  const label = {
+    ...a,
+    pixels_w: 8,
+    pixels_h: 8,
+    mask: Array.from({ length: 64 }, (_, i) => Number(i % 8 <= Math.floor(i / 8))),
+  };
+  const geometry = annotationGeometry(label, grid, defaults, l);
+  for (const mesh of geometry.solids) {
+    const xs = [],
+      ys = [];
+    for (let i = 0; i < 12; i += 3) {
+      const [x, y, z] = Array.from(mesh.positions).slice(i, i + 3);
+      xs.push(x);
+      ys.push(y);
+      expect(z).toBeCloseTo(surfaceZ(grid, l, x, y) + label.depth_mm, 8);
+    }
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThanOrEqual(1.001);
+    // A sloped cell can move up to 1 mm horizontally as well as spanning 1 mm.
+    expect(Math.max(...xs) - Math.min(...xs)).toBeLessThanOrEqual(2.001);
   }
 });
