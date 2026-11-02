@@ -11,7 +11,7 @@ import {
   validateCoupon,
   type FitCouponOptions,
 } from './fit-coupon';
-import { insetCrossSection, shouldTaperInsert } from './insert-taper';
+import { insetCrossSection, shouldTaperInsert, supportsExtrusion } from './insert-taper';
 import { decodeMeshPacket } from './mesh-packet';
 import { finalBuildMemoryPlan } from './memory-plan';
 import { assemblePaintedSurface, paintedBuildInputs } from './painted-surface';
@@ -170,6 +170,18 @@ function safeTaperedSolid(
     if (candidate.solid === prism) continue;
     try {
       validatedMesh(candidate.solid, 'Taper check');
+      const bounds = candidate.solid.boundingBox();
+      const base = candidate.solid.slice(
+        bounds.min[2] + Math.min(0.001, (bounds.max[2] - bounds.min[2]) / 100),
+      );
+      try {
+        // Clipping at feature intersections can leave a narrower footprint than
+        // the configured path width. A valid solid still needs a printable base.
+        if (!supportsExtrusion(base, candidate.profile.extrusionWidthMm))
+          throw new Error('Taper leaves no extrusion-width base.');
+      } finally {
+        base.delete();
+      }
       return candidate;
     } catch {
       candidate.solid.delete();
@@ -830,10 +842,11 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const { asset, project, legend } = await multicolorCoupon(M, p.nozzle, () =>
         checkpoint(request.id),
       );
-      const files = unzipSync(buildThreeMf(asset, project, 'bambu'));
+      const format = p.format ?? 'bambu';
+      const files = unzipSync(buildThreeMf(asset, project, format, undefined, p));
       files['Metadata/multicolor_coupon.json'] = strToU8(JSON.stringify(legend, null, 2));
       files['Metadata/coupon-instructions.txt'] = strToU8(
-        'Multicolor print test: notch marks front-left. Rows front-to-back: recessed -0.30 mm, flush, raised +0.35 mm. Four lines left-to-right: 0.75, 1, 1.5, 2 times nozzle width; the right patch uses filament 3. Base uses filament 1, lines filament 2. Assign actual filaments in Bambu Studio; retain orientation and scale. Check sliced color coverage, then print and inspect narrow lines, surface coverage, and height transitions. Sub-nozzle lines may disappear, identifying your printer limits. This calibration geometry is fixed; it is not an editable terrain project.',
+        `Multicolor print test: notch marks front-left. Rows front-to-back: recessed -0.30 mm, flush, raised +0.35 mm. Four lines left-to-right: 0.75, 1, 1.5, 2 times nozzle width; the right patch uses filament 3. Base uses filament 1, lines filament 2. Assign actual filaments in ${format === 'prusa' ? 'PrusaSlicer' : format === 'orca' ? 'OrcaSlicer' : 'Bambu Studio'}; retain orientation and scale. Check sliced color coverage, then print and inspect narrow lines, surface coverage, and height transitions. Sub-nozzle lines may disappear, identifying your printer limits. This calibration geometry is fixed; it is not an editable terrain project.`,
       );
       return zipSync(files, { level: 3 });
     }
@@ -879,6 +892,12 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const packageFiles = unzipSync(
         buildThreeMf(asset, project, p.format, undefined, {
           bambuPrinter: p.bambuPrinter,
+          orcaPrinter: p.orcaPrinter,
+          orcaMaterialMode: p.orcaMaterialMode,
+          orcaNozzleType: p.orcaNozzleType,
+          prusaPrinter: p.prusaPrinter,
+          prusaMaterialMode: p.prusaMaterialMode,
+          prusaNozzleType: p.prusaNozzleType,
         }),
       );
       packageFiles['Metadata/calibration_manifest.json'] = files['calibration_manifest.json'];

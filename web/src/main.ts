@@ -68,6 +68,8 @@ import { Engine } from './client';
 import { ExportClient } from './export-client';
 import { browserBuildMemoryBudgetMb } from './memory-plan';
 import type { BambuPrinterId } from './bambu-printers';
+import { readOrcaExportOptions, syncOrcaExportOptions } from './orca-export-options';
+import type { PrusaPrinterId, PrusaMaterialMode, PrusaNozzleType } from './prusa-printers';
 import type { ExportFormat } from './export-formats';
 import { automaticProduct } from './source-resolution';
 import {
@@ -1233,18 +1235,24 @@ function syncExportOptions() {
   const slicer = $<HTMLSelectElement>('export-slicer').value;
   $('three-mf-options').classList.toggle('hidden', !threeMf);
   $('export-bambu-options').classList.toggle('hidden', !threeMf || slicer !== 'bambu');
+  $('export-prusa-options').classList.toggle('hidden', !threeMf || slicer !== 'prusa');
+  $('export-orca-options').classList.toggle('hidden', !threeMf || slicer !== 'orca');
+  syncOrcaExportOptions('export', together);
+  const manualOption = $<HTMLSelectElement>('export-prusa-material-mode').options[0];
+  manualOption.disabled = together;
+  if (together) $<HTMLSelectElement>('export-prusa-material-mode').value = 'mmu3';
   $('export-filaments').innerHTML = together && threeMf ? filamentSummary() : '';
   $('export-mode-note').textContent = together
     ? 'Print together: one watertight solid with painted surface regions.'
     : 'Separate inserts: fitted parts to print individually and assemble.';
   $('export-format-note').textContent = !threeMf
     ? together
-      ? 'STL exports the shape only and loses painted colors. Choose Bambu Studio or PrusaSlicer 3MF to preserve filament assignments.'
+      ? 'STL exports the shape only and loses painted colors. Choose Bambu Studio, OrcaSlicer, or PrusaSlicer 3MF to preserve filament assignments.'
       : 'Print each STL separately. The included manifest records where every insert belongs.'
     : together
-      ? 'Bambu Studio and PrusaSlicer 3MF preserve painted filament assignments. Standard 3MF stores face colors; support varies by slicer.'
-      : slicer === 'bambu'
-        ? 'Single-filament plates print by layer with compact spacing. Mixed-filament plates print by object with printer clearance. Check the slice with your selected printer and filament.'
+      ? 'Bambu Studio, OrcaSlicer, and PrusaSlicer 3MF preserve painted filament assignments. Standard 3MF stores face colors; support varies by slicer.'
+      : slicer === 'bambu' || slicer === 'orca' || slicer === 'prusa'
+        ? 'Separate parts print by object with printer clearance. Extra plates are added when needed. Check the slice with your selected printer and filament.'
         : 'Parts are separated and placed flat. Arrange them on your build plates before slicing.';
 }
 document.querySelectorAll<HTMLInputElement>('input[name="download-format"]').forEach(input => {
@@ -1278,6 +1286,8 @@ $('download-confirm').onclick = async () => {
   try {
     const result = await exportClient.run(format, asset, project, progressStatus, abort.signal, {
       bambuPrinter: $<HTMLSelectElement>('export-bambu-printer').value as BambuPrinterId,
+      ...readPrusaExportOptions('export'),
+      ...readOrcaExportOptions('export'),
     });
     downloadFile(result.bytes as unknown as BlobPart, result.filename, result.mime);
     status(result.filename + ' downloaded.');
@@ -1288,13 +1298,61 @@ $('download-confirm').onclick = async () => {
     updateBusy(false);
   }
 };
-$('download-color-calibration').onclick = async () => {
+function readPrusaExportOptions(prefix: string) {
+  return {
+    prusaPrinter: $<HTMLSelectElement>(`${prefix}-prusa-printer`).value as PrusaPrinterId,
+    prusaMaterialMode: $<HTMLSelectElement>(`${prefix}-prusa-material-mode`)
+      .value as PrusaMaterialMode,
+    prusaNozzleType: $<HTMLSelectElement>(`${prefix}-prusa-nozzle-type`).value as PrusaNozzleType,
+  };
+}
+function colorDownloadDialog(open: boolean) {
+  $('color-download-dialog').classList.toggle('hidden', !open);
+  document.querySelector<HTMLElement>('.workspace')!.inert = open;
+  document.querySelector<HTMLElement>('header')!.inert = open;
+  if (open) $('color-download-title').tabIndex = -1;
+  $(open ? 'color-download-title' : 'download-color-calibration').focus();
+}
+$('download-color-calibration').onclick = () => {
   if (!project || busy) return;
+  colorDownloadDialog(true);
+};
+$('color-download-cancel').onclick = () => colorDownloadDialog(false);
+$('color-download-dialog').onkeydown = event => {
+  if (event.key === 'Escape') {
+    event.stopPropagation();
+    colorDownloadDialog(false);
+  }
+};
+$('color-download-format').onchange = () => {
+  const format = $<HTMLSelectElement>('color-download-format').value;
+  $('color-prusa-options').classList.toggle('hidden', format !== 'prusa');
+  $('color-bambu-options').classList.toggle('hidden', format !== 'bambu');
+  $('color-orca-options').classList.toggle('hidden', format !== 'orca');
+  syncOrcaExportOptions('color', true);
+};
+for (const prefix of ['export', 'fit', 'color'])
+  $(`${prefix}-orca-printer`).onchange = () =>
+    syncOrcaExportOptions(
+      prefix,
+      prefix === 'color' ||
+        (prefix === 'export' && project.settings.manufacturing_mode === 'multicolor'),
+    );
+$('color-download-confirm').onclick = async () => {
+  if (!project || busy) return;
+  const format = $<HTMLSelectElement>('color-download-format').value as 'bambu' | 'orca' | 'prusa';
+  colorDownloadDialog(false);
   updateBusy(true);
   try {
     const bytes = await engine.call(
       'color-calibration',
-      { nozzle: project.settings.nozzle_diameter_mm },
+      {
+        nozzle: project.settings.nozzle_diameter_mm,
+        format,
+        bambuPrinter: $<HTMLSelectElement>('color-bambu-printer').value as BambuPrinterId,
+        ...readPrusaExportOptions('color'),
+        ...readOrcaExportOptions('color'),
+      },
       progressStatus,
     );
     downloadFile(
@@ -1303,7 +1361,7 @@ $('download-color-calibration').onclick = async () => {
       'model/3mf',
     );
     status(
-      'Multicolor test downloaded. Assign three filaments in Bambu Studio, check the slice, then print to inspect coverage.',
+      `Multicolor test downloaded. Assign three filaments in ${format === 'prusa' ? 'PrusaSlicer with MMU3' : format === 'orca' ? 'OrcaSlicer with AMS' : 'Bambu Studio'}, check the slice, then print to inspect coverage.`,
     );
   } catch (e) {
     error(e);
@@ -1351,6 +1409,15 @@ $('fit-download-format').onchange = () => {
     'hidden',
     $<HTMLSelectElement>('fit-download-format').value !== 'bambu',
   );
+  $('fit-prusa-options').classList.toggle(
+    'hidden',
+    $<HTMLSelectElement>('fit-download-format').value !== 'prusa',
+  );
+  $('fit-orca-options').classList.toggle(
+    'hidden',
+    $<HTMLSelectElement>('fit-download-format').value !== 'orca',
+  );
+  syncOrcaExportOptions('fit');
 };
 function fitDownloadDialog(open: boolean) {
   $('fit-download-dialog').classList.toggle('hidden', !open);
@@ -1394,7 +1461,7 @@ $('fit-download-dialog').onkeydown = event => {
 $('fit-download-confirm').onclick = async () => {
   if (busy) return;
   const format = $<HTMLSelectElement>('fit-download-format').value as
-    'stl' | 'portable' | 'bambu' | 'prusa';
+    'stl' | 'portable' | 'bambu' | 'orca' | 'prusa';
   let config: ReturnType<typeof readCouponForm>;
   try {
     config = readCouponForm();
@@ -1415,6 +1482,8 @@ $('fit-download-confirm').onclick = async () => {
         ...config,
         format,
         bambuPrinter: $<HTMLSelectElement>('fit-bambu-printer').value as BambuPrinterId,
+        ...readPrusaExportOptions('fit'),
+        ...readOrcaExportOptions('fit'),
       },
       progressStatus,
     );

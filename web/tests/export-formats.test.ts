@@ -93,7 +93,13 @@ describe('target export formats', () => {
       const model = strFromU8(files['3D/3dmodel.model']);
       expect(model.match(/<item /g)).toHaveLength(2);
       expect(model).not.toContain('<component ');
-      expect(model).toContain('7.000000 0.000000 0.000000');
+      if (format === 'portable') expect(model).toContain('7.000000 0.000000 0.000000');
+      else {
+        const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+        expect(manifest.plates).toHaveLength(2);
+        expect(manifest.material_mode).toBe('manual');
+        expect(model).toContain('304.000000 4.000000 0.000000');
+      }
       expect(model).not.toContain('3.000000 4.000000 2.000000');
       if (format === 'prusa')
         expect(strFromU8(files['Metadata/Slic3r_PE_layer_heights_profile.txt'])).toContain(
@@ -131,11 +137,11 @@ describe('target export formats', () => {
     expect(model).toContain('<metadata name="slic3rpe:Version3mf">1</metadata>');
     const config = strFromU8(files['Metadata/Slic3r_PE.config']);
     expect(config).toContain('; variable_layer_height = 1');
-    expect(config).toContain('; wipe_tower = 0');
+    expect(config).toContain('; wipe_tower = 1');
     expect(config).toContain('; layer_height = 0.20');
     expect(config).toContain('; fill_density = 5%');
     expect(config).toContain('; fill_pattern = gyroid');
-    expect(config).not.toContain('elefant_foot_compensation');
+    expect(config).toContain('; elefant_foot_compensation = 0.2');
     const profile = strFromU8(files['Metadata/Slic3r_PE_layer_heights_profile.txt']);
     expect(profile).toMatch(/^object_id=1\|/);
     const profileValues = profile

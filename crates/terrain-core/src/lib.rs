@@ -2333,7 +2333,17 @@ fn add_insert_layer(
             } else {
                 cell.buffer(-gap / 2.)
             };
-            let printable = printable_parts(layer.intersection(&part_cell), s.nozzle_diameter_mm);
+            let mut printable =
+                printable_parts(layer.intersection(&part_cell), s.nozzle_diameter_mm);
+            if s.manufacturing_mode == ManufacturingMode::Separate {
+                // Boolean clipping can leave fragments narrower than the configured path.
+                // Reject whole pieces that cannot contain one extrusion-width centerline
+                // before creating their pockets, leaving intact terrain in those locations.
+                let extrusion_radius_mm = s.nozzle_diameter_mm * 1.125 / 2.;
+                printable
+                    .0
+                    .retain(|part| !part.buffer(-extrusion_radius_mm).0.is_empty());
+            }
             // Disconnected footprints in one packing cell are independent inserts.
             // A low trail must not pull an unrelated uphill insert down to its floor.
             for raw_pocket in raw_pockets.0 {
@@ -2689,6 +2699,61 @@ mod tests {
     fn inset_surface_is_clamped_to_preserve_substrate_and_insert_thickness() {
         assert_eq!(effective_insert_surface_offset(1., -0.3, 0.8), 0.);
         assert_eq!(effective_insert_surface_offset(2., -0.3, 0.8), -0.3);
+    }
+
+    #[test]
+    fn unprintable_standalone_fragments_do_not_leave_empty_pockets() {
+        let grid = Grid {
+            bounds: [0., 0., 0.001, 0.001],
+            width: 3,
+            height: 3,
+            elevations: vec![100.; 9],
+        };
+        for (manufacturing_mode, width_mm, expected_parts) in [
+            (ManufacturingMode::Separate, 0.3, 0),
+            (ManufacturingMode::Separate, 0.9, 1),
+            (ManufacturingMode::Multicolor, 0.3, 1),
+        ] {
+            let settings = Settings {
+                manufacturing_mode,
+                max_print_size_mm: [10., 10.],
+                ..Default::default()
+            };
+            let layout = Layout::new(&grid, &settings);
+            let mut out = Plan {
+                terrain: Mesh::default(),
+                inserts: vec![],
+                cutters: vec![],
+                cutter_group_ends: vec![],
+                removed_terrain_islands: 0,
+            };
+            let mut pockets = vec![];
+            let layer = MultiPolygon(vec![polygon(&[
+                [2., 2.],
+                [2. + width_mm, 2.],
+                [2. + width_mm, 8.],
+                [2., 8.],
+            ])]);
+            add_insert_layer(
+                &mut out,
+                &InsertLayerContext {
+                    grid: &grid,
+                    settings: &settings,
+                    layout: &layout,
+                    class: "stream",
+                    segment_size_mm: [10., 10.],
+                    roof_mm: 5.,
+                },
+                &layer,
+                None,
+                2.,
+                &mut pockets,
+                &mut 0,
+            )
+            .unwrap();
+            assert_eq!(out.inserts.len(), expected_parts);
+            assert_eq!(pockets.len(), expected_parts);
+        }
     }
 
     #[test]

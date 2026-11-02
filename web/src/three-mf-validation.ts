@@ -60,7 +60,7 @@ function validLayerHeightProfiles(name: string, profile: string, expectedObjectI
 /** Validate required OPC parts, XML syntax, namespaces, object IDs, and build references. */
 export function validateThreeMfFiles(
   files: Record<string, Uint8Array>,
-  kind: 'portable' | 'bambu' | 'prusa' | 'shapeways',
+  kind: 'portable' | 'bambu' | 'orca' | 'prusa' | 'shapeways',
 ) {
   const contentTypes = decode(files, '[Content_Types].xml');
   const relationships = decode(files, '_rels/.rels');
@@ -96,11 +96,13 @@ export function validateThreeMfFiles(
   if (
     !buildReferences.length ||
     buildReferences.some(id => !known.has(id)) ||
-    (kind !== 'bambu' && componentReferences.some(id => !known.has(id)))
+    (kind !== 'bambu' && kind !== 'orca' && componentReferences.some(id => !known.has(id)))
   )
     throw new Error('3MF build or component references an unknown object.');
 
-  if (kind === 'bambu') {
+  if (kind === 'bambu' || kind === 'orca') {
+    if (kind === 'orca' && !model.includes('<metadata name="OrcaSlicer">2.4.2</metadata>'))
+      throw new Error('Orca 3MF model is missing OrcaSlicer project metadata.');
     if (
       !model.includes('xmlns:BambuStudio="http://schemas.bambulab.com/package/2021"') ||
       !model.includes(

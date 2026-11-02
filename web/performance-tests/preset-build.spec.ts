@@ -57,6 +57,7 @@ for (const preset of [
       const download = await pending;
       const files = unzipSync(new Uint8Array(await readFile((await download.path())!)));
       const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+      expect(settings.print_sequence).toBe('by object');
       expect(settings.filament_colour).toEqual(['#8BAA73', '#E78A43', '#C2B17A', '#609CA7']);
       expect(settings.filament_settings_id).toHaveLength(4);
       const xml = strFromU8(files['Metadata/model_settings.config']);
@@ -71,14 +72,13 @@ for (const preset of [
           [...plate.matchAll(/key="object_id" value="(\d+)"/g)].map(m => slots.get(m[1])),
         );
         expect(used.has(undefined)).toBe(false);
-        expect(plate).toContain(
-          `key="print_sequence" value="${used.size > 1 ? 'by object' : 'by layer'}"`,
-        );
+        expect(plate).toContain('key="print_sequence" value="by object"');
       }
       await mkdir('../temp', { recursive: true });
       await download.saveAs('../temp/post-canyon-bambu.3mf');
       await page.locator('#download').click();
       await page.locator('#export-slicer').selectOption('prusa');
+      await page.locator('#export-prusa-material-mode').selectOption('mmu3');
       const prusaPending = page.waitForEvent('download');
       await page.locator('#download-confirm').click();
       const prusa = await prusaPending;

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { insetCrossSection, shouldTaperInsert, type CrossSectionLike } from '../src/insert-taper';
+import {
+  insetCrossSection,
+  shouldTaperInsert,
+  supportsExtrusion,
+  type CrossSectionLike,
+} from '../src/insert-taper';
 
 class FakeSection implements CrossSectionLike<FakeSection> {
   deleted = false;
@@ -45,4 +50,14 @@ describe('insert taper cross sections', () => {
     expect(result.cross).not.toBe(source);
     expect(result.cross.deleted).toBe(false);
   });
+  it.each([true, false])(
+    'releases the printable-base probe when its eroded section is empty=%s',
+    empty => {
+      const source = new FakeSection(empty);
+      expect(supportsExtrusion(source, 0.45)).toBe(!empty);
+      expect(source.deleted).toBe(false);
+      expect(source.children).toHaveLength(1);
+      expect(source.children[0].deleted).toBe(true);
+    },
+  );
 });

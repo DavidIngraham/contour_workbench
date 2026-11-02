@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import { bambuProcessSettings, buildThreeMf } from '../src/three-mf';
 import { defaults, type Asset, type Mesh, type Project } from '../src/types';
 import { surfaceMaterials } from '../src/painted-surface';
+import { bambuPrinter } from '../src/bambu-printers';
+import { prusaPrinter, prusaProfile } from '../src/prusa-printers';
+import { orcaPrinters, orcaProfile } from '../src/orca-printers';
 
 function box(width: number, depth: number, height: number): Mesh {
   return {
@@ -74,6 +77,89 @@ const asset: Asset = {
 };
 
 describe('3MF export', () => {
+  it.each(Object.keys(orcaPrinters) as Array<keyof typeof orcaPrinters>)(
+    'writes an Orca %s project with complete native settings and sequential plates',
+    printer => {
+      const files = unzipSync(
+        buildThreeMf(asset, project, 'orca', undefined, { orcaPrinter: printer }),
+      );
+      expect(strFromU8(files['3D/3dmodel.model'])).toContain(
+        '<metadata name="Application">OrcaSlicer-2.4.2</metadata>',
+      );
+      const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+      const profile = orcaProfile(printer);
+      expect(settings.printer_settings_id).toBe(profile.printer_settings_id);
+      expect(settings.machine_start_gcode).toEqual(profile.machine.machine_start_gcode);
+      expect(String(settings.machine_start_gcode)).toContain('G28');
+      expect(
+        [settings.nozzle_temperature_initial_layer].flat().every((n: string) => Number(n) > 150),
+      ).toBe(true);
+      expect(settings.print_sequence).toBe('by object');
+      expect(settings.curr_bed_type).toBe('Textured PEI Plate');
+      expect(settings.filament_ids).toHaveLength(settings.filament_colour.length);
+      expect(settings.wall_loops).toBe('3');
+      expect(settings.sparse_infill_density).toBe('5%');
+      expect(settings.initial_layer_line_width).toBe('0.45');
+      expect(settings.enable_prime_tower).toBe('0');
+      expect(settings.elefant_foot_compensation).toBe('0');
+      const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+      expect(manifest).toMatchObject({ format: 'orca', printer, print_sequence: 'by object' });
+      expect(manifest.plates.flatMap((p: any) => p.objects)).toHaveLength(3);
+      expect(manifest.plates.every((p: any) => p.print_sequence === 'by object')).toBe(true);
+      if (!orcaPrinters[printer].automatic) {
+        expect(settings.filament_colour).toHaveLength(1);
+        expect(manifest.plates).toHaveLength(3);
+        expect(manifest.plates.map((p: any) => p.filament.extruder).sort()).toEqual([1, 3, 4]);
+        expect(strFromU8(files['Metadata/model_settings.config'])).not.toMatch(
+          /key="extruder" value="[2-9]"/,
+        );
+        expect(strFromU8(files['Metadata/print-instructions.txt'])).toContain('design slot 3');
+      } else expect(settings.filament_colour).toHaveLength(4);
+      expect(strFromU8(files['Metadata/layer_heights_profile.txt'])).toContain('object_id=3|');
+    },
+  );
+
+  it('preserves native Orca painting and enables the prime tower for automatic color changes', () => {
+    const painted = {
+      ...asset,
+      inserts: [],
+      faceMaterials: new Uint8Array(12).fill(surfaceMaterials.indexOf('water')),
+    };
+    const together = {
+      ...project,
+      settings: { ...project.settings, manufacturing_mode: 'multicolor' as const },
+    };
+    const files = unzipSync(buildThreeMf(painted, together, 'orca'));
+    expect(strFromU8(files['3D/Objects/object_1.model'])).toContain('paint_color=');
+    const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+    expect(settings).toMatchObject({ print_sequence: 'by layer', enable_prime_tower: '1' });
+    expect(settings).toMatchObject({ wipe_tower_type: 'type1', wipe_tower_wall_type: 'rectangle' });
+    expect(() =>
+      buildThreeMf(painted, together, 'orca', undefined, { orcaPrinter: 'mk4s' }),
+    ).toThrow(/automatic filament/);
+    expect(() =>
+      buildThreeMf(asset, project, 'orca', undefined, {
+        orcaPrinter: 'core-one',
+        orcaMaterialMode: 'automatic',
+      }),
+    ).toThrow(/PrusaSlicer for MMU3/);
+  });
+
+  it('supports manual Bambu plates and rejects unsupported Orca nozzle and AMS slot selections', () => {
+    const files = unzipSync(
+      buildThreeMf(asset, project, 'orca', undefined, { orcaMaterialMode: 'manual' }),
+    );
+    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.plates).toHaveLength(3);
+    expect(() => orcaProfile('p1s', 0.25)).toThrow(/No stock OrcaSlicer/);
+    expect(() => orcaProfile('mk4s', 0.4, 'invalid' as any)).toThrow(/nozzle type/);
+    expect(() => orcaProfile('invalid' as any)).toThrow(/supported OrcaSlicer printer/);
+    const tooMany = {
+      ...project,
+      materials: project.materials!.map(g => (g.id === 'water' ? { ...g, extruder: 5 } : g)),
+    };
+    expect(() => buildThreeMf(asset, tooMany, 'orca')).toThrow(/four AMS/);
+  });
   it.each([
     ['p1s', 256, [17, 0, 241, 16]],
     ['x1c', 256, [17, 0, 241, 16]],
@@ -144,6 +230,8 @@ describe('3MF export', () => {
             settings: { ...project.settings, manufacturing_mode: mode },
           },
           'prusa',
+          undefined,
+          { prusaMaterialMode: 'mmu3' },
         ),
       );
       const config = strFromU8(files['Metadata/Slic3r_PE.config']);
@@ -173,6 +261,8 @@ describe('3MF export', () => {
           settings: { ...project.settings, manufacturing_mode: 'multicolor' },
         },
         kind,
+        undefined,
+        { prusaMaterialMode: 'mmu3' },
       ),
     );
     const model = strFromU8(
@@ -195,10 +285,17 @@ describe('3MF export', () => {
       expect(new Set(resourceIds).size).toBe(resourceIds.length);
       const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
       expect(settings.filament_colour).toEqual(['#8BAA73', '#FFFFFF', '#0055FF', '#FFFFFF']);
+      expect(settings.print_sequence).toBe('by layer');
+      const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+      expect(manifest.print_sequence).toBe('by layer');
+      expect(manifest.plates[0].print_sequence).toBe('by layer');
+      expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+        'key="print_sequence" value="by layer"',
+      );
     }
     if (kind === 'prusa')
       expect(strFromU8(files['Metadata/Slic3r_PE.config'])).toContain(
-        '; filament_colour = #8BAA73;#FFFFFF;#0055FF;#FFFFFF',
+        '; filament_colour = #8BAA73;#FFFFFF;#0055FF;#FFFFFF;#FFFFFF',
       );
   });
 
@@ -255,7 +352,7 @@ describe('3MF export', () => {
     expect(settings).toMatchObject({
       ...bambuProcessSettings(project),
       brim_width: '3',
-      print_sequence: 'by layer',
+      print_sequence: 'by object',
       printer_settings_id: 'Bambu Lab P1S 0.4 nozzle',
     });
     expect(settings.machine_start_gcode).toBeUndefined();
@@ -279,6 +376,7 @@ describe('3MF export', () => {
       ]),
     );
     const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.print_sequence).toBe('by object');
     expect(manifest.plates).toHaveLength(1);
     expect(manifest.plates[0].objects).toEqual(['ski run', 'lake & one', 'Terrain']);
     expect(manifest.plates[0].print_sequence).toBe('by object');
@@ -319,7 +417,7 @@ describe('3MF export', () => {
       );
       expect(strFromU8(files['Metadata/model_settings.config']).match(/<plate>/g)).toHaveLength(1);
       expect(JSON.parse(strFromU8(files['Metadata/project_settings.config'])).print_sequence).toBe(
-        'by layer',
+        'by object',
       );
       expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
         'key="print_sequence" value="by object"',
@@ -348,7 +446,8 @@ describe('3MF export', () => {
     ];
     let index = 0;
     for (const plate of manifest.plates) {
-      const gap = plate.print_sequence === 'by object' ? 73.999 : 7.999;
+      expect(plate.print_sequence).toBe('by object');
+      const gap = 73.999;
       const rectangles: { x: number; y: number; w: number; d: number; h: number }[] = [];
       for (const name of plate.objects) {
         const item = items[index++];
@@ -374,15 +473,55 @@ describe('3MF export', () => {
           ).toBe(true);
         rectangles.push({ x, y, w, d, h });
       }
-      if (plate.print_sequence === 'by object')
-        expect(rectangles.slice(0, -1).every(r => r.h <= 34)).toBe(true);
+      expect(rectangles.slice(0, -1).every(r => r.h <= 34)).toBe(true);
     }
     expect(() =>
       buildThreeMf(many, project, 'bambu', undefined, { sequentialSinglePlate: true }),
     ).toThrow('does not fit');
   });
 
-  it('packs matching filaments densely by layer even with multiple tall objects', () => {
+  it.each(['p1s', 'x1c', 'a1', 'a1-mini'] as const)(
+    'uses sequential clearance for matching filaments on %s, including low-only plates',
+    printerId => {
+      const printer = bambuPrinter(printerId);
+      const same = {
+        ...project,
+        materials: project.materials!.map(group => ({ ...group, color: '#123456', extruder: 1 })),
+      };
+      for (const height of [2, 5]) {
+        const pieces = {
+          ...asset,
+          terrain: box(40, 40, height),
+          inserts: asset.inserts.map(piece => ({ ...piece, mesh: box(40, 40, 2) })),
+        };
+        const files = unzipSync(
+          buildThreeMf(pieces, same, 'bambu', undefined, { bambuPrinter: printerId }),
+        );
+        const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
+        expect(settings.print_sequence).toBe('by object');
+        expect(settings.filament_colour).toEqual(['#123456']);
+        const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+        expect(manifest.print_sequence).toBe('by object');
+        expect(manifest.plates).toHaveLength(1);
+        expect(manifest.plates[0].print_sequence).toBe('by object');
+        expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
+          'key="print_sequence" value="by object"',
+        );
+        const positions = [
+          ...strFromU8(files['3D/3dmodel.model']).matchAll(/<item [^>]*transform="([^"]+)"/g),
+        ].map(match => match[1].split(' ').map(Number).slice(9, 11));
+        expect(positions).toHaveLength(3);
+        const gap = (height === 2 ? 4 : printer.clearanceMm) + 6;
+        for (const [i, [x, y]] of positions.entries())
+          for (const [otherX, otherY] of positions.slice(i + 1))
+            expect(
+              Math.abs(x - otherX) >= 40 + gap - 0.001 || Math.abs(y - otherY) >= 40 + gap - 0.001,
+            ).toBe(true);
+      }
+    },
+  );
+
+  it('separates matching-filament tall objects onto sequential plates', () => {
     const same = {
       ...project,
       materials: [
@@ -403,11 +542,22 @@ describe('3MF export', () => {
       buildThreeMf(dense, same, 'bambu', undefined, { bambuPrinter: 'a1-mini' }),
     );
     const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
-    expect(manifest.plates).toHaveLength(1);
-    expect(manifest.plates[0].print_sequence).toBe('by layer');
-    expect(strFromU8(files['Metadata/model_settings.config'])).toContain(
-      'key="print_sequence" value="by layer"',
-    );
+    expect(manifest.plates).toHaveLength(4);
+    for (const plate of manifest.plates) {
+      expect(plate.print_sequence).toBe('by object');
+      expect(plate.objects).toHaveLength(1);
+    }
+    expect(
+      strFromU8(files['Metadata/model_settings.config']).match(
+        /key="print_sequence" value="by object"/g,
+      ),
+    ).toHaveLength(4);
+    expect(() =>
+      buildThreeMf(dense, same, 'bambu', undefined, {
+        bambuPrinter: 'a1-mini',
+        sequentialSinglePlate: true,
+      }),
+    ).toThrow('does not fit on one plate');
     expect(
       JSON.parse(strFromU8(files['Metadata/project_settings.config'])).filament_colour,
     ).toEqual(['#123456']);
@@ -424,11 +574,13 @@ describe('3MF export', () => {
         mesh: box(12, 12, 2 + i),
       })),
     };
-    const files = unzipSync(buildThreeMf(pieces, canyon, kind));
+    const files = unzipSync(
+      buildThreeMf(pieces, canyon, kind, undefined, { prusaMaterialMode: 'mmu3' }),
+    );
     if (kind === 'prusa') {
       const config = strFromU8(files['Metadata/Slic3r_PE.config']);
       expect(config).toContain('; filament_colour = #8BAA73;#E78A43;#C2B17A;#609CA7');
-      expect(config).toContain('; nozzle_diameter = 0.4,0.4,0.4,0.4');
+      expect(config).toContain('; nozzle_diameter = 0.4,0.4,0.4,0.4,0.4');
       const model = strFromU8(files['Metadata/Slic3r_PE_model.config']);
       expect(model.match(/<object /g)).toHaveLength(4);
       for (const slot of [1, 2, 3, 4])
@@ -451,6 +603,143 @@ describe('3MF export', () => {
         bambuPrinter: 'a1-mini',
       }),
     ).toThrow('does not fit');
+  });
+  it.each(['mk4s', 'core-one'] as const)(
+    'packs sequential %s MMU3 objects within native beds and retains the stock printer profile',
+    printerId => {
+      const printer = prusaPrinter(printerId);
+      const many = {
+        ...asset,
+        terrain: box(100, 100, printer.rodHeightMm + 10),
+        inserts: Array.from({ length: 4 }, (_, i) => ({
+          ...asset.inserts[0],
+          id: `prusa-${i}`,
+          mesh: box(80, 80, i === 0 ? printer.rodHeightMm + 2 : 5),
+        })),
+      };
+      const files = unzipSync(
+        buildThreeMf(many, project, 'prusa', undefined, {
+          prusaPrinter: printerId,
+          prusaMaterialMode: 'mmu3',
+        }),
+      );
+      const config = strFromU8(files['Metadata/Slic3r_PE.config']);
+      expect(config).toContain('; complete_objects = 1');
+      expect(config).toContain('; printer_settings_id = ' + printer.name + ' MMU3 HF0.4 nozzle');
+      expect(config).toContain('; start_gcode = M17');
+      expect(config).toContain('; filament_settings_id = Prusament PLA');
+      expect(config).toContain('; single_extruder_multi_material = 1');
+      expect(config).toContain('; nozzle_diameter = 0.4,0.4,0.4,0.4,0.4');
+      const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+      expect(manifest.printer).toBe(printerId);
+      expect(manifest.bed_size_mm).toEqual(printer.bedMm);
+      expect(manifest.plates.length).toBeGreaterThan(1);
+      const transforms = [
+        ...strFromU8(files['3D/3dmodel.model']).matchAll(/<item [^>]*transform="([^"]+)"/g),
+      ].map(match => match[1].split(' ').map(Number));
+      let index = 0;
+      for (const plate of manifest.plates) {
+        expect(plate.print_sequence).toBe('by object');
+        const rectangles: { x: number; y: number; width: number; depth: number; height: number }[] =
+          [];
+        for (const name of plate.objects) {
+          const t = transforms[index++];
+          const piece =
+            name === 'Terrain' ? many.terrain : many.inserts.find(p => p.id === name)!.mesh;
+          const rectangle = {
+            x: t[9] - (plate.plate - 1) * 300,
+            y: t[10],
+            width: Math.max(...Array.from(piece.positions).filter((_, i) => i % 3 === 0)),
+            depth: Math.max(...Array.from(piece.positions).filter((_, i) => i % 3 === 1)),
+            height: Math.max(...Array.from(piece.positions).filter((_, i) => i % 3 === 2)),
+          };
+          expect(rectangle.x).toBeGreaterThanOrEqual(4);
+          expect(rectangle.y).toBeGreaterThanOrEqual(4);
+          expect(rectangle.x + rectangle.width).toBeLessThanOrEqual(printer.bedMm[0] - 4);
+          expect(rectangle.y + rectangle.depth).toBeLessThanOrEqual(printer.bedMm[1] - 4);
+          for (const other of rectangles) {
+            const gap = printer.clearanceMm + 6;
+            expect(
+              rectangle.x + rectangle.width + gap <= other.x ||
+                other.x + other.width + gap <= rectangle.x ||
+                rectangle.y + rectangle.depth + gap <= other.y ||
+                other.y + other.depth + gap <= rectangle.y,
+            ).toBe(true);
+          }
+          rectangles.push(rectangle);
+        }
+        expect(rectangles.slice(0, -1).every(r => r.height <= printer.rodHeightMm)).toBe(true);
+      }
+      expect(index).toBe(5);
+    },
+  );
+
+  it('puts manual-change Prusa colors on separate plates and maps their native parts to one tool', () => {
+    const files = unzipSync(buildThreeMf(asset, project, 'prusa'));
+    const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+    expect(manifest.material_mode).toBe('manual');
+    expect(manifest.plates).toHaveLength(3);
+    expect(new Set(manifest.plates.map((plate: any) => plate.filament.extruder))).toEqual(
+      new Set([1, 3, 4]),
+    );
+    const config = strFromU8(files['Metadata/Slic3r_PE.config']);
+    expect(config).toContain('; single_extruder_multi_material = 0');
+    expect(config).toContain('; nozzle_diameter = 0.4\n');
+    const model = strFromU8(files['Metadata/Slic3r_PE_model.config']);
+    expect([...model.matchAll(/key="extruder" value="(\d+)"/g)].map(m => m[1])).toEqual([
+      '1',
+      '1',
+      '1',
+    ]);
+    expect(JSON.parse(strFromU8(files['Metadata/project.contour.json'])).materials).toEqual(
+      expect.arrayContaining(project.materials!),
+    );
+    expect(strFromU8(files['Metadata/print-instructions.txt'])).toContain('one filament');
+  });
+
+  it('rejects unsupported Prusa printer/nozzle, excess MMU slots, oversized parts, and a tenth bed', () => {
+    expect(() => prusaPrinter('unknown' as never)).toThrow('supported Prusa');
+    expect(() => prusaProfile('mk4s', 0.2)).toThrow('stock');
+    expect(() => prusaProfile('mk4s', 0.6, 'mmu3', 'high-flow')).toThrow('stock');
+    expect(prusaProfile('mk4s', 0.6, 'mmu3', 'standard').printer_variant).toBe('0.6');
+    expect(() =>
+      buildThreeMf(
+        asset,
+        {
+          ...project,
+          materials: project.materials!.map(m => ({ ...m, extruder: m.extruder + 5 })),
+        },
+        'prusa',
+        undefined,
+        { prusaMaterialMode: 'mmu3' },
+      ),
+    ).toThrow('five filament slots');
+    expect(() => buildThreeMf({ ...asset, terrain: box(250, 200, 5) }, project, 'prusa')).toThrow(
+      'does not fit',
+    );
+    expect(() =>
+      buildThreeMf(
+        {
+          ...asset,
+          inserts: Array.from({ length: 9 }, (_, i) => ({
+            ...asset.inserts[0],
+            id: `tall-${i}`,
+            mesh: box(20, 20, 40),
+          })),
+        },
+        project,
+        'prusa',
+      ),
+    ).toThrow('9-plate limit');
+    expect(() =>
+      buildThreeMf(
+        asset,
+        { ...project, settings: { ...project.settings, manufacturing_mode: 'multicolor' } },
+        'prusa',
+        undefined,
+        { prusaMaterialMode: 'manual' },
+      ),
+    ).toThrow('require MMU3');
   });
   it('rejects invalid triangle references before creating an archive', () => {
     const broken: Asset = {

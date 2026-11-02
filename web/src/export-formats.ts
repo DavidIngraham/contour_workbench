@@ -15,6 +15,7 @@ export type ExportFormat =
   | 'stl'
   | 'portable'
   | 'bambu'
+  | 'orca'
   | 'prusa'
   | 'shapeways-color'
   | 'shapeways-stl'
@@ -308,8 +309,8 @@ export function buildExport(
     for (const [index, entry] of assembledMeshes(asset).entries())
       validateWatertight(entry.mesh, index ? 'Insert ' + index : 'Terrain');
   const kind: ThreeMfKind =
-    format === 'bambu'
-      ? 'bambu'
+    format === 'bambu' || format === 'orca'
+      ? format
       : format === 'prusa'
         ? 'prusa'
         : format === 'shapeways-3mf'

@@ -6,6 +6,19 @@ export interface CrossSectionLike<T> {
   delete(): void;
 }
 
+/** Check that a base admits an extrusion-width centerline, retaining caller ownership. */
+export function supportsExtrusion<T extends CrossSectionLike<T>>(
+  section: T,
+  extrusionWidthMm: number,
+) {
+  const centerline = section.offset(-extrusionWidthMm / 2, 'Round', 2, 16);
+  try {
+    return !centerline.isEmpty();
+  } finally {
+    centerline.delete();
+  }
+}
+
 /** Retry a requested inset at smaller values without deleting the caller-owned section. */
 export function insetCrossSection<T extends CrossSectionLike<T>>(
   section: T,

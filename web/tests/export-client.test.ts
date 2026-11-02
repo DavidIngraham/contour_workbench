@@ -79,21 +79,38 @@ describe('disposable export worker', () => {
     expect(worker.terminated).toBe(true);
   });
 
-  it('transfers compact copies and terminates after success', async () => {
-    const client = new ExportClient();
-    const pending = client.run('bambu', asset, project, undefined, undefined, {
-      bambuPrinter: 'a1-mini',
-    });
-    const worker = FakeWorker.instances[0];
-    expect(worker.message).toMatchObject({ options: { bambuPrinter: 'a1-mini' } });
-    expect(worker.transfers).toHaveLength(3);
-    expect(asset.terrain.positions).toEqual([0, 0, 0]);
-    worker.onmessage?.({
-      data: { result: { bytes: new Uint8Array([1]), filename: 'test.3mf', mime: 'model/3mf' } },
-    } as MessageEvent);
-    await expect(pending).resolves.toMatchObject({ filename: 'test.3mf' });
-    expect(worker.terminated).toBe(true);
-  });
+  it.each(['bambu', 'orca', 'prusa'] as const)(
+    'transfers %s printer options and terminates after success',
+    async format => {
+      const client = new ExportClient();
+      const pending = client.run(format, asset, project, undefined, undefined, {
+        bambuPrinter: 'a1-mini',
+        orcaPrinter: 'core-one',
+        orcaMaterialMode: 'manual',
+        orcaNozzleType: 'standard',
+        prusaPrinter: 'core-one',
+        prusaMaterialMode: 'manual',
+      });
+      const worker = FakeWorker.instances[0];
+      expect(worker.message).toMatchObject({
+        options: {
+          bambuPrinter: 'a1-mini',
+          orcaPrinter: 'core-one',
+          orcaMaterialMode: 'manual',
+          orcaNozzleType: 'standard',
+          prusaPrinter: 'core-one',
+          prusaMaterialMode: 'manual',
+        },
+      });
+      expect(worker.transfers).toHaveLength(3);
+      expect(asset.terrain.positions).toEqual([0, 0, 0]);
+      worker.onmessage?.({
+        data: { result: { bytes: new Uint8Array([1]), filename: 'test.3mf', mime: 'model/3mf' } },
+      } as MessageEvent);
+      await expect(pending).resolves.toMatchObject({ filename: 'test.3mf' });
+      expect(worker.terminated).toBe(true);
+    },
+  );
 
   it('terminates immediately and rejects when canceled', async () => {
     const client = new ExportClient();

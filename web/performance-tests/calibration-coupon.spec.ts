@@ -276,6 +276,7 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
     await expect(page.locator('#landing-calibration')).toBeFocused();
     await page.locator('#landing-calibration').click();
     await page.locator('#fit-download-format').selectOption(format);
+    if (format === 'prusa') await page.locator('#fit-prusa-material-mode').selectOption('mmu3');
     if (variant === 'bambu-mini') await page.locator('#fit-bambu-printer').selectOption('a1-mini');
     const pending = page.waitForEvent('download');
     await page.locator('#fit-download-confirm').click();
@@ -289,7 +290,7 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
     if (format === 'bambu') {
       expect(strFromU8(files['3D/3dmodel.model'])).toContain('BambuStudio-2.0.0');
       expect(JSON.parse(strFromU8(files['Metadata/project_settings.config']))).toMatchObject({
-        print_sequence: 'by layer',
+        print_sequence: 'by object',
         printer_settings_id:
           variant === 'bambu-mini' ? 'Bambu Lab A1 mini 0.4 nozzle' : 'Bambu Lab P1S 0.4 nozzle',
         filament_colour: ['#8BAA73', '#E78A43'],
@@ -355,6 +356,7 @@ test('multicolor coupon downloads three painted filaments and a dimensional lege
     .filter({ hasText: /^Tools$/ })
     .click();
   await page.locator('#download-color-calibration').click();
+  await page.locator('#color-download-confirm').click();
   const file = await pending;
   const bytes = await readFile((await file.path())!);
   const files = unzipSync(bytes);

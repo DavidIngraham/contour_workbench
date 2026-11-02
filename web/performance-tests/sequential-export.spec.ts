@@ -76,10 +76,12 @@ test('regular export uses the selected printer and preserves terrain after calib
   const settings = JSON.parse(strFromU8(files['Metadata/project_settings.config']));
   expect(settings).toMatchObject({
     printer_settings_id: 'Bambu Lab A1 mini 0.4 nozzle',
-    print_sequence: 'by layer',
+    print_sequence: 'by object',
   });
   const manifest = JSON.parse(strFromU8(files['Metadata/contour_workbench.json']));
+  expect(manifest.print_sequence).toBe('by object');
   expect(manifest.plates).toHaveLength(2);
+  for (const plate of manifest.plates) expect(plate.print_sequence).toBe('by object');
   expect(manifest.plates.flatMap((plate: any) => plate.objects)).toHaveLength(3);
   const models = Object.entries(files).filter(([name]) => name.startsWith('3D/Objects/'));
   const maxX = Math.max(

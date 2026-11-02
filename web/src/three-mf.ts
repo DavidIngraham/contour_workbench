@@ -1,4 +1,4 @@
-/** Portable and Bambu-oriented 3MF package generation. All model coordinates are millimeters. */
+/** Portable, Bambu, Orca, and Prusa 3MF package generation. All model coordinates are millimeters. */
 import { strToU8, zipSync } from 'fflate';
 import { featureSourceAttribution } from './feature-sources';
 import { projectMaterialGroups, type Asset, type Mesh, type Piece, type Project } from './types';
@@ -6,14 +6,37 @@ import { validateThreeMfFiles, validateThreeMfMesh } from './three-mf-validation
 import { surfaceMaterials, trianglePaintCode } from './painted-surface';
 import { filamentPlan } from './filaments';
 import { bambuPrinter, type BambuPrinterId } from './bambu-printers';
+import { orcaAssemblyLayout } from './orca-layout';
+import { extrusionWidthMm } from './insert-fit';
+import {
+  orcaPrinter,
+  orcaProfile,
+  orcaPackingPrinter,
+  orcaProjectSettings,
+  type OrcaPrinterId,
+  type OrcaMaterialMode,
+} from './orca-printers';
+import {
+  prusaPrinter,
+  prusaProfile,
+  type PrusaPrinterId,
+  type PrusaMaterialMode,
+  type PrusaNozzleType,
+} from './prusa-printers';
 
 /** Supported 3MF packaging variants. */
-export type ThreeMfKind = 'portable' | 'bambu' | 'prusa' | 'shapeways';
+export type ThreeMfKind = 'portable' | 'bambu' | 'orca' | 'prusa' | 'shapeways';
 
 /** Printer/layout options, independent of serialized terrain project settings. */
 export interface ThreeMfOptions {
   sequentialSinglePlate?: boolean;
   bambuPrinter?: BambuPrinterId;
+  orcaPrinter?: OrcaPrinterId;
+  orcaMaterialMode?: OrcaMaterialMode;
+  orcaNozzleType?: PrusaNozzleType;
+  prusaPrinter?: PrusaPrinterId;
+  prusaMaterialMode?: PrusaMaterialMode;
+  prusaNozzleType?: PrusaNozzleType;
 }
 
 const coreNamespace = 'http://schemas.microsoft.com/3dmanufacturing/core/2015/02';
@@ -96,7 +119,7 @@ function meshXml(
       if (index < 0) throw new Error('Painted triangle references an unknown material.');
       const code = trianglePaintCode(groups[index].extruder);
       paint =
-        kind === 'bambu'
+        kind === 'bambu' || kind === 'orca'
           ? ` paint_color="${code}"`
           : kind === 'prusa'
             ? ` slic3rpe:mmu_segmentation="${code}"`
@@ -178,30 +201,80 @@ function assembledPlacement(objects: ObjectRecord[]): Placement[] {
   }));
 }
 
+interface PackingPrinter {
+  name: string;
+  widthMm: number;
+  depthMm: number;
+  heightMm: number;
+  clearanceMm: number;
+  rodHeightMm: number;
+  nozzleHeightMm: number;
+  keepouts: readonly (readonly [number, number, number, number])[];
+  maxPlates: number;
+  slicer: 'bambu' | 'prusa' | 'orca';
+  singleFilament?: boolean;
+}
+
+function packingPrinter(
+  kind: 'bambu' | 'prusa' | 'orca',
+  options: ThreeMfOptions,
+  nozzleMm: number,
+): PackingPrinter {
+  if (kind === 'orca') {
+    const id = options.orcaPrinter ?? 'p1s';
+    return orcaPackingPrinter(
+      id,
+      orcaProfile(id, nozzleMm, options.orcaNozzleType),
+      options.orcaMaterialMode!,
+    );
+  }
+  if (kind === 'prusa') {
+    const printer = prusaPrinter(options.prusaPrinter);
+    return {
+      ...printer,
+      widthMm: printer.bedMm[0],
+      depthMm: printer.bedMm[1],
+      // Prusa uses the full clearance radius, even for low objects. Stock
+      // purge/wipe strokes are outside the bed; the 4 mm margin protects edges.
+      nozzleHeightMm: 0,
+      keepouts: [],
+      maxPlates: 9,
+      slicer: kind,
+      singleFilament: (options.prusaMaterialMode ?? 'manual') === 'manual',
+    };
+  }
+  const printer = bambuPrinter(options.bambuPrinter);
+  return {
+    ...printer,
+    widthMm: printer.bedMm,
+    depthMm: printer.bedMm,
+    keepouts: [
+      ...(printer.excludedBedMm[0] > 0 && printer.excludedBedMm[1] > 0
+        ? [[0, 0, ...printer.excludedBedMm] as const]
+        : []),
+      printer.purgeKeepoutMm,
+    ],
+    maxPlates: 36,
+    slicer: kind,
+  };
+}
+
 function packedPlacement(
   objects: ObjectRecord[],
   project: Project,
-  printerId: BambuPrinterId,
+  printer: PackingPrinter,
   singlePlate: boolean,
 ): Placement[] {
-  const printer = bambuPrinter(printerId);
   const margin = 4; // Includes the explicit 3 mm brim and rounding tolerance.
-  const keepouts: readonly (readonly [number, number, number, number])[] = [
-    ...(printer.excludedBedMm[0] > 0 && printer.excludedBedMm[1] > 0
-      ? [[0, 0, ...printer.excludedBedMm] as const]
-      : []),
-    printer.purgeKeepoutMm,
-  ];
+  const keepouts = printer.keepouts;
   type Packed = { object: ObjectRecord; b: Bounds3; x: number; y: number };
   const entries = objects.map(object => ({ object, b: bounds(object.mesh) }));
   const groups = projectMaterialGroups(project);
   const slot = (object: ObjectRecord) => groups[materialIndex(project, object)].extruder;
-  const mixed = (plate: { object: ObjectRecord }[]) =>
-    new Set(plate.map(p => slot(p.object))).size > 1;
   for (const { object, b } of entries) {
     if (
-      b.width > printer.bedMm - 2 * margin ||
-      b.depth > printer.bedMm - 2 * margin ||
+      b.width > printer.widthMm - 2 * margin ||
+      b.depth > printer.depthMm - 2 * margin ||
       b.height > printer.heightMm
     )
       throw new Error(
@@ -221,8 +294,8 @@ function packedPlacement(
       (a, b) => b.b.width - a.b.width || b.b.depth - a.b.depth || a.object.id - b.object.id,
     ),
   ];
-  // Also try grouping filaments first: dense single-filament plates can use
-  // fewer beds than a mixed layout that needs toolhead clearance everywhere.
+  // Also try grouping filaments first to keep matching parts together where
+  // possible. Every plate still needs the same sequential-print clearances.
   orders.push(...orders.map(order => [...order].sort((a, b) => slot(a.object) - slot(b.object))));
   let best: Packed[][] | undefined;
   for (const order of orders) {
@@ -231,16 +304,15 @@ function packedPlacement(
       let placed = false;
       for (let index = 0; index <= plates.length; index++) {
         const plate = plates[index] ?? [];
-        const sequential = mixed([entry, ...plate]);
+        // A printer without an MMU changes filament between prints. Never
+        // schedule different filament slots together on a manual-change bed.
+        if (printer.singleFilament && plate.some(p => slot(p.object) !== slot(entry.object)))
+          continue;
         // A single tall object may print last; two tall objects cannot share a
         // plate without printer-specific gantry/order analysis.
-        if (
-          sequential &&
-          [entry, ...plate].filter(p => p.b.height > printer.rodHeightMm).length > 1
-        )
-          continue;
+        if ([entry, ...plate].filter(p => p.b.height > printer.rodHeightMm).length > 1) continue;
         const short = [entry, ...plate].every(p => p.b.height < printer.nozzleHeightMm - 1.5);
-        const gap = (sequential ? (short ? 4 : printer.clearanceMm) : 2) + 6; // two 3 mm brims
+        const gap = (short ? 4 : printer.clearanceMm) + 6; // two 3 mm brims
         const xs = [
           ...new Set([
             margin,
@@ -255,8 +327,8 @@ function packedPlacement(
             ...plate.map(p => p.y + p.b.depth + gap),
           ]),
         ].sort((a, b) => a - b);
-        // Adding another filament or a taller object changes the clearance tier
-        // for the whole plate. Recheck every existing pair before accepting it.
+        // Adding a taller object can change the clearance tier for the whole
+        // plate. Recheck every existing pair before accepting it.
         const separated = (a: Packed, b: Packed) =>
           a.x + a.b.width + gap <= b.x ||
           b.x + b.b.width + gap <= a.x ||
@@ -267,8 +339,8 @@ function packedPlacement(
           for (const x of xs) {
             const candidate = { ...entry, x, y };
             if (
-              x + entry.b.width > printer.bedMm - margin ||
-              y + entry.b.depth > printer.bedMm - margin
+              x + entry.b.width > printer.widthMm - margin ||
+              y + entry.b.depth > printer.depthMm - margin
             )
               continue;
             if (
@@ -302,9 +374,9 @@ function packedPlacement(
     throw new Error(
       'The fit test does not fit on one plate with purge-line, brim, and sequential-print spacing. Choose a larger printer.',
     );
-  if (best!.length > 36)
+  if (best!.length > printer.maxPlates)
     throw new Error(
-      'This export exceeds Bambu Studio’s 36-plate limit. Reduce the number of parts.',
+      `This export exceeds ${printer.slicer === 'bambu' ? 'Bambu Studio’s' : printer.slicer === 'orca' ? 'OrcaSlicer’s' : 'PrusaSlicer’s'} ${printer.maxPlates}-plate limit. Reduce the number of parts.`,
     );
   const columns = Math.ceil(Math.sqrt(best!.length));
   return best!.flatMap((plate, index) =>
@@ -315,10 +387,14 @@ function packedPlacement(
       .map(({ object, b, x, y }) => ({
         object,
         plate: index + 1,
-        printSequence: mixed(plate) ? ('by object' as const) : ('by layer' as const),
+        printSequence: 'by object' as const,
         translation: [
-          x - b.min[0] + (index % columns) * printer.bedMm * 1.2,
-          y - b.min[1] - Math.floor(index / columns) * printer.bedMm * 1.2,
+          x -
+            b.min[0] +
+            (printer.slicer === 'prusa' ? index : index % columns) * printer.widthMm * 1.2,
+          y -
+            b.min[1] -
+            (printer.slicer === 'prusa' ? 0 : Math.floor(index / columns)) * printer.depthMm * 1.2,
           -b.min[2],
         ] as [number, number, number],
       })),
@@ -589,7 +665,12 @@ function coreModel(
   return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${kind === 'bambu' ? 'Bambu Studio multipart terrain project' : kind === 'shapeways' ? 'Shapeways single-material terrain model' : 'Assembled terrain and inserts'}</metadata><resources><basematerials id="${materialId}">${baseMaterialsXml(project)}</basematerials>${objectXml}</resources><build>${build}</build></model>`;
 }
 
-function bambuRootModel(project: Project, objects: ObjectRecord[], placements: Placement[]) {
+function bambuRootModel(
+  project: Project,
+  objects: ObjectRecord[],
+  placements: Placement[],
+  orca = false,
+) {
   // Bambu gates native project import on this Application prefix (bbs_3mf.cpp).
   // Designer and the embedded manifest retain Contour Workbench provenance.
   const title = xmlEscape(project.name);
@@ -605,7 +686,7 @@ function bambuRootModel(project: Project, objects: ObjectRecord[], placements: P
         `<item objectid="${object.id * 2}" p:UUID="${bambuUuid(object.id * 2, '-b1ec-4553-aec9-835e5b724bb4')}" transform="${transform(translation)}" printable="1"/>`,
     )
     .join('');
-  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">BambuStudio-2.0.0</metadata><metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">Bambu Studio multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="${coreNamespace}" xmlns:BambuStudio="${bambuNamespace}" xmlns:p="${productionNamespace}" requiredextensions="p"><metadata name="Application">${orca ? 'OrcaSlicer-2.4.2' : 'BambuStudio-2.0.0'}</metadata>${orca ? '<metadata name="OrcaSlicer">2.4.2</metadata>' : ''}<metadata name="BambuStudio:3mfVersion">1</metadata><metadata name="Title">${title}</metadata><metadata name="Designer">Contour Workbench</metadata><metadata name="Description">${orca ? 'OrcaSlicer' : 'Bambu Studio'} multipart terrain project</metadata><resources>${resourceXml}</resources><build p:UUID="${bambuBuildUuid}">${buildXml}</build></model>`;
 }
 
 function bambuChildModel(project: Project, object: ObjectRecord) {
@@ -703,21 +784,60 @@ function prusaModelSettings(project: Project, objects: ObjectRecord[]) {
     })
     .join('')}</config>`;
 }
-function prusaPrintConfig(project: Project) {
+function prusaPrintConfig(project: Project, options: ThreeMfOptions, palette: string[]) {
+  const printer = prusaPrinter(options.prusaPrinter);
+  const mode = options.prusaMaterialMode ?? 'manual';
+  const profile = prusaProfile(
+    options.prusaPrinter ?? 'mk4s',
+    project.settings.nozzle_diameter_mm,
+    mode,
+    options.prusaNozzleType,
+  );
+  const count = mode === 'mmu3' ? 5 : 1;
+  const colors = Array.from({ length: count }, (_, i) => palette[i] ?? '#FFFFFF');
+  const filamentName = profile.filament_settings_id;
   return (
-    Object.entries(prusaProcessSettings(project))
+    Object.entries({
+      ...profile,
+      ...prusaProcessSettings(project),
+      // Painted MMU prints need their stock purge tower. Sequential single-color
+      // objects purge only when switching objects, using the stock MMU tool code.
+      wipe_tower:
+        mode === 'mmu3' && project.settings.manufacturing_mode === 'multicolor' ? '1' : '0',
+      complete_objects: project.settings.manufacturing_mode === 'separate' ? '1' : '0',
+      brim_width: project.settings.manufacturing_mode === 'separate' ? '3' : '5',
+      // Separate inserts already contain a calibrated elephant-foot lead-in.
+      ...(project.settings.manufacturing_mode === 'separate'
+        ? { elefant_foot_compensation: '0' }
+        : {}),
+      skirts: '0',
+      bed_shape: `0x0,${printer.bedMm[0]}x0,${printer.bedMm[0]}x${printer.bedMm[1]},0x${printer.bedMm[1]}`,
+      max_print_height: String(printer.heightMm),
+      extruder_clearance_radius: String(printer.clearanceMm),
+      extruder_clearance_height: String(printer.rodHeightMm),
+      extruder_colour: colors.join(';'),
+      filament_colour: colors.join(';'),
+      filament_settings_id: Array.from({ length: count }, () => filamentName).join(';'),
+      nozzle_diameter: Array.from(
+        { length: count },
+        () => project.settings.nozzle_diameter_mm,
+      ).join(','),
+      filament_diameter: Array.from({ length: count }, () => '1.75').join(','),
+      // Text G-code keeps native verification and inspection straightforward.
+      binary_gcode: '0',
+    })
       .map(([key, value]) => `; ${key} = ${value}`)
       .join('\n') + '\n'
   );
 }
 
 function contentTypes(kind: ThreeMfKind) {
-  return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="json" ContentType="application/json"/>${kind === 'bambu' || kind === 'prusa' ? '<Default Extension="config" ContentType="application/octet-stream"/><Default Extension="txt" ContentType="text/plain"/>' : ''}</Types>`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/><Default Extension="json" ContentType="application/json"/>${kind === 'bambu' || kind === 'orca' || kind === 'prusa' ? '<Default Extension="config" ContentType="application/octet-stream"/><Default Extension="txt" ContentType="text/plain"/>' : ''}</Types>`;
 }
 
 const relationships = `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
 
-/** Build an assembled portable 3MF or a Bambu multi-plate archive. */
+/** Build portable geometry or a native Bambu/Orca/Prusa project with printer-aware placements. */
 export function buildThreeMf(
   asset: Asset,
   project: Project,
@@ -725,16 +845,67 @@ export function buildThreeMf(
   projectFile?: Uint8Array,
   options: ThreeMfOptions = {},
 ): Uint8Array {
+  if (kind === 'orca') {
+    const id = options.orcaPrinter ?? 'p1s';
+    options = {
+      ...options,
+      orcaPrinter: id,
+      orcaMaterialMode:
+        options.orcaMaterialMode ?? (orcaPrinter(id).automatic ? 'automatic' : 'manual'),
+    };
+  }
+  if (kind === 'prusa')
+    options = {
+      ...options,
+      prusaMaterialMode:
+        options.prusaMaterialMode ??
+        (project.settings.manufacturing_mode === 'multicolor' ? 'mmu3' : 'manual'),
+    };
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
   let objects = records(asset);
   if (
-    (kind === 'bambu' || kind === 'prusa') &&
+    (kind === 'bambu' || kind === 'orca' || kind === 'prusa') &&
     !asset.faceMaterials &&
     project.settings.manufacturing_mode === 'separate'
   )
     project = { ...project, materials: separateFilamentGroups(project, objects) };
   const printerId = options.bambuPrinter ?? 'p1s';
-  const separateParts = kind === 'bambu' && project.settings.manufacturing_mode === 'separate';
+  const native = kind === 'bambu' || kind === 'orca' || kind === 'prusa';
+  const separateParts = native && project.settings.manufacturing_mode === 'separate';
+  const printer = native
+    ? packingPrinter(kind, options, project.settings.nozzle_diameter_mm)
+    : undefined;
+  const manualNative =
+    (kind === 'prusa' && options.prusaMaterialMode === 'manual') ||
+    (kind === 'orca' && options.orcaMaterialMode === 'manual');
+  if (kind === 'orca') {
+    const slots = exportFilamentColors(asset, project, objects).length;
+    if (manualNative && project.settings.manufacturing_mode === 'multicolor' && slots > 1)
+      throw new Error(
+        'Painted OrcaSlicer projects require an automatic filament setup. Choose a Bambu printer with AMS, or separate inserts for manual changes.',
+      );
+    if (!manualNative && slots > 4)
+      throw new Error(
+        'These OrcaSlicer projects support four AMS filament slots. Remap materials to slots 1–4.',
+      );
+  }
+  if (kind === 'prusa') {
+    prusaProfile(
+      options.prusaPrinter ?? 'mk4s',
+      project.settings.nozzle_diameter_mm,
+      options.prusaMaterialMode,
+      options.prusaNozzleType,
+    );
+    const slots = exportFilamentColors(asset, project, objects).length;
+    if (!manualNative && slots > 5)
+      throw new Error(
+        'MMU3 supports five filament slots. Remap the exported materials to slots 1–5.',
+      );
+    if (manualNative && project.settings.manufacturing_mode === 'multicolor' && slots > 1)
+      throw new Error(
+        'Painted multicolor Prusa prints require MMU3. Choose MMU3 or separate inserts for manual changes.',
+      );
+  }
   if (
     asset.faceMaterials &&
     (asset.inserts.length || asset.faceMaterials.length !== asset.terrain.indices.length / 3)
@@ -744,15 +915,57 @@ export function buildThreeMf(
   const placements =
     project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways'
       ? assembledPlacement(objects)
-      : kind === 'bambu'
-        ? packedPlacement(objects, project, printerId, !!options.sequentialSinglePlate)
+      : native
+        ? packedPlacement(objects, project, printer!, !!options.sequentialSinglePlate)
         : separatePlacement(objects);
+  let orcaTower: ReturnType<typeof orcaAssemblyLayout>['tower'];
+  if (kind === 'orca' && project.settings.manufacturing_mode === 'multicolor') {
+    const extents = placements.map(p => {
+      const b = bounds(p.object.mesh);
+      return {
+        min: b.min.map((value, axis) => value + p.translation[axis]),
+        max: b.max.map((value, axis) => value + p.translation[axis]),
+      };
+    });
+    const min = [0, 1, 2].map(axis => Math.min(...extents.map(b => b.min[axis])));
+    const max = [0, 1, 2].map(axis => Math.max(...extents.map(b => b.max[axis])));
+    const layout = orcaAssemblyLayout(
+      [max[0] - min[0], max[1] - min[1], max[2] - min[2]],
+      printer!,
+      project.settings.nozzle_diameter_mm,
+      exportFilamentColors(asset, project, objects).length > 1,
+    );
+    orcaTower = layout.tower;
+    for (const p of placements)
+      p.translation = [
+        p.translation[0] + layout.originMm[0] - min[0],
+        p.translation[1] + layout.originMm[1] - min[1],
+        p.translation[2] - min[2],
+      ];
+  }
   if (separateParts) {
     placements.forEach((p, index) => {
       p.object = { ...p.object, id: index + 1 };
     });
     objects = placements.map(p => p.object);
   }
+  // Manual plates have one physical tool. Preserve design colors and original
+  // slots in the manifest/project, while mapping the native slicer parts to tool 1.
+  const nativeProject = manualNative
+    ? {
+        ...project,
+        materials: projectMaterialGroups(project).map(group => ({ ...group, extruder: 1 })),
+      }
+    : project;
+  const nativeObjects = manualNative
+    ? objects.map(object => {
+        const filament = projectMaterialGroups(project)[materialIndex(project, object)];
+        return {
+          ...object,
+          name: `${filament.name} ${filament.color} (slot ${filament.extruder}) · ${object.name}`,
+        };
+      })
+    : objects;
   const files: Record<string, Uint8Array> = {
     'Metadata/attribution.txt': strToU8(
       project.source.attribution + '\n' + featureSourceAttribution(project.features),
@@ -760,9 +973,9 @@ export function buildThreeMf(
     '[Content_Types].xml': strToU8(contentTypes(kind)),
     '_rels/.rels': strToU8(relationships),
     '3D/3dmodel.model': strToU8(
-      kind === 'bambu'
-        ? bambuRootModel(project, objects, placements)
-        : coreModel(project, objects, placements, kind),
+      kind === 'bambu' || kind === 'orca'
+        ? bambuRootModel(nativeProject, nativeObjects, placements, kind === 'orca')
+        : coreModel(nativeProject, nativeObjects, placements, kind),
     ),
     'Metadata/project.contour.json': projectFile || strToU8(JSON.stringify(project)),
     'Metadata/contour_workbench.json': strToU8(
@@ -774,20 +987,45 @@ export function buildThreeMf(
           units: 'mm',
           source: project.source,
           validation: asset.validation,
-          bed_size_mm:
-            kind === 'bambu'
-              ? [bambuPrinter(printerId).bedMm, bambuPrinter(printerId).bedMm]
-              : project.settings.max_print_size_mm,
-          ...(kind === 'bambu' ? { printer: printerId, print_sequence: 'by layer' } : {}),
+          bed_size_mm: printer
+            ? [printer.widthMm, printer.depthMm]
+            : project.settings.max_print_size_mm,
+          ...(native
+            ? {
+                printer:
+                  kind === 'bambu'
+                    ? printerId
+                    : kind === 'orca'
+                      ? options.orcaPrinter
+                      : (options.prusaPrinter ?? 'mk4s'),
+                print_sequence: separateParts ? 'by object' : 'by layer',
+                ...(kind === 'prusa' || kind === 'orca'
+                  ? {
+                      material_mode:
+                        kind === 'orca'
+                          ? options.orcaMaterialMode
+                          : (options.prusaMaterialMode ?? 'manual'),
+                    }
+                  : {}),
+              }
+            : {}),
           plates: [...new Set(placements.map(item => item.plate))].map(plate => ({
             plate,
-            ...(kind === 'bambu'
+            ...(native
               ? {
                   print_sequence:
                     placements.find(p => p.plate === plate)!.printSequence ?? 'by layer',
                 }
               : {}),
             objects: placements.filter(item => item.plate === plate).map(item => item.object.name),
+            ...(manualNative
+              ? {
+                  filament: (() => {
+                    const item = placements.find(p => p.plate === plate)!;
+                    return projectMaterialGroups(project)[materialIndex(project, item.object)];
+                  })(),
+                }
+              : {}),
           })),
           inserts: asset.inserts.map(piece => ({
             name: piece.id,
@@ -803,29 +1041,93 @@ export function buildThreeMf(
       ),
     ),
   };
-  if (kind === 'bambu') {
+  if (kind === 'bambu' || kind === 'orca') {
     files['3D/_rels/3dmodel.model.rels'] = strToU8(bambuModelRelationships(objects));
-    for (const object of objects)
-      files[`3D/Objects/object_${object.id}.model`] = strToU8(bambuChildModel(project, object));
+    for (const object of nativeObjects)
+      files[`3D/Objects/object_${object.id}.model`] = strToU8(
+        bambuChildModel(nativeProject, object),
+      );
     files['Metadata/project_settings.config'] = strToU8(
       JSON.stringify(
-        bambuProjectSettings(asset, project, objects, printerId, separateParts),
+        kind === 'orca'
+          ? orcaProjectSettings(
+              orcaProfile(
+                options.orcaPrinter,
+                project.settings.nozzle_diameter_mm,
+                options.orcaNozzleType,
+              ),
+              manualNative
+                ? [
+                    projectMaterialGroups(project)[
+                      materialIndex(project, objects[0])
+                    ].color.toUpperCase(),
+                  ]
+                : exportFilamentColors(asset, project, objects),
+              separateParts,
+              {
+                ...bambuProcessSettings(project),
+                // Match the centerline width used to validate printable insert bases.
+                ...(separateParts
+                  ? {
+                      initial_layer_line_width: String(
+                        Number(extrusionWidthMm(project.settings.nozzle_diameter_mm).toFixed(4)),
+                      ),
+                    }
+                  : {}),
+                ...(orcaTower
+                  ? {
+                      wipe_tower_x: [String(orcaTower.originMm[0])],
+                      wipe_tower_y: [String(orcaTower.originMm[1])],
+                      prime_tower_width: String(orcaTower.sizeMm[0]),
+                      prime_volume: '45',
+                    }
+                  : {}),
+              },
+            )
+          : bambuProjectSettings(asset, project, objects, printerId, separateParts),
         null,
         2,
       ),
     );
-    files['Metadata/model_settings.config'] = strToU8(modelSettings(project, objects, placements));
+    files['Metadata/model_settings.config'] = strToU8(
+      modelSettings(nativeProject, nativeObjects, placements),
+    );
     files['Metadata/layer_heights_profile.txt'] = strToU8(
       bambuLayerHeightProfiles(placements, project.settings.nozzle_diameter_mm),
     );
+    if (kind === 'orca')
+      files['Metadata/print-instructions.txt'] = strToU8(
+        manualNative
+          ? 'Manual changes: print one plate at a time using physical tool 1. Load the filament listed below before printing each plate. Object names retain design colors and slots. Confirm the physical nozzle and actual filament in OrcaSlicer before slicing.\n\n' +
+              [...new Set(placements.map(p => p.plate))]
+                .map(plate => {
+                  const p = placements.find(p => p.plate === plate)!;
+                  const group = projectMaterialGroups(project)[materialIndex(project, p.object)];
+                  return `Plate ${plate}: ${group.name}, ${group.color}, design slot ${group.extruder}`;
+                })
+                .join('\n')
+          : 'AMS: assign the physical filament slots in OrcaSlicer and confirm the printer, nozzle, and actual filament. Separate inserts print sequentially; painted assemblies print by layer with a prime tower. Check the complete toolpath preview before printing.',
+      );
   } else if (kind === 'prusa') {
-    const palette = exportFilamentColors(asset, project, objects);
-    files['Metadata/Slic3r_PE.config'] = strToU8(
-      prusaPrintConfig(project) +
-        `; extruder_colour = ${palette.join(';')}\n; filament_colour = ${palette.join(';')}\n` +
-        `; nozzle_diameter = ${palette.map(() => project.settings.nozzle_diameter_mm).join(',')}\n`,
+    const palette = manualNative
+      ? [projectMaterialGroups(project)[materialIndex(project, objects[0])].color.toUpperCase()]
+      : exportFilamentColors(asset, project, objects);
+    files['Metadata/Slic3r_PE.config'] = strToU8(prusaPrintConfig(project, options, palette));
+    files['Metadata/Slic3r_PE_model.config'] = strToU8(
+      prusaModelSettings(nativeProject, nativeObjects),
     );
-    files['Metadata/Slic3r_PE_model.config'] = strToU8(prusaModelSettings(project, objects));
+    files['Metadata/print-instructions.txt'] = strToU8(
+      manualNative
+        ? 'Manual filament changes: each plate uses one filament and native tool 1. In PrusaSlicer 2.9+, select one plate at a time and load the filament listed below before slicing that plate. Design slot numbers and colors remain in the embedded project and manifest. Confirm the selected printer, nozzle type, and actual filament before printing.\n\n' +
+            [...new Set(placements.map(p => p.plate))]
+              .map(plate => {
+                const p = placements.find(p => p.plate === plate)!;
+                const group = projectMaterialGroups(project)[materialIndex(project, p.object)];
+                return `Plate ${plate}: ${group.name}, ${group.color}, design slot ${group.extruder}`;
+              })
+              .join('\n')
+        : 'MMU3: assign the five physical filament slots in PrusaSlicer and confirm the printer, nozzle type, and actual filament before slicing. Separate inserts print sequentially; painted assemblies print by layer with the stock wipe tower enabled. Check purge placement and the complete toolpath preview.',
+    );
     files['Metadata/Slic3r_PE_layer_heights_profile.txt'] = strToU8(
       project.settings.manufacturing_mode === 'multicolor'
         ? prusaLayerHeightProfile(placements, project.settings.nozzle_diameter_mm)
@@ -893,7 +1195,7 @@ function bambuProjectSettings(
   const overrides = {
     ...bambuProcessSettings(project),
     ...(separateParts
-      ? { print_sequence: 'by layer', brim_width: '3', skirt_loops: '0' }
+      ? { print_sequence: 'by object', brim_width: '3', skirt_loops: '0' }
       : { print_sequence: 'by layer' }),
   };
   // 2.5 dereferences filament_colour before backfilling defaults. Preset IDs

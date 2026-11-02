@@ -1,6 +1,8 @@
 import type { FitCouponOptions } from './fit-coupon';
 /** Typed messages exchanged between the UI and the geometry worker. */
 import type { BambuPrinterId } from './bambu-printers';
+import type { OrcaPrinterId, OrcaMaterialMode } from './orca-printers';
+import type { PrusaPrinterId, PrusaMaterialMode, PrusaNozzleType } from './prusa-printers';
 import type { Annotation } from './annotations';
 import type { Asset, Bounds, Feature, Overlay, Project, Settings, Terrain, Grid } from './types';
 
@@ -41,12 +43,31 @@ export interface EngineOperationMap {
     payload: {
       settings: Settings;
       coupon?: FitCouponOptions;
-      format?: 'stl' | 'portable' | 'bambu' | 'prusa';
+      format?: 'stl' | 'portable' | 'bambu' | 'orca' | 'prusa';
+      orcaPrinter?: OrcaPrinterId;
+      orcaMaterialMode?: OrcaMaterialMode;
+      orcaNozzleType?: PrusaNozzleType;
+      bambuPrinter?: BambuPrinterId;
+      prusaPrinter?: PrusaPrinterId;
+      prusaMaterialMode?: PrusaMaterialMode;
+      prusaNozzleType?: PrusaNozzleType;
+    };
+    result: Uint8Array;
+  };
+  'color-calibration': {
+    payload: {
+      nozzle: number;
+      format?: 'bambu' | 'orca' | 'prusa';
+      orcaPrinter?: OrcaPrinterId;
+      orcaMaterialMode?: OrcaMaterialMode;
+      orcaNozzleType?: PrusaNozzleType;
+      prusaPrinter?: PrusaPrinterId;
+      prusaMaterialMode?: PrusaMaterialMode;
+      prusaNozzleType?: PrusaNozzleType;
       bambuPrinter?: BambuPrinterId;
     };
     result: Uint8Array;
   };
-  'color-calibration': { payload: { nozzle: number }; result: Uint8Array };
 }
 
 /** Valid operation name understood by the geometry worker. */
