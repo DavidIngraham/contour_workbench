@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, relative } from 'node:path';
 import type { Plugin } from 'vite';
+import { projectStorageCompatibility } from './src/pwa-compatibility';
 
 export function pwaBuild(): Plugin {
   let output: string;
@@ -42,9 +43,26 @@ export function pwaBuild(): Plugin {
       files.sort();
       const hash = createHash('sha256').update(template);
       for (const file of files) hash.update(file).update(await readFile(resolve(output, file)));
+      hash.update(String(projectStorageCompatibility));
+      const version = hash.digest('hex').slice(0, 20);
+      const htmlPath = resolve(output, 'index.html');
+      const html = await readFile(htmlPath, 'utf8');
+      await writeFile(
+        htmlPath,
+        html.replace('</head>', `<meta name="workbench-release" content="${version}" /></head>`),
+      );
+      const manifest = await Promise.all(
+        files.map(async url => ({
+          url,
+          revision: createHash('sha256')
+            .update(await readFile(resolve(output, url)))
+            .digest('hex'),
+        })),
+      );
       const source = template
-        .replace('__VERSION__', hash.digest('hex').slice(0, 20))
-        .replace("['__FILES__']", JSON.stringify(files));
+        .replace('__VERSION__', version)
+        .replace('__COMPATIBILITY__', String(projectStorageCompatibility))
+        .replace("['__FILES__']", JSON.stringify(manifest));
       await writeFile(resolve(output, 'sw.js'), source);
     },
   };

@@ -244,6 +244,7 @@ let autosaveQueue: Promise<void> = Promise.resolve();
 let thumbnailTimer: ReturnType<typeof setTimeout> | undefined;
 let thumbnailDirty = false;
 let persistenceRequested = false;
+let pendingFileImports = 0;
 let landingThumbnailUrls: string[] = [];
 const newProjectBounds: Bounds = [-121.668, 45.681, -121.655, 45.69];
 const annotationEditor = new AnnotationEditor(
@@ -1519,6 +1520,7 @@ $('open-project').onclick = () => ($('file-project') as HTMLInputElement).click(
 $('landing-open').onclick = () => ($('file-project') as HTMLInputElement).click();
 $('file-project').onchange = async () => {
   cancelOsmLoad();
+  pendingFileImports++;
   try {
     const f = await readSelectedFile($<HTMLInputElement>('file-project'));
     if (!f) return;
@@ -1539,6 +1541,8 @@ $('file-project').onchange = async () => {
     await rebuild(true, true, false, false, true);
   } catch (e) {
     error(e);
+  } finally {
+    pendingFileImports--;
   }
 };
 $('upload-gpx').onclick = () => {
@@ -1553,6 +1557,7 @@ $('file-gpx').onchange = async () => {
   const target = project;
   const button = $<HTMLButtonElement>('upload-gpx');
   button.disabled = true;
+  pendingFileImports++;
   try {
     if (files.reduce((size, file) => size + file.size, 0) > 100_000_000)
       throw new Error('Please select GPX files totaling less than 100 MB.');
@@ -1575,6 +1580,7 @@ $('file-gpx').onchange = async () => {
     if (project === target) error(e);
   } finally {
     button.disabled = false;
+    pendingFileImports--;
   }
 };
 $('upload-features').onclick = () => {
@@ -1582,6 +1588,7 @@ $('upload-features').onclick = () => {
   $<HTMLInputElement>('file-features').click();
 };
 $('file-features').onchange = async () => {
+  pendingFileImports++;
   try {
     const f = await readSelectedFile($<HTMLInputElement>('file-features'));
     if (!f) return;
@@ -1600,6 +1607,8 @@ $('file-features').onchange = async () => {
     status(`Added ${added.length} supported ${added.length === 1 ? 'feature' : 'features'}.`);
   } catch (e) {
     error(e);
+  } finally {
+    pendingFileImports--;
   }
 };
 async function loadProjectOsm(focusFeatures = false) {
@@ -2177,6 +2186,7 @@ $('area-load').onclick = async () => {
 };
 $('upload-dem').onclick = () => ($('file-dem') as HTMLInputElement).click();
 $('file-dem').onchange = async () => {
+  pendingFileImports++;
   updateBusy(true);
   try {
     const f = await readSelectedFile($<HTMLInputElement>('file-dem'));
@@ -2199,6 +2209,7 @@ $('file-dem').onchange = async () => {
   } catch (e) {
     error(e);
   } finally {
+    pendingFileImports--;
     updateBusy(false);
   }
 };
@@ -2295,6 +2306,8 @@ Object.defineProperty(window, 'contourDiagnostics', {
     boundary: project?.settings.boundary,
     triangles: terrain?.mesh.indices.length / 3,
     baseHeight: project?.settings.base_height_mm,
+    camera: viewer.camera.position.toArray(),
+    cameraTarget: viewer.controls.target.toArray(),
     treatments: project?.features.reduce(
       (counts, f) => {
         const t = f.enabled ? treatment(f) : 'hide';
@@ -2320,6 +2333,15 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') void flushAutosave();
 });
 
+const updateResumeKey = `contour-workbench:${new URL(import.meta.env.BASE_URL, document.baseURI).pathname}:update-resume`;
+interface UpdateResume {
+  projectId?: string;
+  presetId?: string;
+  panel?: string;
+  camera: number[];
+  target: number[];
+}
+let starting = true;
 async function start() {
   updateBusy(false);
   status('');
@@ -2328,8 +2350,20 @@ async function start() {
     const catalog = await loadPresetCatalog();
     presetEntries = catalog.models;
     await renderLanding();
+    let resume: UpdateResume | undefined;
+    try {
+      const saved = sessionStorage.getItem(updateResumeKey);
+      sessionStorage.removeItem(updateResumeKey);
+      if (saved) resume = JSON.parse(saved) as UpdateResume;
+    } catch {
+      // A damaged or unavailable session checkpoint must not prevent normal startup.
+    }
     const requested = new URLSearchParams(location.search).get('preset');
-    if (requested) {
+    if (resume?.projectId) await openLocalWorkspace(resume.projectId);
+    else if (resume?.presetId) {
+      const entry = presetEntries.find(item => item.id === resume.presetId);
+      if (entry) await openPresetModel(entry);
+    } else if (requested) {
       const entry = presetEntries.find(item => item.id === requested);
       if (entry) {
         await openPresetModel(entry);
@@ -2338,10 +2372,26 @@ async function start() {
         history.replaceState(null, '', cleanUrl);
       }
     }
+    if (resume && $('landing-dialog').classList.contains('hidden')) {
+      if (['terrain', 'features', 'annotations', 'print', 'inspect'].includes(resume.panel || ''))
+        setPanel(resume.panel!);
+      if (
+        [resume.camera, resume.target].every(
+          v => Array.isArray(v) && v.length === 3 && v.every(Number.isFinite),
+        )
+      ) {
+        viewer.camera.position.fromArray(resume.camera);
+        viewer.controls.target.fromArray(resume.target);
+        viewer.controls.update();
+        viewer.invalidate();
+      }
+    }
   } catch (e) {
     error(e);
     presetEntries = [];
     await renderLanding();
+  } finally {
+    starting = false;
   }
 }
 setupWorkbenchChrome({
@@ -2358,19 +2408,41 @@ setupWorkbenchChrome({
     if (matchMedia('(max-width: 760px)').matches) mobileSettings(true);
   },
 });
-setupPwa(async () => {
-  if (busy || osmLoading || overlayRunning)
-    throw new Error('Finish or cancel the current operation before updating.');
-  if (
-    document.querySelector(
-      '.print-order-dialog[open], #sources-dialog[open], .modal-backdrop:not(.hidden):not(#landing-dialog)',
-    )
-  )
-    throw new Error('Finish or cancel the open dialog before updating.');
+void setupPwa(async () => {
+  const working = () =>
+    starting ||
+    busy ||
+    osmLoading ||
+    overlayRunning ||
+    overlayAgain ||
+    pendingFileImports > 0 ||
+    Boolean(viewer.onBoundary) ||
+    annotationEditor.interacting;
+  if (working()) return false;
+  if (document.querySelector('dialog[open], .modal-backdrop:not(.hidden):not(#landing-dialog)'))
+    return false;
   await flushAutosave();
   await persistCurrentProject(true);
+  if (working()) return false;
+  const inWorkspace = $('landing-dialog').classList.contains('hidden');
+  const resume: UpdateResume = {
+    projectId: inWorkspace ? localIdentity?.id : undefined,
+    presetId: inWorkspace ? presetOriginId : undefined,
+    panel: document.querySelector<HTMLElement>('[data-tab].active')?.dataset.tab,
+    camera: viewer.camera.position.toArray(),
+    target: viewer.controls.target.toArray(),
+  };
+  try {
+    sessionStorage.setItem(updateResumeKey, JSON.stringify(resume));
+  } catch {
+    // Stay on the working version if the open workspace could not be checkpointed.
+    if (inWorkspace)
+      throw new Error('The workspace could not be saved. Export a project backup before updating.');
+  }
+  return true;
+}).then(shouldStart => {
+  if (shouldStart) void start();
 });
-void start();
 
 $('extent-map').addEventListener('extent-edit', event => {
   const state = (event as CustomEvent).detail;

@@ -3,9 +3,22 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { resolve, sep, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 let revision = 1;
+const requests = new Map();
+const hash = body => createHash('sha256').update(body).digest('hex');
+const htmlForRelease = body =>
+  Buffer.from(
+    body
+      .toString()
+      .replace(
+        /name="workbench-release" content="[^"]+"/,
+        `name="workbench-release" content="test-${revision}"`,
+      )
+      .replace('</head>', `<meta name="test-release" content="${revision}" /></head>`),
+  );
 const types = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -25,7 +38,22 @@ createServer(async (request, response) => {
     response.end('ok');
     return;
   }
+  if (url.pathname === '/__test/requests') {
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify(Object.fromEntries(requests)));
+    return;
+  }
   const pathname = decodeURIComponent(url.pathname).replace(/^\/contour_workbench\//, '/');
+  requests.set(pathname, (requests.get(pathname) || 0) + 1);
+  if (/^\/assets\/release-\d+\.js$/.test(pathname)) {
+    if (pathname !== `/assets/release-${revision}.js`) {
+      response.writeHead(404).end();
+      return;
+    }
+    response.setHeader('Content-Type', 'text/javascript');
+    response.end(`export const release = ${revision};`);
+    return;
+  }
   const file = resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
   if (!file.startsWith(resolve(root) + sep)) {
     response.writeHead(403).end();
@@ -34,16 +62,30 @@ createServer(async (request, response) => {
   try {
     if (revision === 3 && pathname.endsWith('/icon-512.png')) throw new Error('Partial release');
     let body = await readFile(file);
-    if (pathname === '/sw.js')
+    if (pathname === '/sw.js') {
+      const source = body.toString();
+      const files = JSON.parse(source.match(/const FILES = (\[.*?\]);/)[1]);
+      for (const file of files)
+        if (file.url === 'index.html')
+          file.revision = hash(htmlForRelease(await readFile(resolve(root, 'index.html'))));
+        else if (revision === 3 && file.url.endsWith('icon-512.png'))
+          file.revision = 'f'.repeat(64);
+      files.push({
+        url: `assets/release-${revision}.js`,
+        revision: hash(`export const release = ${revision};`),
+      });
       body = Buffer.from(
-        body.toString().replace(/const VERSION = '[^']+';/, `const VERSION = 'test-${revision}';`),
+        source
+          .replace(/const VERSION = '[^']+';/, `const VERSION = 'test-${revision}';`)
+          .replace(
+            /const COMPATIBILITY = '[^']+';/,
+            `const COMPATIBILITY = '${revision === 6 ? 2 : 1}';`,
+          )
+          .replace(/const FILES = \[.*?\];/, `const FILES = ${JSON.stringify(files)};`),
       );
+    }
     if (pathname === '/' || pathname === '/index.html')
-      body = Buffer.from(
-        body
-          .toString()
-          .replace('</head>', `<meta name="test-release" content="${revision}" /></head>`),
-      );
+      body = revision === 5 ? Buffer.from('<h1>Stale CDN response</h1>') : htmlForRelease(body);
     response.writeHead(200, {
       'Content-Type': types[extname(file)] ?? 'application/octet-stream',
       'Cache-Control': 'no-store',

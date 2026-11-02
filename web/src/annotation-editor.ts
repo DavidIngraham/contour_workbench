@@ -102,6 +102,10 @@ export class AnnotationEditor {
   private el<T extends HTMLElement = HTMLElement>(id: string) {
     return document.getElementById(id) as T;
   }
+  /** Placement and drag gestures must finish before an automatic app reload. */
+  get interacting() {
+    return this.placing || Boolean(this.drag);
+  }
   private current() {
     return this.state().project?.annotations?.find(a => a.id === this.selected);
   }

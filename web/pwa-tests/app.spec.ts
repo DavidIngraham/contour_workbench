@@ -38,15 +38,45 @@ async function importProject(page: Page, name: string) {
   );
 }
 
-async function stageUpdate(page: Page, request: import('@playwright/test').APIRequestContext) {
-  await request.post('http://127.0.0.1:5182/__test/release?version=2');
+async function stageUpdate(
+  page: Page,
+  request: import('@playwright/test').APIRequestContext,
+  version = 2,
+) {
+  await request.post(`http://127.0.0.1:5182/__test/release?version=${version}`);
   await page.evaluate(async () => {
     await (await navigator.serviceWorker.getRegistration())!.update();
   });
-  await page.waitForFunction(async () =>
-    Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
+}
+
+async function expectRelease(page: Page, version: number) {
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute(
+    'content',
+    String(version),
   );
-  await expect(page.locator('#pwa-reload')).toBeVisible();
+  await page.waitForFunction(() => Boolean((window as any).contourDiagnostics));
+  await expect(page.locator('#pwa-update-banner')).toBeHidden();
+  await expect(page.locator('#pwa-update-progress')).toHaveCount(0);
+}
+
+async function expectController(page: Page, version: number) {
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          new Promise<string>(resolve => {
+            const channel = new MessageChannel();
+            channel.port1.onmessage = event => {
+              channel.port1.close();
+              resolve(event.data.version);
+            };
+            navigator.serviceWorker.controller!.postMessage({ type: 'GET_RELEASE' }, [
+              channel.port2,
+            ]);
+          }),
+      ),
+    )
+    .toBe(`test-${version}`);
 }
 test.beforeEach(async ({ request }) => {
   await request.post('http://127.0.0.1:5182/__test/release?version=1');
@@ -156,97 +186,23 @@ test('offline reload opens local projects and generates and exports with cached 
   );
 });
 
-test('updates wait for open windows and a failed release keeps the working version', async ({
-  page,
-  context,
-  request,
-  baseURL,
-}) => {
+test('idle windows update quietly and unchanged assets are reused', async ({ page, request }) => {
   await ready(page);
-  await page.evaluate(async () => {
-    await caches.open('unrelated-app');
-  });
-  await request.post('http://127.0.0.1:5182/__test/release?version=2');
-  await page.evaluate(async () => {
-    await (await navigator.serviceWorker.getRegistration())!.update();
-  });
-  await page.waitForFunction(async () =>
-    Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
-  );
-  await expect(page.locator('#pwa-status')).toContainText('An update is ready');
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  const second = await context.newPage();
-  await second.goto(baseURL!);
-  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  await second.close();
-  await page.close();
-  const next = await context.newPage();
-  await expect
-    .poll(async () => {
-      await next.goto(baseURL!);
-      return next.locator('meta[name="test-release"]').getAttribute('content');
-    })
-    .toBe('2');
-  await next.evaluate(() => navigator.serviceWorker.ready);
-  expect(await next.evaluate(() => caches.has('unrelated-app'))).toBe(true);
-  await expect
-    .poll(async () =>
-      next.evaluate(() => caches.has(`contour-workbench:${location.pathname}:test-1`)),
-    )
-    .toBe(false);
-  await request.post('http://127.0.0.1:5182/__test/release?version=3');
-  await next.evaluate(async () => {
-    const registration = (await navigator.serviceWorker.getRegistration())!;
-    await registration.update();
-    const worker = registration.installing;
-    if (worker && worker.state !== 'redundant')
-      await new Promise<void>(resolve =>
-        worker.addEventListener('statechange', () => {
-          if (worker.state === 'redundant') resolve();
-        }),
-      );
-  });
-  await context.setOffline(true);
-  await next.reload();
-  await expect(next.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-  await next.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
-});
-
-test('explicit update saves pending edits and reloads every open Workbench window', async ({
-  page,
-  context,
-  request,
-  baseURL,
-}) => {
-  await ready(page);
-  await importProject(page, 'First project');
-  const second = await context.newPage();
-  await second.goto(baseURL!);
-  await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
-  await importProject(second, 'Second project');
+  await page.evaluate(() => caches.open('unrelated-app'));
+  const before = await (await request.get('http://127.0.0.1:5182/__test/requests')).json();
   await stageUpdate(page, request);
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  await page.locator('#base-height').fill('2.3');
-  await second.locator('#base-height').fill('3.4');
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-  for (const [window, name, height] of [
-    [page, 'First project', '2.3'],
-    [second, 'Second project', '3.4'],
-  ] as const) {
-    await window.getByRole('button', { name: `Open ${name}`, exact: true }).click();
-    await window.waitForFunction(
-      () =>
-        (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
-    );
-    await expect(window.locator('#base-height')).toHaveValue(height);
-    await expect(window.locator('#pwa-update-banner')).toBeHidden();
-  }
+  await expectRelease(page, 2);
+  await expectController(page, 2);
+  const after = await (await request.get('http://127.0.0.1:5182/__test/requests')).json();
+  for (const path of Object.keys(before).filter(path => /\.(wasm|css)$/.test(path)))
+    expect(after[path], path).toBe(before[path]);
+  expect(await page.evaluate(() => caches.has('unrelated-app'))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => caches.has(`contour-workbench:${location.pathname}:test-1`)))
+    .toBe(false);
 });
 
-test('another window with an unfinished operation postpones activation and can retry', async ({
+test('an open dialog postpones only its window and retries without a click', async ({
   page,
   context,
   request,
@@ -255,83 +211,264 @@ test('another window with an unfinished operation postpones activation and can r
   await ready(page);
   const second = await context.newPage();
   await second.goto(baseURL!);
-  await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
-  await importProject(second, 'Area edit');
+  await importProject(second, 'Dialog survivor');
   await second.locator('#change-area').click();
   await stageUpdate(page, request);
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('#pwa-update-message')).toContainText(
-    'Finish or cancel the open dialog',
-  );
-  await expect(page.locator('#pwa-reload')).toBeEnabled();
-  await expect(second.locator('#pwa-update-progress')).toBeHidden();
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expectRelease(page, 2);
+  await expectController(second, 2);
+  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expect(second.locator('#pwa-update-banner')).toBeHidden();
+  await expect(second.locator('#area-dialog')).toBeVisible();
   await second.locator('#area-close').click();
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-  await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  await expectRelease(second, 2);
+  await second.waitForFunction(
+    () =>
+      !(window as any).contourDiagnostics?.busy && !(window as any).contourDiagnostics?.landingOpen,
+  );
+  await expect(second.locator('#base-height')).toHaveValue(String(defaults.base_height_mm));
 });
 
-test('failed durable storage keeps the current release and project open', async ({
+test('pending edits and the selected panel survive an automatic per-window update', async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   await ready(page);
-  await importProject(page, 'Unsaved backup');
-  await expect(page.locator('#save-status')).toHaveText('Saved locally');
+  await importProject(page, 'Restore this project');
+  await page.locator('#base-height').fill('3.4');
+  await page.locator('[data-tab="print"]').click();
+  // Keep editing focused while the new worker activates.
+  await page.locator('#base-height').focus();
+  const view = await page.evaluate(() => ({
+    camera: (window as any).contourDiagnostics.camera,
+    target: (window as any).contourDiagnostics.cameraTarget,
+  }));
   await stageUpdate(page, request);
-  await page.evaluate(() => {
-    const original = IDBDatabase.prototype.transaction;
-    IDBDatabase.prototype.transaction = function (
-      this: IDBDatabase,
-      ...args: Parameters<typeof original>
-    ) {
-      if (args[1] === 'readwrite')
-        throw new DOMException('Test storage failure', 'QuotaExceededError');
-      return original.apply(this, args);
-    };
-  });
-  await page.locator('#base-height').fill('4.5');
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('#pwa-update-message')).toContainText('Export a project backup');
-  await expect(page.locator('#pwa-reload')).toBeEnabled();
-  await expect(page.locator('#pwa-update-progress')).toBeHidden();
+  await expectController(page, 2);
   await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  await expect(page.locator('#base-height')).toHaveValue('4.5');
-  expect(
-    await page.evaluate(async () =>
-      Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
-    ),
-  ).toBe(true);
+  await page.locator('#base-height').blur();
+  await expectRelease(page, 2);
+  await page.waitForFunction(
+    () =>
+      !(window as any).contourDiagnostics?.busy && !(window as any).contourDiagnostics?.landingOpen,
+  );
+  await expect(page.locator('#base-height')).toHaveValue('3.4');
+  await expect(page.locator('[data-tab="print"]')).toHaveClass(/active/);
+  const restored = await page.evaluate(() => ({
+    camera: (window as any).contourDiagnostics.camera,
+    target: (window as any).contourDiagnostics.cameraTarget,
+  }));
+  for (let i = 0; i < 3; i++) {
+    expect(restored.camera[i]).toBeCloseTo(view.camera[i], 4);
+    expect(restored.target[i]).toBeCloseTo(view.target[i], 4);
+  }
+  await page.screenshot({ path: testInfo.outputPath('automatic-update-restored.png') });
 });
 
-test('an older or unresponsive window postpones the update without freezing the editor', async ({
+test('a frozen window does not delay activation and retains obsolete lazy assets', async ({
   page,
   context,
   request,
   baseURL,
 }) => {
   await ready(page);
-  const older = await context.newPage();
-  await older.route('**/unresponsive-window', route =>
-    route.fulfill({ contentType: 'text/html', body: '<h1>Older Workbench window</h1>' }),
+  const second = await context.newPage();
+  await second.goto(baseURL!);
+  await importProject(second, 'Sleeping project');
+  await second.locator('#base-height').fill('4.2');
+  await second.locator('#base-height').blur();
+  await expect(second.locator('#save-status')).toHaveText('Saved locally');
+  // Headless tabs all report visible. Real frozen background windows are hidden.
+  await second.evaluate(() =>
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => 'hidden',
+    }),
   );
-  await older.goto(new URL('unresponsive-window', baseURL!).href);
+  const cdp = await context.newCDPSession(second);
+  await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
   await stageUpdate(page, request);
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('#pwa-update-message')).toContainText('did not respond', {
-    timeout: 20000,
+  await expectRelease(page, 2);
+  const workerSession = await context.newCDPSession(page);
+  await workerSession.send('ServiceWorker.enable');
+  await workerSession.send('ServiceWorker.stopAllWorkers');
+  await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+  await expectController(page, 2);
+  expect(
+    await page.evaluate(() => caches.has(`contour-workbench:${location.pathname}:test-1`)),
+  ).toBe(true);
+  // The server no longer has this module. The claimed old page still needs it.
+  expect(
+    await page.evaluate(
+      async url => (await import(url)).release,
+      new URL('assets/release-1.js', baseURL!).href,
+    ),
+  ).toBe(1);
+  await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+  await second.bringToFront();
+  await second.evaluate(() => {
+    delete (document as any).visibilityState;
+    document.dispatchEvent(new Event('resume'));
   });
-  await expect(page.locator('#pwa-update-progress')).toBeHidden();
-  await expect(page.locator('#pwa-reload')).toBeEnabled();
+  await expectRelease(second, 2);
+  await second.waitForFunction(
+    () =>
+      !(window as any).contourDiagnostics?.busy && !(window as any).contourDiagnostics?.landingOpen,
+  );
+  await expect(second.locator('#base-height')).toHaveValue('4.2');
+});
+
+test('an unknown legacy window cannot block updates or lose its old assets', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  const legacy = await context.newPage();
+  await legacy.route('**/legacy-window', route =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<h1>Legacy Workbench</h1><p id="status"></p>',
+    }),
+  );
+  await legacy.goto(new URL('legacy-window', baseURL!).href);
+  await legacy.evaluate(async () => {
+    navigator.serviceWorker.addEventListener('message', event => {
+      if (event.data.type === 'UPDATE_CANCELED')
+        document.getElementById('status')!.textContent = event.data.reason;
+    });
+    const reg = (await navigator.serviceWorker.getRegistration())!;
+    reg.addEventListener('updatefound', () => {
+      const installing = reg.installing!;
+      installing.addEventListener('statechange', () => {
+        if (installing.state === 'installed') installing.postMessage({ type: 'APPLY_UPDATE' });
+      });
+    });
+  });
+  // Simulate a pre-manifest release cache from the currently deployed worker.
+  await page.evaluate(async () => {
+    const cache = await caches.open(`contour-workbench:${location.pathname}:legacy`);
+    await cache.put(
+      new URL('assets/legacy-only.js', location.href),
+      new Response('export const legacy = true;', {
+        headers: { 'Content-Type': 'text/javascript' },
+      }),
+    );
+  });
+  await stageUpdate(page, request);
+  await expectRelease(page, 2);
+  await expect(legacy.locator('#status')).toContainText('Refresh this window once');
+  expect(
+    await page.evaluate(
+      async url => (await import(url)).legacy,
+      new URL('assets/legacy-only.js', baseURL!).href,
+    ),
+  ).toBe(true);
+  await legacy.close();
+});
+
+for (const automatic of [false, true]) {
+  test(`failed durable storage keeps edits and recovers with ${automatic ? 'an automatic' : 'a manual'} retry`, async ({
+    page,
+    request,
+  }) => {
+    if (automatic) await page.clock.install();
+    await ready(page);
+    await importProject(page, 'Unsaved backup');
+    await expect(page.locator('#save-status')).toHaveText('Saved locally');
+    await page.evaluate(() => {
+      const original = IDBDatabase.prototype.transaction;
+      (window as any).restoreStorage = () => {
+        IDBDatabase.prototype.transaction = original;
+      };
+      IDBDatabase.prototype.transaction = function (
+        this: IDBDatabase,
+        ...args: Parameters<typeof original>
+      ) {
+        if (args[1] === 'readwrite')
+          throw new DOMException('Test storage failure', 'QuotaExceededError');
+        return original.apply(this, args);
+      };
+    });
+    await page.locator('#base-height').fill('4.5');
+    await page.locator('#base-height').blur();
+    await stageUpdate(page, request);
+    await expect(page.locator('#pwa-update-message')).toContainText('Export a project backup', {
+      timeout: 15000,
+    });
+    await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+    await expect(page.locator('#base-height')).toHaveValue('4.5');
+    await page.evaluate(() => (window as any).restoreStorage());
+    if (automatic) await page.clock.fastForward(31000);
+    else await page.locator('#pwa-reload').click();
+    await expectRelease(page, 2);
+    await page.waitForFunction(
+      () =>
+        !(window as any).contourDiagnostics?.busy &&
+        !(window as any).contourDiagnostics?.landingOpen,
+    );
+    await expect(page.locator('#base-height')).toHaveValue('4.5');
+  });
+}
+
+test('partial releases keep the complete offline app and reconnect retries quietly', async ({
+  page,
+  context,
+  request,
+}) => {
+  await ready(page);
+  await stageUpdate(page, request, 3);
+  await page.waitForFunction(async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+    return !reg?.installing;
+  });
+  await expectRelease(page, 1);
+  await context.setOffline(true);
+  await page.reload();
+  await expectRelease(page, 1);
+  await request.post('http://127.0.0.1:5182/__test/release?version=4');
+  await context.setOffline(false);
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expectRelease(page, 4);
+});
+
+test('closing another window during an update requires no retry', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  const second = await context.newPage();
+  await second.goto(baseURL!);
+  await stageUpdate(page, request);
+  await second.close();
+  await expectRelease(page, 2);
+});
+
+test('rapid releases retain the editing window and apply the latest version once idle', async ({
+  page,
+  request,
+}) => {
+  await ready(page);
+  await importProject(page, 'Multiple releases');
+  await page.locator('#base-height').fill('3.7');
+  await stageUpdate(page, request);
+  await expectController(page, 2);
+  await stageUpdate(page, request, 4);
+  await expectController(page, 4);
   await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
-  await older.close();
-  await page.locator('#pwa-reload').click();
-  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+  await page.locator('#base-height').blur();
+  await expectRelease(page, 4);
+  await page.waitForFunction(
+    () =>
+      !(window as any).contourDiagnostics?.busy && !(window as any).contourDiagnostics?.landingOpen,
+  );
+  await expect(page.locator('#base-height')).toHaveValue('3.7');
 });
 
 for (const hard of [false, true]) {
-  test(`${hard ? 'hard' : 'normal'} browser reload activates a fresh release and saves other windows`, async ({
+  test(`${hard ? 'hard' : 'normal'} refresh discovers the latest release without blocking other work`, async ({
     page,
     context,
     request,
@@ -340,26 +477,69 @@ for (const hard of [false, true]) {
     await ready(page);
     const second = await context.newPage();
     await second.goto(baseURL!);
-    await second.waitForFunction(() => (window as any).contourDiagnostics?.landingOpen);
-    await importProject(second, 'Reload survivor');
+    await importProject(second, 'Keep editing');
     await second.locator('#base-height').fill('3.7');
-    // Do not stage the worker: reload must discover the deployment itself.
     await request.post('http://127.0.0.1:5182/__test/release?version=2');
     if (hard) {
       const session = await context.newCDPSession(page);
       await session.send('Page.reload', { ignoreCache: true });
     } else await page.reload();
-    await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-    await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
-    await second.getByRole('button', { name: 'Open Reload survivor', exact: true }).click();
+    await expectRelease(page, 2);
+    await expectController(second, 2);
+    await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+    await expect(second.locator('#base-height')).toHaveValue('3.7');
+    await second.locator('#base-height').blur();
+    await expectRelease(second, 2);
     await second.waitForFunction(
       () =>
-        (window as any).contourDiagnostics?.triangles && !(window as any).contourDiagnostics.busy,
+        !(window as any).contourDiagnostics?.busy &&
+        !(window as any).contourDiagnostics?.landingOpen,
     );
     await expect(second.locator('#base-height')).toHaveValue('3.7');
-    // The active offline shell must also be the new release, not just network HTML.
     await context.setOffline(true);
     await page.reload();
-    await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '2');
+    await expectRelease(page, 2);
   });
 }
+
+test('a successful HTTP response with stale bytes cannot replace the offline release', async ({
+  page,
+  context,
+  request,
+}) => {
+  await ready(page);
+  await stageUpdate(page, request, 5);
+  await page.waitForFunction(
+    async () => !(await navigator.serviceWorker.getRegistration())?.installing,
+  );
+  await expectRelease(page, 1);
+  await expect
+    .poll(() => page.evaluate(() => caches.has(`contour-workbench:${location.pathname}:test-5`)))
+    .toBe(false);
+  await context.setOffline(true);
+  await page.reload();
+  await expectRelease(page, 1);
+});
+
+test('incompatible project storage waits for old windows to close', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  await stageUpdate(page, request, 6);
+  await page.waitForFunction(async () =>
+    Boolean((await navigator.serviceWorker.getRegistration())?.waiting),
+  );
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expect(page.locator('#pwa-update-message')).toContainText('Close other Workbench windows');
+  await page.close();
+  const next = await context.newPage();
+  await expect
+    .poll(async () => {
+      await next.goto(baseURL!);
+      return next.locator('meta[name="test-release"]').getAttribute('content');
+    })
+    .toBe('6');
+});

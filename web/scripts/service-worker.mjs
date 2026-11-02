@@ -1,111 +1,183 @@
-// Replaced by the build plugin. This file is a classic worker in the published app.
+// Replaced by the build plugin. Project data is never stored in these caches.
 const VERSION = '__VERSION__';
+const COMPATIBILITY = '__COMPATIBILITY__';
 const FILES = ['__FILES__'];
 const scope = self.registration.scope;
 const prefix = `contour-workbench:${new URL(scope).pathname}:`;
 const cacheName = prefix + VERSION;
-const urls = FILES.map(file => new URL(file, scope).href);
-const precached = new Set(urls);
+const clientCacheName = prefix + 'clients';
+const releaseKey = new URL('__pwa_release__', scope).href;
 const index = new URL('index.html', scope).href;
-let pendingUpdate;
-let applyingUpdate = false;
+const urls = FILES.map(file => new URL(file.url, scope).href);
+const precached = new Set(urls);
 
-// Keep version activation explicit. Every open window must finish and save before
-// its old cache can be removed or its lazy assets replaced by a new release.
-self.addEventListener('message', event => {
-  const data = event.data;
-  const source = event.source;
-  if (!source?.id) return;
-  if (data?.type === 'UPDATE_READY' || data?.type === 'UPDATE_BLOCKED') {
-    if (pendingUpdate?.id !== data.requestId) return;
-    const response = pendingUpdate.responses.get(source.id);
-    if (!response) return;
-    if (data.type === 'UPDATE_READY') response.resolve();
-    else response.reject(new Error(String(data.reason || 'A project could not be saved.')));
-    return;
-  }
-  if (data?.type !== 'APPLY_UPDATE' || applyingUpdate) return;
-  applyingUpdate = true;
-  event.waitUntil(
-    (async () => {
-      const windows = (
-        await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
-      ).filter(client => client.url.startsWith(scope));
-      if (!windows.some(client => client.id === source.id)) return;
-      const request = { id: crypto.randomUUID(), responses: new Map() };
-      pendingUpdate = request;
-      let timer;
-      try {
-        const ready = windows.map(
-          client =>
-            new Promise((resolve, reject) => {
-              request.responses.set(client.id, { resolve, reject });
-              client.postMessage({ type: 'PREPARE_UPDATE', requestId: request.id });
-            }),
-        );
-        await Promise.race([
-          Promise.all(ready),
-          new Promise((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    'Another Workbench window did not respond. Close that window and try again.',
-                  ),
-                ),
-              15000,
-            );
-          }),
-        ]);
-        await self.skipWaiting();
-      } catch (error) {
-        for (const client of windows)
-          client.postMessage({
-            type: 'UPDATE_CANCELED',
-            requestId: request.id,
-            reason: error.message,
-          });
-      } finally {
-        clearTimeout(timer);
-        pendingUpdate = undefined;
-      }
-    })().finally(() => {
-      applyingUpdate = false;
+async function releases() {
+  const names = (await caches.keys()).filter(
+    name => name.startsWith(prefix) && name !== clientCacheName,
+  );
+  return Promise.all(
+    names.map(async name => {
+      const response = await caches.match(releaseKey, { cacheName: name });
+      // Before independent updates, releases used the same version-1 project schema.
+      const manifest = response
+        ? await response.json()
+        : { compatibility: 1, files: [], activated: true };
+      return { name, manifest };
     }),
   );
+}
+
+// Persist client leases because service workers can stop between any two events.
+// Unknown/legacy and frozen clients retain their assets; they never block activation.
+async function collectUnusedReleases() {
+  const windows = (
+    await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+  ).filter(client => client.url.startsWith(scope));
+  const clients = await caches.open(clientCacheName);
+  const retained = new Set([VERSION]);
+  for (const client of windows) {
+    const response = await clients.match(new URL(`__pwa_client__/${client.id}`, scope).href);
+    if (!response) return;
+    retained.add((await response.json()).version);
+  }
+  for (const release of await releases())
+    if (release.manifest.activated && !retained.has(release.name.slice(prefix.length))) {
+      const active = await clients.match(new URL('__pwa_active__', scope).href);
+      if (!active || (await active.json()).version !== VERSION) return;
+      await caches.delete(release.name);
+    }
+  const live = new Set(windows.map(client => new URL(`__pwa_client__/${client.id}`, scope).href));
+  for (const request of await clients.keys())
+    if (request.url.includes('/__pwa_client__/') && !live.has(request.url))
+      await clients.delete(request);
+}
+
+self.addEventListener('message', event => {
+  const source = event.source;
+  if (!source?.id || !source.url.startsWith(scope)) return;
+  if (event.data?.type === 'GET_RELEASE') {
+    event.ports[0]?.postMessage({ version: VERSION, compatibility: COMPATIBILITY });
+  } else if (event.data?.type === 'APPLY_UPDATE') {
+    // End the obsolete global protocol in already-loaded pages without forcing
+    // a reload over an unsaved project in that older application.
+    source.postMessage({
+      type: 'UPDATE_CANCELED',
+      reason: 'The new version is ready. Refresh this window once to enable automatic updates.',
+    });
+  } else if (event.data?.type === 'CLIENT_RELEASE' && typeof event.data.version === 'string') {
+    event.waitUntil(
+      (async () => {
+        const clients = await caches.open(clientCacheName);
+        await clients.put(
+          new URL(`__pwa_client__/${source.id}`, scope).href,
+          Response.json({ version: event.data.version }),
+        );
+        await collectUnusedReleases();
+      })(),
+    );
+  }
 });
 
 self.addEventListener('install', event => {
-  // A partial deployment must not replace a working, complete offline version.
-  event.waitUntil(
-    caches
-      .open(cacheName)
-      .then(cache => cache.addAll(urls.map(url => new Request(url, { cache: 'reload' })))),
-  );
-});
-self.addEventListener('activate', event => {
-  // Background installs wait for old windows to close. Explicit activation above
-  // is permitted only after every open window has acknowledged a durable save.
   event.waitUntil(
     (async () => {
-      for (const name of await caches.keys())
-        if (name.startsWith(prefix) && name !== cacheName) await caches.delete(name);
+      const previous = (await releases()).filter(release => release.name !== cacheName);
+      const cache = await caches.open(cacheName);
+      try {
+        // Mark in-progress caches before downloading; an old worker can still
+        // collect releases during this installation.
+        await cache.put(
+          releaseKey,
+          Response.json({
+            version: VERSION,
+            compatibility: COMPATIBILITY,
+            files: [],
+            activated: false,
+          }),
+        );
+        await Promise.all(
+          FILES.map(async (file, i) => {
+            const url = urls[i];
+            let response;
+            for (const release of previous) {
+              const unchanged = release.manifest.files.some(
+                old => old.url === file.url && old.revision === file.revision,
+              );
+              const legacyHashedAsset =
+                !release.manifest.version && /-[\w-]{8}\.(?:js|css|wasm)$/.test(file.url);
+              if (unchanged || legacyHashedAsset)
+                response = await caches.match(url, { cacheName: release.name });
+              if (response) break;
+            }
+            if (!response) {
+              response = await fetch(new Request(url, { cache: 'reload' }));
+              const digest = await crypto.subtle.digest(
+                'SHA-256',
+                await response.clone().arrayBuffer(),
+              );
+              const revision = [...new Uint8Array(digest)]
+                .map(byte => byte.toString(16).padStart(2, '0'))
+                .join('');
+              if (revision !== file.revision)
+                throw new Error(`Offline asset has the wrong revision: ${file.url}`);
+            }
+            if (!response.ok) throw new Error(`Offline asset unavailable: ${file.url}`);
+            await cache.put(url, response);
+          }),
+        );
+        await cache.put(
+          releaseKey,
+          Response.json({
+            version: VERSION,
+            compatibility: COMPATIBILITY,
+            files: FILES,
+          }),
+        );
+      } catch (error) {
+        await caches.delete(cacheName);
+        throw error;
+      }
+      if (previous.every(release => String(release.manifest.compatibility) === COMPATIBILITY))
+        await self.skipWaiting();
+    })(),
+  );
+});
+
+self.addEventListener('activate', event => {
+  // Keep old caches until their windows identify themselves or close. A newly
+  // claimed old page can still lazy-load its original workers, JS, and WASM.
+  event.waitUntil(
+    (async () => {
+      const clients = await caches.open(clientCacheName);
+      await clients.put(new URL('__pwa_active__', scope).href, Response.json({ version: VERSION }));
+      const cache = await caches.open(cacheName);
+      const response = await cache.match(releaseKey);
+      const manifest = await response.json();
+      await cache.put(releaseKey, Response.json({ ...manifest, activated: true }));
       await self.clients.claim();
     })(),
   );
 });
+
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+  if (url.origin !== new URL(scope).origin || !url.href.startsWith(scope)) return;
   const path = url.origin + url.pathname;
   const navigation = event.request.mode === 'navigate' && (path === scope || path === index);
   const key = navigation ? index : event.request.url;
-  // Only the shipped app shell is cached. Provider data and large presets stay network-only.
-  if (!navigation && !precached.has(key)) return;
+  const oldAsset = url.pathname.startsWith(new URL('assets/', scope).pathname);
+  if (!navigation && !precached.has(key) && !oldAsset) return;
   event.respondWith(
     (async () => {
-      const cache = await caches.open(cacheName);
-      return (await cache.match(key)) || fetch(event.request);
+      const current = await caches.match(key, { cacheName });
+      if (current) return current;
+      if (oldAsset)
+        for (const release of await releases()) {
+          const response = await caches.match(key, { cacheName: release.name });
+          if (response) return response;
+        }
+      return fetch(event.request);
     })(),
   );
 });

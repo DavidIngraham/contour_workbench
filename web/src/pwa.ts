@@ -1,49 +1,44 @@
-/** Install affordance and non-disruptive app updates; model storage remains in IndexedDB. */
+/** Installation and independent, durable per-window application updates. */
+import { projectStorageCompatibility } from './pwa-compatibility';
+
 interface InstallPrompt extends Event {
   prompt(): Promise<void>;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed' }>;
 }
 
-/** Connect installation and explicit updates to the application's durable-save boundary. */
-export function setupPwa(prepareUpdate: () => Promise<void>) {
+interface Release {
+  version: string;
+  compatibility: string;
+}
+
+function releaseOf(worker: ServiceWorker): Promise<Release | undefined> {
+  return new Promise(resolve => {
+    const channel = new MessageChannel();
+    const finish = (release?: Release) => {
+      clearTimeout(timer);
+      channel.port1.close();
+      resolve(release);
+    };
+    const timer = setTimeout(() => finish(), 1500);
+    channel.port1.onmessage = event => {
+      const data = event.data;
+      finish(typeof data?.version === 'string' ? data : undefined);
+    };
+    try {
+      worker.postMessage({ type: 'GET_RELEASE' }, [channel.port2]);
+    } catch {
+      finish();
+    }
+  });
+}
+
+/** Return false when an already-installed release supersedes this page before startup. */
+export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<boolean> {
   const button = document.querySelector<HTMLButtonElement>('#install-app')!;
   const message = document.querySelector<HTMLElement>('#pwa-status')!;
   const banner = document.querySelector<HTMLElement>('#pwa-update-banner')!;
   const updateMessage = document.querySelector<HTMLElement>('#pwa-update-message')!;
   const reloadButtons = [...document.querySelectorAll<HTMLButtonElement>('[data-pwa-reload]')];
-  const progress = document.querySelector<HTMLDialogElement>('#pwa-update-progress')!;
-  let updating = false;
-  let updatePostponed = false;
-  let preparedRequest: string | undefined;
-  let recoveryTimer: ReturnType<typeof setTimeout> | undefined;
-  const showMessage = (text: string) => {
-    message.textContent = text;
-    updateMessage.textContent = text;
-  };
-  const finish = () => {
-    updating = false;
-    preparedRequest = undefined;
-    clearTimeout(recoveryTimer);
-    progress.close();
-    reloadButtons.forEach(button => {
-      button.disabled = false;
-    });
-  };
-  const begin = () => {
-    updating = true;
-    updatePostponed = false;
-    reloadButtons.forEach(button => {
-      button.disabled = true;
-    });
-    if (!progress.open) progress.showModal();
-    clearTimeout(recoveryTimer);
-    recoveryTimer = setTimeout(() => {
-      finish();
-      updatePostponed = true;
-      showMessage('The update did not finish. Check the other Workbench windows, then try again.');
-    }, 30000);
-  };
-  progress.addEventListener('cancel', event => event.preventDefault());
   let prompt: InstallPrompt | undefined;
   const standalone = matchMedia('(display-mode: standalone)');
   const hideInstall = () => {
@@ -71,122 +66,195 @@ export function setupPwa(prepareUpdate: () => Promise<void>) {
       message.textContent = 'Use your browser’s menu to install Contour Workbench.';
     }
   };
-  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return;
+  if (!import.meta.env.PROD || !('serviceWorker' in navigator)) return true;
+  const ownVersion = document.querySelector<HTMLMetaElement>(
+    'meta[name="workbench-release"]',
+  )?.content;
   const base = new URL(import.meta.env.BASE_URL, document.baseURI);
   const workerUrl = new URL('sw.js', base);
-  // Browser reload is an explicit request for the current release, including
-  // hard reloads that temporarily bypass the controlling worker.
-  const browserReload =
-    (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)
-      ?.type === 'reload';
-  navigator.serviceWorker.addEventListener('message', event => {
-    const worker = event.source as ServiceWorker | null;
-    if (!worker || worker.scriptURL !== workerUrl.href) return;
-    const data = event.data;
-    if (data?.type === 'PREPARE_UPDATE' && typeof data.requestId === 'string') {
-      if (preparedRequest === data.requestId) return;
-      preparedRequest = data.requestId;
-      begin();
-      void (async () => {
-        try {
-          await prepareUpdate();
-          if (preparedRequest === data.requestId)
-            worker.postMessage({ type: 'UPDATE_READY', requestId: data.requestId });
-        } catch (error) {
-          worker.postMessage({
-            type: 'UPDATE_BLOCKED',
-            requestId: data.requestId,
-            reason: error instanceof Error ? error.message : 'A project could not be saved.',
-          });
-        }
-      })();
-    } else if (
-      data?.type === 'UPDATE_CANCELED' &&
-      (!preparedRequest || data.requestId === preparedRequest)
+  let pending: Release | undefined;
+  let preparing = false;
+  let reloading = false;
+  let booting = true;
+  let incompatibleUpdate = false;
+  let lastInteraction = 0;
+  let pointerActive = false;
+  let retryAt = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  const interaction = () => {
+    lastInteraction = Date.now();
+  };
+  for (const event of ['pointerdown', 'pointerup', 'pointercancel', 'keydown', 'input', 'wheel'])
+    document.addEventListener(event, interaction, { capture: true, passive: true });
+  document.addEventListener(
+    'pointerdown',
+    () => {
+      pointerActive = true;
+    },
+    true,
+  );
+  for (const event of ['pointerup', 'pointercancel'])
+    document.addEventListener(
+      event,
+      () => {
+        pointerActive = false;
+      },
+      true,
+    );
+  const showProblem = (text: string) => {
+    message.textContent = text;
+    updateMessage.textContent = text;
+    banner.classList.remove('hidden');
+    reloadButtons.forEach(button => button.classList.remove('hidden'));
+  };
+  const schedule = () => {
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => void maybeReload(), 1000);
+  };
+  const maybeReload = async () => {
+    if (!pending || reloading || preparing) return;
+    const editing = document.activeElement?.matches(
+      'input, textarea, select, [contenteditable="true"]',
+    );
+    if (
+      document.visibilityState === 'hidden' ||
+      Date.now() < retryAt ||
+      Date.now() - lastInteraction < 2000 ||
+      pointerActive ||
+      editing
     ) {
-      finish();
-      updatePostponed = true;
-      banner.classList.remove('hidden');
-      showMessage(`Update postponed: ${data.reason}`);
+      schedule();
+      return;
     }
+    preparing = true;
+    const interactionAtStart = lastInteraction;
+    try {
+      if (!booting && !(await prepareUpdate())) {
+        schedule();
+        return;
+      }
+      // A save may take time. Never reload over an interaction that happened during it.
+      if (lastInteraction !== interactionAtStart || document.hidden) {
+        schedule();
+        return;
+      }
+      reloading = true;
+      location.reload();
+    } catch (error) {
+      retryAt = Date.now() + 30000;
+      showProblem(
+        error instanceof Error ? error.message : 'Save a project backup before updating.',
+      );
+      schedule();
+    } finally {
+      preparing = false;
+    }
+  };
+  const inspectController = async () => {
+    const worker = navigator.serviceWorker.controller;
+    if (!worker || worker.scriptURL !== workerUrl.href) return;
+    // Announce before querying, including when this page is older than its controller.
+    if (ownVersion) worker.postMessage({ type: 'CLIENT_RELEASE', version: ownVersion });
+    const release = await releaseOf(worker);
+    if (worker !== navigator.serviceWorker.controller || !release || !ownVersion) return;
+    if (release.version === ownVersion) {
+      pending = undefined;
+      if (!incompatibleUpdate) {
+        banner.classList.add('hidden');
+        message.textContent =
+          'Ready to reopen local projects offline. Updates happen automatically.';
+      }
+      return;
+    }
+    if (release.compatibility !== String(projectStorageCompatibility)) return;
+    pending = release;
+    await maybeReload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => void inspectController());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void inspectController();
   });
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    // Only windows that acknowledged a durable save participate in an explicit update.
-    if (preparedRequest) location.reload();
+  window.addEventListener('pageshow', () => void inspectController());
+  document.addEventListener('resume', () => void inspectController());
+  window.addEventListener('online', () => {
+    if (registration) void checkForUpdate(true);
+    else void register();
   });
-  void navigator.serviceWorker
-    .register(workerUrl, {
-      scope: base.pathname,
-      updateViaCache: 'none',
-    })
-    .then(registration => {
-      let reloadUpdateRequested = false;
-      let pendingApply = false;
-      const applyUpdate = () => {
-        if (updating) return;
-        if (!registration.waiting) {
-          pendingApply = true;
-          void registration
-            .update()
-            .then(showUpdate)
-            .catch(() => {});
-          return;
-        }
-        pendingApply = false;
-        begin();
-        registration.waiting.postMessage({ type: 'APPLY_UPDATE' });
-      };
-      const showUpdate = () => {
-        if (registration.waiting) {
-          banner.classList.remove('hidden');
-          reloadButtons.forEach(button => {
-            button.classList.remove('hidden');
+  reloadButtons.forEach(button => {
+    button.onclick = () => {
+      retryAt = 0;
+      lastInteraction = 0;
+      if (pending) void maybeReload();
+      else void checkForUpdate(true);
+    };
+  });
+  let registration: ServiceWorkerRegistration | undefined;
+  let checking = false;
+  let lastCheck = 0;
+  let checkTimer: ReturnType<typeof setTimeout> | undefined;
+  const checkForUpdate = async (force = false) => {
+    if (!registration || checking || !navigator.onLine) return;
+    if (!force && Date.now() - lastCheck < 60000) return;
+    checking = true;
+    lastCheck = Date.now();
+    try {
+      await registration.update();
+    } catch {
+      // A failed download leaves the complete active release usable. Retry quietly.
+    } finally {
+      checking = false;
+      void inspectController();
+      clearTimeout(checkTimer);
+      checkTimer = setTimeout(() => void checkForUpdate(), 60000);
+    }
+  };
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void checkForUpdate();
+  });
+  const register = () =>
+    navigator.serviceWorker
+      .register(workerUrl, {
+        scope: base.pathname,
+        updateViaCache: 'none',
+      })
+      .then(value => {
+        registration = value;
+        const watch = () => {
+          const worker = registration?.installing;
+          worker?.addEventListener('statechange', () => {
+            if (worker.state === 'activated') void inspectController();
+            if (worker.state === 'installed') void showIncompatibleUpdate();
           });
-          if (!updating && !updatePostponed)
-            showMessage(
-              'An update is ready. Reload saves projects and updates all open Workbench windows.',
+        };
+        const showIncompatibleUpdate = async () => {
+          const waiting = registration?.waiting;
+          if (!waiting) return;
+          const release = await releaseOf(waiting);
+          if (release && release.compatibility !== String(projectStorageCompatibility)) {
+            incompatibleUpdate = true;
+            showProblem(
+              'An update is ready. Close other Workbench windows, then reopen the app when your work is saved.',
             );
-          if (pendingApply || (browserReload && !reloadUpdateRequested)) {
-            reloadUpdateRequested = true;
-            applyUpdate();
           }
-        }
-      };
-      reloadButtons.forEach(button => {
-        button.onclick = applyUpdate;
+        };
+        watch();
+        registration.addEventListener('updatefound', watch);
+        void showIncompatibleUpdate();
+        void checkForUpdate();
+        return inspectController();
+      })
+      .catch(() => {
+        // Registration can fail offline; the existing page remains usable.
+        clearTimeout(checkTimer);
+        checkTimer = setTimeout(() => void register(), 60000);
       });
-      showUpdate();
-      const watchInstallation = () => {
-        const worker = registration.installing;
-        worker?.addEventListener('statechange', () => {
-          if (worker.state === 'redundant' && !navigator.serviceWorker.controller)
-            message.textContent =
-              'Offline setup could not finish. Reopen while online to try again.';
-          showUpdate();
-        });
-      };
-      watchInstallation();
-      registration.addEventListener('updatefound', watchInstallation);
-      // Do not rely on the browser's periodic worker-update schedule after reload.
-      if (browserReload)
-        void registration
-          .update()
-          .then(showUpdate)
-          .catch(() => {});
-      void navigator.serviceWorker.ready.then(() => {
-        if (!message.textContent) message.textContent = 'Ready to reopen local projects offline.';
-        showUpdate();
-      });
-      // Recheck when returning to a long-running installed app; never reload active work.
-      let lastCheck = Date.now();
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible' && Date.now() - lastCheck > 60 * 60 * 1000) {
-          lastCheck = Date.now();
-          void registration.update().catch(() => {});
-        }
-      });
-    })
-    .catch(() => {
-      message.textContent = 'Offline setup could not finish. Reopen while online to try again.';
-    });
+  const registered = register();
+  // Do not hold startup behind a slow network. A ready controller is checked first
+  // so refreshing a staged release avoids booting the obsolete model workspace.
+  await Promise.race([
+    Promise.all([inspectController(), registered]),
+    new Promise<void>(resolve => setTimeout(resolve, 500)),
+  ]);
+  booting = false;
+  return !reloading;
 }

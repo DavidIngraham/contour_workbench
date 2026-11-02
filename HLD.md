@@ -55,24 +55,56 @@ worker template and final cached files. The allowlist includes the HTML shell,
 all bundled/lazy JS and WASM, icons, catalog, and thumbnails; large preset bundles,
 external provider responses, and user project data are excluded.
 
-The worker installs a complete version atomically, serves that version's shell
-and assets from its own cache, and normally waits for old clients to close before activation.
-A visible Update available — Reload action is also available in Help. Its worker
-message protocol snapshots open windows in the app's scope and requests a durable
-save from each. `main.ts` rejects preparation during active geometry/source work
-or unfinished dialogs, flushes queued autosaves, and requires IndexedDB persistence
-rather than the tab-only fallback. Prepared windows are held behind a native
-progress dialog. Only after every window acknowledges saving does the waiting
-worker call `skipWaiting`; `controllerchange` reloads the prepared windows. A
-blocked save or a 15-second missing response cancels activation and restores the
-current sessions. A 30-second client timer recovers from an interrupted protocol.
-Background installation never initiates this protocol or reloads an editor. Activation only removes older
-Contour Workbench shell caches in the same scope; IndexedDB/project data and
-other applications' caches are untouched. `pwa.ts` offers browser-supported
-installation, reports offline readiness/waiting updates, and rechecks updates
-when returning after an hour. Registration is production-only. CI runs production
-PWA tests for installability, offline local model generation/export, multi-window
-updates, pending edits, failed durable storage, postponed operations, and failed-release recovery under both deployment path layouts.
+The worker installs a complete version atomically. Its manifest revisions each
+file, copies unchanged responses from previous releases (including legacy hashed
+assets), and downloads only changed files. Downloaded bytes must match their
+SHA-256 revision, including HTML, so stale successful CDN responses cannot activate
+a mixed release. Build output embeds the release ID in
+HTML independently of the application's project schema. A failed install removes
+only its partial cache and leaves the complete active offline version usable.
+
+Compatible workers activate immediately and claim existing windows. Each page
+announces its own HTML release, then independently reloads when visible, idle,
+and durably saved. Active calculations, open dialogs, focused editors, and pointer
+gestures defer that window's reload with automatic retries; they do not block
+other windows or show update progress dialogs. A bounded startup check avoids
+starting obsolete model work when a replacement controller is already available.
+Network/update failures retry quietly on reconnect and at one-minute intervals.
+Storage/checkpoint failures retain the open editor, show backup guidance, and
+retry after 30 seconds; Retry update also retries that window immediately.
+
+Before an automatic reload, main.ts flushes autosaves, requires durable IndexedDB
+persistence, and writes a per-tab, scope-specific sessionStorage checkpoint.
+Startup consumes that checkpoint to reopen the local project or unchanged preset
+and restore the settings panel, camera position, and orbit target. Dialog drafts
+remain in their original window until the dialog closes; generated print meshes
+are transient and can be regenerated from the reopened editable project.
+
+The worker retains old release caches for live pages. Durable client-release
+leases in a separate scope-prefixed cache survive service-worker termination;
+unknown legacy clients conservatively retain all previous releases. After all
+windows identify themselves, unused activated release caches and closed-client
+leases can be collected. Unfinished installations are excluded from collection,
+and an active-release marker prevents retired workers from collecting a newer
+release. Obsolete hashed JS/worker/WASM requests fall back to retained release
+caches, so a sleeping or busy old window can keep working after activation.
+IndexedDB/project data and other applications' caches are never collected.
+Already-loaded legacy pages receive a one-time refresh message if they initiate
+the obsolete update protocol; the new worker closes their blocking update dialog
+without forcing a reload over work managed by older code.
+
+projectStorageCompatibility is an explicit compatibility boundary covering
+shared project storage and cross-release asset assumptions. Increment it before
+incompatible schema or semantic changes, and supply appropriate migrations.
+An incompatible worker waits for existing clients to close instead of claiming
+them; the old page shows saved-work/reopen guidance. Compatibility must cover
+every retained older release, including pre-manifest version-1 releases.
+
+Registration is production-only. CI runs production PWA tests under both root and
+GitHub Pages subpath hosting for installation, offline generation/export,
+independent window updates, project/view restoration, frozen/legacy windows,
+retained obsolete lazy modules, cache reuse/collection, storage failures,
+interrupted downloads/reconnects, rapid releases, and normal/hard refresh.
 
 ## System context
 
