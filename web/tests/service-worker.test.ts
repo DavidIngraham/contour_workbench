@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest';
 const scope = 'https://example.test/contour_workbench/';
 const prefix = 'contour-workbench:/contour_workbench/:';
 
-async function worker(version = 'test-2') {
+async function worker(version = 'test-2', compatibility = '1') {
   const stores = new Map<string, Map<string, Response>>();
   const key = (request: string | Request) => (typeof request === 'string' ? request : request.url);
   const open = async (name: string) => {
@@ -34,13 +34,15 @@ async function worker(version = 'test-2') {
   const fetch = vi.fn(async () => {
     throw new Error('Offline');
   });
+  const skipWaiting = vi.fn(async () => {});
   const source = (await readFile(new URL('../scripts/service-worker.mjs', import.meta.url), 'utf8'))
     .replace('__VERSION__', version)
-    .replace('__COMPATIBILITY__', '1')
+    .replace('__COMPATIBILITY__', compatibility)
     .replace("['__FILES__']", '[]');
   const api = runInNewContext(source + '\n({ collectUnusedReleases });', {
     self: {
       registration: { scope },
+      skipWaiting,
       clients: {
         matchAll: async (options: { includeUncontrolled?: boolean }) =>
           options.includeUncontrolled ? windows : controlled,
@@ -91,10 +93,22 @@ async function worker(version = 'test-2') {
     putRelease,
     message,
     fetch,
+    skipWaiting,
     listeners,
     collect: () => api.collectUnusedReleases(),
   };
 }
+
+it('explicitly activates a compatible completed update without permitting incompatible storage upgrades', async () => {
+  const compatible = await worker();
+  await compatible.putRelease('test-1');
+  await compatible.message({ type: 'ACTIVATE_COMPATIBLE' });
+  expect(compatible.skipWaiting).toHaveBeenCalledTimes(1);
+  const incompatible = await worker('test-2', '2');
+  await incompatible.putRelease('test-1');
+  await incompatible.message({ type: 'ACTIVATE_COMPATIBLE' });
+  expect(incompatible.skipWaiting).not.toHaveBeenCalled();
+});
 
 it('does not collect a release while an uncontrolled window is still being claimed', async () => {
   const w = await worker();

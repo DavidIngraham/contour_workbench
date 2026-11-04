@@ -193,6 +193,23 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
     };
   });
   let registration: ServiceWorkerRegistration | undefined;
+  const inspectWaiting = async (waiting = registration?.waiting) => {
+    if (!waiting) return;
+    const release = await releaseOf(waiting);
+    if (!release) return;
+    if (release.compatibility === String(projectStorageCompatibility)) {
+      try {
+        waiting.postMessage({ type: 'ACTIVATE_COMPATIBLE' });
+      } catch {
+        // A newer worker may replace this candidate while its reply is in flight.
+      }
+    } else {
+      incompatibleUpdate = true;
+      showProblem(
+        'An update is ready. Close other Workbench windows, then reopen the app when your work is saved.',
+      );
+    }
+  };
   let checking = false;
   let lastCheck = 0;
   let checkTimer: ReturnType<typeof setTimeout> | undefined;
@@ -207,6 +224,7 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
       // A failed download leaves the complete active release usable. Retry quietly.
     } finally {
       checking = false;
+      void inspectWaiting();
       void inspectController();
       clearTimeout(checkTimer);
       checkTimer = setTimeout(() => void checkForUpdate(), 60000);
@@ -227,23 +245,12 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
           const worker = registration?.installing;
           worker?.addEventListener('statechange', () => {
             if (worker.state === 'activated') void inspectController();
-            if (worker.state === 'installed') void showIncompatibleUpdate();
+            if (worker.state === 'installed') void inspectWaiting(worker);
           });
-        };
-        const showIncompatibleUpdate = async () => {
-          const waiting = registration?.waiting;
-          if (!waiting) return;
-          const release = await releaseOf(waiting);
-          if (release && release.compatibility !== String(projectStorageCompatibility)) {
-            incompatibleUpdate = true;
-            showProblem(
-              'An update is ready. Close other Workbench windows, then reopen the app when your work is saved.',
-            );
-          }
         };
         watch();
         registration.addEventListener('updatefound', watch);
-        void showIncompatibleUpdate();
+        void inspectWaiting();
         void checkForUpdate();
         return inspectController();
       })

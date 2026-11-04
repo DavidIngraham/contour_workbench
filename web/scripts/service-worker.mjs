@@ -28,6 +28,12 @@ async function releases() {
   );
 }
 
+async function activateCompatibleRelease() {
+  const previous = (await releases()).filter(release => release.name !== cacheName);
+  if (previous.every(release => String(release.manifest.compatibility) === COMPATIBILITY))
+    await self.skipWaiting();
+}
+
 // Persist client leases because service workers can stop between any two events.
 // Unknown/legacy and frozen clients retain their assets; they never block activation.
 async function collectUnusedReleases() {
@@ -75,6 +81,10 @@ self.addEventListener('message', event => {
         event.ports[0]?.postMessage({ version: VERSION, compatibility: COMPATIBILITY, pageCached });
       })(),
     );
+  } else if (event.data?.type === 'ACTIVATE_COMPATIBLE') {
+    // Reconcile a completed installation that remained waiting after a refresh
+    // or overlapping update checks. Recheck compatibility inside the worker.
+    event.waitUntil(activateCompatibleRelease());
   } else if (event.data?.type === 'APPLY_UPDATE') {
     // End the obsolete global protocol in already-loaded pages without forcing
     // a reload over an unsaved project in that older application.
@@ -155,8 +165,7 @@ self.addEventListener('install', event => {
         await caches.delete(cacheName);
         throw error;
       }
-      if (previous.every(release => String(release.manifest.compatibility) === COMPATIBILITY))
-        await self.skipWaiting();
+      await activateCompatibleRelease();
     })(),
   );
 });

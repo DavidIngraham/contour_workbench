@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 let revision = 1;
+let requireActivation = false;
 let releaseWorker;
 let workerGate;
 const requests = new Map();
@@ -43,6 +44,7 @@ createServer(async (request, response) => {
         })
       : undefined;
     revision = Number(url.searchParams.get('version'));
+    requireActivation = url.searchParams.has('requireActivation');
     response.end('ok');
     return;
   }
@@ -98,6 +100,15 @@ createServer(async (request, response) => {
           )
           .replace(/const FILES = \[.*?\];/, `const FILES = ${JSON.stringify(files)};`),
       );
+      if (requireActivation)
+        body = Buffer.from(
+          body
+            .toString()
+            .replace(
+              'await activateCompatibleRelease();',
+              '/* Test: leave the completed worker waiting until the page requests activation. */',
+            ),
+        );
     }
     if (pathname === '/' || pathname === '/index.html')
       body = revision === 5 ? Buffer.from('<h1>Stale CDN response</h1>') : htmlForRelease(body);

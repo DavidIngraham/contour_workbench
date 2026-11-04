@@ -541,6 +541,30 @@ test('rapid releases retain the editing window and apply the latest version once
   await expect(page.locator('#base-height')).toHaveValue('3.7');
 });
 
+test('a compatible worker cannot remain waiting after overlapping update checks', async ({
+  page,
+  request,
+}) => {
+  await ready(page);
+  await importProject(page, 'Waiting worker');
+  await page.locator('#base-height').fill('3.7');
+  await request.post('http://127.0.0.1:5182/__test/release?version=2&requireActivation=1');
+  await page.evaluate(async () => {
+    const registration = (await navigator.serviceWorker.getRegistration())!;
+    await Promise.allSettled([registration.update(), registration.update()]);
+  });
+  await expectController(page, 2);
+  await expect(page.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
+  await expect(page.locator('#base-height')).toHaveValue('3.7');
+  await page.locator('#base-height').blur();
+  await expectRelease(page, 2);
+  await page.waitForFunction(
+    () =>
+      !(window as any).contourDiagnostics?.busy && !(window as any).contourDiagnostics?.landingOpen,
+  );
+  await expect(page.locator('#base-height')).toHaveValue('3.7');
+});
+
 test('network HTML waits for its delayed matching worker without reverting to the old app', async ({
   page,
   context,

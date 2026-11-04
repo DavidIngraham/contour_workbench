@@ -63,8 +63,11 @@ a mixed release. Build output embeds the release ID in
 HTML independently of the application's project schema. A failed install removes
 only its partial cache and leaves the complete active offline version usable.
 
-Compatible workers activate immediately and claim existing windows. Each page
-announces its own HTML release, then independently reloads when visible, idle,
+Compatible workers activate immediately and claim existing windows. Pages
+also request compatibility-checked activation when a completed worker remains
+waiting after overlapping update checks; the worker rechecks all retained releases
+before honoring that request. Each page announces its own HTML release, then
+independently reloads when visible, idle,
 and durably saved. Active calculations, open dialogs, focused editors, and pointer
 gestures defer that window's reload with automatic retries; they do not block
 other windows or show update progress dialogs. A bounded startup check avoids
@@ -114,7 +117,8 @@ retained obsolete lazy modules, cache reuse/collection, storage failures,
 interrupted downloads/reconnects, rapid releases, and normal/hard refresh. Refresh
 tests refresh the foreground window and wait for both windows' matching controllers
 before disconnecting the network, tolerating navigation during controller polling;
-a gated worker download exercises fresh HTML arriving before worker installation.
+a gated worker download exercises fresh HTML arriving before worker installation,
+and forced waiting installations verify explicit compatible activation recovery.
 Focused worker tests cover collection during claim, dual release leases, installed
 page recognition, and offline navigation through a retired worker.
 
