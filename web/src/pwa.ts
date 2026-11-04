@@ -9,9 +9,10 @@ interface InstallPrompt extends Event {
 interface Release {
   version: string;
   compatibility: string;
+  pageCached?: boolean;
 }
 
-function releaseOf(worker: ServiceWorker): Promise<Release | undefined> {
+function releaseOf(worker: ServiceWorker, pageVersion?: string): Promise<Release | undefined> {
   return new Promise(resolve => {
     const channel = new MessageChannel();
     const finish = (release?: Release) => {
@@ -25,7 +26,7 @@ function releaseOf(worker: ServiceWorker): Promise<Release | undefined> {
       finish(typeof data?.version === 'string' ? data : undefined);
     };
     try {
-      worker.postMessage({ type: 'GET_RELEASE' }, [channel.port2]);
+      worker.postMessage({ type: 'GET_RELEASE', pageVersion }, [channel.port2]);
     } catch {
       finish();
     }
@@ -155,7 +156,7 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
     if (!worker || worker.scriptURL !== workerUrl.href) return;
     // Announce before querying, including when this page is older than its controller.
     if (ownVersion) worker.postMessage({ type: 'CLIENT_RELEASE', version: ownVersion });
-    const release = await releaseOf(worker);
+    const release = await releaseOf(worker, ownVersion);
     if (worker !== navigator.serviceWorker.controller || !release || !ownVersion) return;
     if (release.version === ownVersion) {
       pending = undefined;
@@ -167,6 +168,9 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
       return;
     }
     if (release.compatibility !== String(projectStorageCompatibility)) return;
+    // A hard refresh can load newer network HTML before its worker is installed.
+    // Only supersede a page whose release this worker knows was already installed.
+    if (release.pageCached !== true) return;
     pending = release;
     await maybeReload();
   };

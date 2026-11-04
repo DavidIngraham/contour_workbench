@@ -61,20 +61,31 @@ async function expectRelease(page: Page, version: number) {
 
 async function expectController(page: Page, version: number) {
   await expect
-    .poll(() =>
-      page.evaluate(
-        () =>
-          new Promise<string>(resolve => {
-            const channel = new MessageChannel();
-            channel.port1.onmessage = event => {
-              channel.port1.close();
-              resolve(event.data.version);
-            };
-            navigator.serviceWorker.controller!.postMessage({ type: 'GET_RELEASE' }, [
-              channel.port2,
-            ]);
-          }),
-      ),
+    .poll(
+      () =>
+        page.evaluate(
+          () =>
+            new Promise<string>(resolve => {
+              if (!navigator.serviceWorker.controller) {
+                resolve('uncontrolled');
+                return;
+              }
+              const channel = new MessageChannel();
+              const timer = setTimeout(() => {
+                channel.port1.close();
+                resolve('no response');
+              }, 2500);
+              channel.port1.onmessage = event => {
+                clearTimeout(timer);
+                channel.port1.close();
+                resolve(event.data.version);
+              };
+              navigator.serviceWorker.controller.postMessage({ type: 'GET_RELEASE' }, [
+                channel.port2,
+              ]);
+            }),
+        ),
+      { timeout: 15000 },
     )
     .toBe(`test-${version}`);
 }
@@ -467,6 +478,39 @@ test('rapid releases retain the editing window and apply the latest version once
   await expect(page.locator('#base-height')).toHaveValue('3.7');
 });
 
+test('network HTML waits for its delayed matching worker without reverting to the old app', async ({
+  page,
+  context,
+  request,
+  baseURL,
+}) => {
+  await ready(page);
+  const editing = await context.newPage();
+  await editing.goto(baseURL!);
+  await importProject(editing, 'Delayed worker');
+  await editing.locator('#base-height').fill('3.7');
+  await request.post('http://127.0.0.1:5182/__test/release?version=2&holdWorker=1');
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Page.reload', { ignoreCache: true });
+    await expectRelease(page, 2);
+    await expect
+      .poll(() => page.evaluate(() => Boolean((window as any).contourDiagnostics?.landingOpen)))
+      .toBe(true);
+    await expectController(editing, 1);
+    await request.post('http://127.0.0.1:5182/__test/resume-worker');
+    await expectController(page, 2);
+    await expectController(editing, 2);
+    await expectRelease(page, 2);
+    await expect(editing.locator('#base-height')).toHaveValue('3.7');
+    await context.setOffline(true);
+    await page.reload();
+    await expectRelease(page, 2);
+  } finally {
+    await request.post('http://127.0.0.1:5182/__test/resume-worker');
+  }
+});
+
 for (const hard of [false, true]) {
   test(`${hard ? 'hard' : 'normal'} refresh discovers the latest release without blocking other work`, async ({
     page,
@@ -485,6 +529,7 @@ for (const hard of [false, true]) {
       await session.send('Page.reload', { ignoreCache: true });
     } else await page.reload();
     await expectRelease(page, 2);
+    await expectController(page, 2);
     await expectController(second, 2);
     await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
     await expect(second.locator('#base-height')).toHaveValue('3.7');

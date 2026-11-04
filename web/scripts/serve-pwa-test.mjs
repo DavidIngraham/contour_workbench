@@ -7,6 +7,8 @@ import { createHash } from 'node:crypto';
 
 const root = fileURLToPath(new URL('../dist/', import.meta.url));
 let revision = 1;
+let releaseWorker;
+let workerGate;
 const requests = new Map();
 const hash = body => createHash('sha256').update(body).digest('hex');
 const htmlForRelease = body =>
@@ -34,7 +36,19 @@ const types = {
 createServer(async (request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1:5182');
   if (url.pathname === '/__test/release' && request.method === 'POST') {
+    releaseWorker?.();
+    workerGate = url.searchParams.has('holdWorker')
+      ? new Promise(resolve => {
+          releaseWorker = resolve;
+        })
+      : undefined;
     revision = Number(url.searchParams.get('version'));
+    response.end('ok');
+    return;
+  }
+  if (url.pathname === '/__test/resume-worker' && request.method === 'POST') {
+    releaseWorker?.();
+    workerGate = undefined;
     response.end('ok');
     return;
   }
@@ -44,6 +58,7 @@ createServer(async (request, response) => {
     return;
   }
   const pathname = decodeURIComponent(url.pathname).replace(/^\/contour_workbench\//, '/');
+  if (pathname === '/sw.js') await workerGate;
   requests.set(pathname, (requests.get(pathname) || 0) + 1);
   if (/^\/assets\/release-\d+\.js$/.test(pathname)) {
     if (pathname !== `/assets/release-${revision}.js`) {

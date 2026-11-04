@@ -8,6 +8,7 @@ const cacheName = prefix + VERSION;
 const clientCacheName = prefix + 'clients';
 const releaseKey = new URL('__pwa_release__', scope).href;
 const index = new URL('index.html', scope).href;
+const activeKey = new URL('__pwa_active__', scope).href;
 const urls = FILES.map(file => new URL(file.url, scope).href);
 const precached = new Set(urls);
 
@@ -33,16 +34,23 @@ async function collectUnusedReleases() {
   const windows = (
     await self.clients.matchAll({ type: 'window', includeUncontrolled: true })
   ).filter(client => client.url.startsWith(scope));
+  const controlled = new Set(
+    (await self.clients.matchAll({ type: 'window' })).map(client => client.id),
+  );
+  if (windows.some(client => !controlled.has(client.id))) return;
   const clients = await caches.open(clientCacheName);
   const retained = new Set([VERSION]);
   for (const client of windows) {
     const response = await clients.match(new URL(`__pwa_client__/${client.id}`, scope).href);
     if (!response) return;
-    retained.add((await response.json()).version);
+    const lease = await response.json();
+    if (typeof lease.controllerVersion !== 'string') return;
+    retained.add(lease.version);
+    retained.add(lease.controllerVersion);
   }
   for (const release of await releases())
     if (release.manifest.activated && !retained.has(release.name.slice(prefix.length))) {
-      const active = await clients.match(new URL('__pwa_active__', scope).href);
+      const active = await clients.match(activeKey);
       if (!active || (await active.json()).version !== VERSION) return;
       await caches.delete(release.name);
     }
@@ -56,7 +64,17 @@ self.addEventListener('message', event => {
   const source = event.source;
   if (!source?.id || !source.url.startsWith(scope)) return;
   if (event.data?.type === 'GET_RELEASE') {
-    event.ports[0]?.postMessage({ version: VERSION, compatibility: COMPATIBILITY });
+    event.waitUntil(
+      (async () => {
+        const pageVersion = event.data.pageVersion;
+        const manifest =
+          typeof pageVersion === 'string'
+            ? await caches.match(releaseKey, { cacheName: prefix + pageVersion })
+            : undefined;
+        const pageCached = manifest ? (await manifest.json()).activated === true : false;
+        event.ports[0]?.postMessage({ version: VERSION, compatibility: COMPATIBILITY, pageCached });
+      })(),
+    );
   } else if (event.data?.type === 'APPLY_UPDATE') {
     // End the obsolete global protocol in already-loaded pages without forcing
     // a reload over an unsaved project in that older application.
@@ -70,7 +88,7 @@ self.addEventListener('message', event => {
         const clients = await caches.open(clientCacheName);
         await clients.put(
           new URL(`__pwa_client__/${source.id}`, scope).href,
-          Response.json({ version: event.data.version }),
+          Response.json({ version: event.data.version, controllerVersion: VERSION }),
         );
         await collectUnusedReleases();
       })(),
@@ -149,7 +167,7 @@ self.addEventListener('activate', event => {
   event.waitUntil(
     (async () => {
       const clients = await caches.open(clientCacheName);
-      await clients.put(new URL('__pwa_active__', scope).href, Response.json({ version: VERSION }));
+      await clients.put(activeKey, Response.json({ version: VERSION }));
       const cache = await caches.open(cacheName);
       const response = await cache.match(releaseKey);
       const manifest = await response.json();
@@ -172,6 +190,17 @@ self.addEventListener('fetch', event => {
     (async () => {
       const current = await caches.match(key, { cacheName });
       if (current) return current;
+      // A navigation may have been dispatched to a retired worker immediately
+      // before claim/collection. Its complete successor remains safe offline.
+      if (navigation) {
+        const active = await caches.match(activeKey, { cacheName: clientCacheName });
+        if (active) {
+          const successor = await caches.match(key, {
+            cacheName: prefix + (await active.json()).version,
+          });
+          if (successor) return successor;
+        }
+      }
       if (oldAsset)
         for (const release of await releases()) {
           const response = await caches.match(key, { cacheName: release.name });

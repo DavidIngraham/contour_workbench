@@ -69,6 +69,9 @@ and durably saved. Active calculations, open dialogs, focused editors, and point
 gestures defer that window's reload with automatic retries; they do not block
 other windows or show update progress dialogs. A bounded startup check avoids
 starting obsolete model work when a replacement controller is already available.
+Controller replies identify whether the page's release was previously installed.
+Fresh network HTML never reloads backward into an older controller while its
+matching worker is still downloading; installed older pages still update normally.
 Network/update failures retry quietly on reconnect and at one-minute intervals.
 Storage/checkpoint failures retain the open editor, show backup guidance, and
 retry after 30 seconds; Retry update also retries that window immediately.
@@ -81,13 +84,17 @@ remain in their original window until the dialog closes; generated print meshes
 are transient and can be regenerated from the reopened editable project.
 
 The worker retains old release caches for live pages. Durable client-release
-leases in a separate scope-prefixed cache survive service-worker termination;
+leases record both the HTML release and the accepting controller's release in a
+separate scope-prefixed cache and survive service-worker termination;
 unknown legacy clients conservatively retain all previous releases. After all
-windows identify themselves, unused activated release caches and closed-client
+windows identify themselves and are actually controlled by the collecting worker,
+unused activated release caches and closed-client
 leases can be collected. Unfinished installations are excluded from collection,
 and an active-release marker prevents retired workers from collecting a newer
 release. Obsolete hashed JS/worker/WASM requests fall back to retained release
 caches, so a sleeping or busy old window can keep working after activation.
+An in-flight navigation dispatched to a retired worker can use the complete
+activated successor's HTML if the retired cache has already been collected.
 IndexedDB/project data and other applications' caches are never collected.
 Already-loaded legacy pages receive a one-time refresh message if they initiate
 the obsolete update protocol; the new worker closes their blocking update dialog
@@ -104,7 +111,11 @@ Registration is production-only. CI runs production PWA tests under both root an
 GitHub Pages subpath hosting for installation, offline generation/export,
 independent window updates, project/view restoration, frozen/legacy windows,
 retained obsolete lazy modules, cache reuse/collection, storage failures,
-interrupted downloads/reconnects, rapid releases, and normal/hard refresh.
+interrupted downloads/reconnects, rapid releases, and normal/hard refresh. Refresh
+tests wait for both windows' matching controllers before disconnecting the network;
+a gated worker download exercises fresh HTML arriving before worker installation.
+Focused worker tests cover collection during claim, dual release leases, installed
+page recognition, and offline navigation through a retired worker.
 
 ## System context
 
@@ -420,7 +431,7 @@ Current PrusaSlicer 2.9.6 CLI verification covers MK4S and CORE One 0.4 mm high-
 
 `orca-export.spec.ts` covers 14 browser scenarios: six printer-aware regular exports, A1 mini and CORE One fit coupons, four AMS painted coupons, and full separate/painted Post Canyon exports. Desktop and phone download-dialog screenshots verify the shared controls. `web/scripts/verify-orca-exports.py` uses the real OrcaSlicer 2.4.2 Linux CLI with isolated data directories, no arrangement, and native project saving. Native 0.4 mm checks on all 14 exported fixtures preserve printer/startup configuration, palette/tool assignments, mesh triangle counts, painting, adaptive layer profiles, world bounds (2 µm tolerance), plate ownership and sequence. Actual G-code object labels verify sequential execution and detect omitted objects; filament consumption and coupon extrusion positions/heights verify all three painted materials, including P1/X1 nozzle offsets. Post Canyon retains all 46 separate objects across seven plates with zero skips, and the full painted assembly also slices successfully with its reserved tower. Reports retain input SHA-256 hashes and per-plate results. These are native import/toolpath checks; no physical prints were performed.
 
-Browser reloads (including hard reloads) explicitly check the service-worker registration for an update and request activation once it is installed. They use the same all-window durable-save handshake as the update button, including uncontrolled hard-reload clients. Background update discovery remains non-disruptive. A blocked reload update remains available for an explicit retry rather than looping. Update-button requests remain pending if the browser replaces a waiting worker during installation; late installation events preserve postponement reasons.
+Browser reloads (including hard reloads) explicitly check the service-worker registration for updates. Compatible releases activate independently of other windows; each window saves and reloads only when idle. Fresh network HTML waits for its matching controller without reverting to older cached HTML. Focused editors, dialogs, and running work defer only their own window, with automatic retries. Incompatible project-storage releases wait for old windows to close.
 
 Insert planning computes the lowest surface and flat base independently for each connected footprint within a segmentation cell. Disconnected pieces of one feature class no longer share the cell-wide minimum elevation. Matching pocket floors use that same local base with the existing substrate clearance and structural-floor limits; deliberately level zones keep their shared top elevation.
 
