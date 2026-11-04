@@ -112,7 +112,8 @@ GitHub Pages subpath hosting for installation, offline generation/export,
 independent window updates, project/view restoration, frozen/legacy windows,
 retained obsolete lazy modules, cache reuse/collection, storage failures,
 interrupted downloads/reconnects, rapid releases, and normal/hard refresh. Refresh
-tests wait for both windows' matching controllers before disconnecting the network;
+tests refresh the foreground window and wait for both windows' matching controllers
+before disconnecting the network, tolerating navigation during controller polling;
 a gated worker download exercises fresh HTML arriving before worker installation.
 Focused worker tests cover collection during claim, dual release leases, installed
 page recognition, and offline navigation through a retired worker.

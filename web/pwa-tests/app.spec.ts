@@ -53,38 +53,101 @@ async function expectRelease(page: Page, version: number) {
   await expect(page.locator('meta[name="test-release"]')).toHaveAttribute(
     'content',
     String(version),
+    { timeout: 15000 },
   );
   await page.waitForFunction(() => Boolean((window as any).contourDiagnostics));
   await expect(page.locator('#pwa-update-banner')).toBeHidden();
   await expect(page.locator('#pwa-update-progress')).toHaveCount(0);
 }
 
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  const snapshot = await page
+    .evaluate(async () => {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const releaseOf = (worker: ServiceWorker | null | undefined) =>
+        new Promise(resolve => {
+          if (!worker) {
+            resolve(null);
+            return;
+          }
+          const channel = new MessageChannel();
+          const timer = setTimeout(() => {
+            channel.port1.close();
+            resolve('no response');
+          }, 1000);
+          channel.port1.onmessage = event => {
+            clearTimeout(timer);
+            channel.port1.close();
+            resolve(event.data);
+          };
+          worker.postMessage(
+            {
+              type: 'GET_RELEASE',
+              pageVersion: document.querySelector<HTMLMetaElement>('meta[name="workbench-release"]')
+                ?.content,
+            },
+            [channel.port2],
+          );
+        });
+      const entries = await Promise.all(
+        (await caches.keys()).map(async name => ({
+          name,
+          values: await Promise.all(
+            (await (await caches.open(name)).keys())
+              .filter(request => request.url.includes('__pwa_'))
+              .map(async request => {
+                const value = await (await (await caches.open(name)).match(request))!.json();
+                if (Array.isArray(value.files)) value.files = value.files.length;
+                return { url: request.url, value };
+              }),
+          ),
+        })),
+      );
+      return {
+        url: location.href,
+        visible: document.visibilityState,
+        focus: document.activeElement?.id,
+        online: navigator.onLine,
+        controller: await releaseOf(navigator.serviceWorker.controller),
+        active: await releaseOf(reg?.active),
+        installing: reg?.installing?.state,
+        waiting: reg?.waiting?.state,
+        entries,
+      };
+    })
+    .catch(error => ({ unavailable: String(error) }));
+  console.log('PWA failure state', JSON.stringify(snapshot));
+});
+
 async function expectController(page: Page, version: number) {
   await expect
     .poll(
       () =>
-        page.evaluate(
-          () =>
-            new Promise<string>(resolve => {
-              if (!navigator.serviceWorker.controller) {
-                resolve('uncontrolled');
-                return;
-              }
-              const channel = new MessageChannel();
-              const timer = setTimeout(() => {
-                channel.port1.close();
-                resolve('no response');
-              }, 2500);
-              channel.port1.onmessage = event => {
-                clearTimeout(timer);
-                channel.port1.close();
-                resolve(event.data.version);
-              };
-              navigator.serviceWorker.controller.postMessage({ type: 'GET_RELEASE' }, [
-                channel.port2,
-              ]);
-            }),
-        ),
+        page
+          .evaluate(
+            () =>
+              new Promise<string>(resolve => {
+                if (!navigator.serviceWorker.controller) {
+                  resolve('uncontrolled');
+                  return;
+                }
+                const channel = new MessageChannel();
+                const timer = setTimeout(() => {
+                  channel.port1.close();
+                  resolve('no response');
+                }, 2500);
+                channel.port1.onmessage = event => {
+                  clearTimeout(timer);
+                  channel.port1.close();
+                  resolve(event.data.version);
+                };
+                navigator.serviceWorker.controller.postMessage({ type: 'GET_RELEASE' }, [
+                  channel.port2,
+                ]);
+              }),
+          )
+          .catch(() => 'navigating'),
       { timeout: 15000 },
     )
     .toBe(`test-${version}`);
@@ -524,6 +587,7 @@ for (const hard of [false, true]) {
     await importProject(second, 'Keep editing');
     await second.locator('#base-height').fill('3.7');
     await request.post('http://127.0.0.1:5182/__test/release?version=2');
+    await page.bringToFront();
     if (hard) {
       const session = await context.newCDPSession(page);
       await session.send('Page.reload', { ignoreCache: true });
@@ -533,6 +597,7 @@ for (const hard of [false, true]) {
     await expectController(second, 2);
     await expect(second.locator('meta[name="test-release"]')).toHaveAttribute('content', '1');
     await expect(second.locator('#base-height')).toHaveValue('3.7');
+    await second.bringToFront();
     await second.locator('#base-height').blur();
     await expectRelease(second, 2);
     await second.waitForFunction(
@@ -541,6 +606,7 @@ for (const hard of [false, true]) {
         !(window as any).contourDiagnostics?.landingOpen,
     );
     await expect(second.locator('#base-height')).toHaveValue('3.7');
+    await page.bringToFront();
     await context.setOffline(true);
     await page.reload();
     await expectRelease(page, 2);
