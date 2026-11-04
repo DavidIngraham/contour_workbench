@@ -95,6 +95,7 @@ import {
 } from './project-store';
 import {
   defaultMaterialGroups,
+  annotationMaterialGroup,
   defaults,
   defaultClassPriority,
   normalizeClassPriority,
@@ -149,15 +150,16 @@ const esc = (s: unknown) =>
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!,
   );
 $('app').innerHTML = renderAppShell(icon);
+const materialControlGroups = [...defaultMaterialGroups, annotationMaterialGroup];
 const legacyFeatureMaterialRow = $('feature-color').closest<HTMLElement>('.input-row');
 if (legacyFeatureMaterialRow)
   legacyFeatureMaterialRow.outerHTML =
     '<div class="material-list"><div class="material-list-heading"><span>Feature class</span><span>Color</span><span>Slot</span></div>' +
-    defaultMaterialGroups
+    materialControlGroups
       .slice(1)
       .map(
         group =>
-          `<div class="material-row"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} filament slot"/></div>`,
+          `<div class="material-row${group.id === 'annotations' ? ' hidden' : ''}" data-material-row="${group.id}"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} filament slot"/></div>`,
       )
       .join('') +
     '</div><div id="filament-mapping"><p class="help">One slot represents one physical filament. Multicolor previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
@@ -250,7 +252,10 @@ const newProjectBounds: Bounds = [-121.668, 45.681, -121.655, 45.69];
 const annotationEditor = new AnnotationEditor(
   viewer,
   () => ({ project, terrain }),
-  () => touch(),
+  () => {
+    touch();
+    syncFilaments();
+  },
   () => setPanel('annotations'),
 );
 const featureBrowser = new FeatureBrowser({
@@ -815,6 +820,14 @@ function filamentSummary() {
     .join('');
 }
 function syncFilaments() {
+  const annotation = projectMaterialGroups(project).find(group => group.id === 'annotations');
+  document
+    .querySelector('[data-material-row="annotations"]')!
+    .classList.toggle('hidden', !annotation);
+  if (annotation) {
+    $<HTMLInputElement>('material-annotations-color').value = annotation.color;
+    $<HTMLInputElement>('material-annotations-extruder').value = String(annotation.extruder);
+  }
   const together = project.settings.manufacturing_mode === 'multicolor';
   $('filament-mapping').classList.toggle('hidden', !together);
   if (!together) return;
@@ -1798,11 +1811,12 @@ $('normalize-filaments').onclick = () => {
   touch();
   syncForm();
   viewer.applyMaterials(project);
+  annotationEditor.refresh(mode === 'review');
 };
 for (const id of [
   'terrain-color',
   'terrain-extruder',
-  ...defaultMaterialGroups
+  ...materialControlGroups
     .slice(1)
     .flatMap(group => [`material-${group.id}-color`, `material-${group.id}-extruder`]),
 ])
@@ -1815,11 +1829,13 @@ for (const id of [
         color: ($('terrain-color') as HTMLInputElement).value,
         extruder: Number(($('terrain-extruder') as HTMLInputElement).value),
       },
-      ...defaultMaterialGroups.slice(1).map(group => ({
-        ...group,
-        color: ($(`material-${group.id}-color`) as HTMLInputElement).value,
-        extruder: Number(($(`material-${group.id}-extruder`) as HTMLInputElement).value),
-      })),
+      ...projectMaterialGroups(project)
+        .slice(1)
+        .map(group => ({
+          ...group,
+          color: ($(`material-${group.id}-color`) as HTMLInputElement).value,
+          extruder: Number(($(`material-${group.id}-extruder`) as HTMLInputElement).value),
+        })),
     ];
     try {
       filamentPlan(project);
@@ -1839,6 +1855,7 @@ for (const id of [
     touch();
     syncForm();
     viewer.applyMaterials(project);
+    annotationEditor.refresh(mode === 'review');
   };
 for (const [id, k] of [['quality', 'terrain_max_error_mm']] as const)
   $(id).onchange = () => {

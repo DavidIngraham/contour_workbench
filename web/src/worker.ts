@@ -1,6 +1,12 @@
 /** Geometry worker: owns the Rust terrain session and Manifold solids off the UI thread. */
 /// <reference lib="webworker" />
 import { annotationGeometry, type Annotation } from './annotations';
+import {
+  buildAnnotationInsert,
+  assertAnnotationClearance,
+  flatAnnotationSolid,
+  assertFaceAnnotationBacking,
+} from './annotation-inserts';
 import { calibrationSwitchbackCenterlineMm } from './calibration-path';
 import calibrationTerrain from './calibration-terrain.json';
 import { fitProfile, insetAtHeight } from './insert-fit';
@@ -565,6 +571,8 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       let resultDeleted = false;
       let raisedTerrain: Manifold | undefined;
       let raisedTerrainOffset: number | undefined;
+      const annotationInserts: Piece[] = [];
+      const annotationPockets: { name: string; solid: Manifold }[] = [];
       try {
         try {
           for (;;) {
@@ -619,8 +627,12 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
 
         if (p.annotations?.length) {
           progress('Adding labels and raised details…');
-          for (const a of p.annotations as Annotation[]) {
+          // Integrated artwork is applied first; separate artwork is pocketed last.
+          for (const a of [...(p.annotations as Annotation[])].sort(
+            (a, b) => Number(Boolean(a.as_insert)) - Number(Boolean(b.as_insert)),
+          )) {
             if (!a.enabled) continue;
+            await checkpoint(request.id);
             const data = annotationGeometry(a, grid, settings, terrain.layout);
             if (data.porch) {
               await checkpoint(request.id);
@@ -630,13 +642,46 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
               result.delete();
               result = next;
             }
+            if (a.as_insert) {
+              const insert = await buildAnnotationInsert(
+                M,
+                a,
+                data,
+                settings,
+                result,
+                () => checkpoint(request.id),
+                (solid, depthMm) => safeTaperedSolid(M, solid, 'annotations', settings, depthMm),
+              );
+              try {
+                for (const previous of annotationPockets)
+                  assertAnnotationClearance(insert.pocket, previous.solid, a.name);
+              } catch (error) {
+                insert.terrain.delete();
+                insert.pocket.delete();
+                throw error;
+              }
+              result.delete();
+              result = insert.terrain;
+              annotationInserts.push(...insert.pieces);
+              annotationPockets.push({ name: a.name, solid: insert.pocket });
+              continue;
+            }
             const parts = data.solids.map(mesh => solidFromMesh(M, mesh));
             try {
-              const label = M.Manifold.union(parts),
-                next = a.treatment === 'raised' ? result.add(label) : result.subtract(label);
-              label.delete();
-              result.delete();
-              result = next;
+              let label = M.Manifold.union(parts);
+              try {
+                assertFaceAnnotationBacking(a, data, label, result);
+                if (a.placement === 'terrain' && a.drape === false) {
+                  const flat = flatAnnotationSolid(a, data, label, result);
+                  label.delete();
+                  label = flat;
+                }
+                const next = a.treatment === 'raised' ? result.add(label) : result.subtract(label);
+                result.delete();
+                result = next;
+              } finally {
+                label.delete();
+              }
             } finally {
               parts.forEach(m => m.delete());
             }
@@ -713,6 +758,15 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
                   prism.delete();
                   prism = local;
                 }
+                if (annotationPockets.length) {
+                  const global = prism.translate(piece.origin);
+                  try {
+                    for (const pocket of annotationPockets)
+                      assertAnnotationClearance(global, pocket.solid, pocket.name);
+                  } finally {
+                    global.delete();
+                  }
+                }
                 tapered =
                   settings.manufacturing_mode === 'separate' &&
                   shouldTaperInsert(piece.mesh.indices.length)
@@ -757,6 +811,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
         }
         if (preparedPieces !== plan.inserts.length)
           throw new Error('Model insert packet is inconsistent.');
+        plan.inserts.push(...annotationInserts);
         plan.inserts = plan.inserts.filter(piece => piece.mesh.indices.length > 0);
         let faceMaterials: Uint8Array | undefined;
         if (settings.manufacturing_mode === 'multicolor') {
@@ -797,6 +852,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       } finally {
         if (!resultDeleted) result.delete();
         raisedTerrain?.delete();
+        annotationPockets.forEach(pocket => pocket.solid.delete());
         rust?.clear_plan();
       }
     }

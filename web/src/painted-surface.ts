@@ -1,10 +1,11 @@
+import { assembledPieceMesh } from './piece-placement';
 /** Exterior-only material geometry for slicer-painted, print-together models. */
 import type { Manifold, ManifoldToplevel } from 'manifold-3d';
 import { compactManifoldMesh, solidFromMesh, validateMesh } from './manifold-adapter';
 import { featureClasses, type Mesh, type Piece, type Settings, type Feature } from './types';
 
 /** Stable material indices carried per triangle, independent of filament assignment. */
-export const surfaceMaterials = ['terrain', ...featureClasses] as const;
+export const surfaceMaterials = ['terrain', ...featureClasses, 'annotations'] as const;
 
 /** Internal partition depth is a construction detail, never a user-specified material depth. */
 export function paintedBuildInputs(settings: Settings, features: Feature[]) {
@@ -46,7 +47,9 @@ export async function assemblePaintedSurface(
       const positions = Float32Array.from(piece.mesh.positions);
       for (let index = 2; index < positions.length; index += 3)
         if (Math.abs(positions[index]) < 0.00005) positions[index] -= 0.001;
-      const source = original({ positions, indices: piece.mesh.indices });
+      const source = original(
+        assembledPieceMesh({ ...piece, mesh: { positions, indices: piece.mesh.indices } }),
+      );
       const material = surfaceMaterials.indexOf(piece.class as (typeof surfaceMaterials)[number]);
       if (material < 0) {
         source.delete();

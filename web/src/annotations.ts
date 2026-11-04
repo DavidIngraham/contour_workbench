@@ -26,8 +26,17 @@ export interface Annotation {
   pixels_w: number;
   pixels_h: number;
   enabled: boolean;
-  placement: 'terrain' | 'porch';
+  placement: 'terrain' | 'porch' | 'bottom' | 'side';
+  /** Terrain relief is followed unless explicitly disabled. Other faces are always flat. */
+  drape?: boolean;
+  /** Boundary segment and height above the model bottom for side placement. */
+  side_index?: number;
+  z_mm?: number;
   treatment: 'raised' | 'engraved';
+  /** Raised artwork can optionally be printed separately; absent in older projects. */
+  as_insert?: boolean;
+  /** Pocket depth below the lowest surface point; defaults to the project insert depth. */
+  insert_depth_mm?: number;
   x_mm: number;
   y_mm: number;
   width_mm: number;
@@ -36,6 +45,62 @@ export interface Annotation {
   depth_mm: number;
   porch_depth_mm: number;
   porch_align: 'base' | 'edge';
+}
+/** Right-handed face coordinates: artwork XY and outward-facing Z. */
+export interface AnnotationFrame {
+  origin: [number, number, number];
+  u: [number, number, number];
+  v: [number, number, number];
+  n: [number, number, number];
+}
+/** Convert face-local coordinates to assembly coordinates, or the inverse. */
+export function annotationPoint(
+  frame: AnnotationFrame,
+  point: number[],
+  inverse = false,
+): [number, number, number] {
+  if (inverse) {
+    const p = point.map((value, i) => value - frame.origin[i]);
+    return [frame.u, frame.v, frame.n].map(axis =>
+      axis.reduce((sum, value, i) => sum + value * p[i], 0),
+    ) as [number, number, number];
+  }
+  return frame.origin.map(
+    (value, i) => value + frame.u[i] * point[0] + frame.v[i] * point[1] + frame.n[i] * point[2],
+  ) as [number, number, number];
+}
+/** Transform a mesh without changing its winding (face frames have determinant +1). */
+export function annotationMesh(frame: AnnotationFrame, mesh: Mesh, inverse = false): Mesh {
+  const positions: number[] = [];
+  for (let i = 0; i < mesh.positions.length; i += 3)
+    positions.push(...annotationPoint(frame, Array.from(mesh.positions.slice(i, i + 3)), inverse));
+  return { positions, indices: mesh.indices };
+}
+/** Select an outward-facing coordinate system, including arbitrary polygon sides. */
+export function annotationFrame(a: Annotation, s: Settings, l: Layout): AnnotationFrame {
+  if (a.placement === 'bottom')
+    return { origin: [0, 0, 0], u: [1, 0, 0], v: [0, -1, 0], n: [0, 0, -1] };
+  if (a.placement === 'side') {
+    const poly = boundaryXY(s, l);
+    const index = a.side_index ?? 0;
+    if (!Number.isInteger(index) || index < 0 || index >= poly.length)
+      throw new Error('Choose a model side.');
+    const p = poly[index],
+      q = poly[(index + 1) % poly.length];
+    const sign =
+      poly.reduce((sum, p, i) => {
+        const q = poly[(i + 1) % poly.length];
+        return sum + p[0] * q[1] - p[1] * q[0];
+      }, 0) > 0
+        ? 1
+        : -1;
+    const length = Math.hypot(q[0] - p[0], q[1] - p[1]);
+    if (length < 0.001) throw new Error('Choose a longer model side.');
+    const ux = (sign * (q[0] - p[0])) / length,
+      uy = (sign * (q[1] - p[1])) / length;
+    return { origin: [p[0], p[1], 0], u: [ux, uy, 0], v: [0, 0, 1], n: [uy, -ux, 0] };
+  }
+  return { origin: [0, 0, 0], u: [1, 0, 0], v: [0, 1, 0], n: [0, 0, 1] };
 }
 /** Convert longitude/latitude to model XY millimeters. */
 export function xy(l: Layout, p: number[]): [number, number] {
@@ -247,13 +312,18 @@ export function annotationPatches(mask: number[], width: number, height: number)
 }
 /** Build preview solids, boolean solids, and an optional attached porch. */
 export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layout) {
+  const insert = a.as_insert === true;
+  const insertDepthMm = a.insert_depth_mm ?? s.insert_depth_mm;
   if (
+    !['terrain', 'porch', 'bottom', 'side'].includes(a.placement) ||
+    (a.z_mm !== undefined && !Number.isFinite(a.z_mm)) ||
+    (a.drape !== undefined && typeof a.drape !== 'boolean') ||
     ![a.x_mm, a.y_mm, a.width_mm, a.height_mm, a.angle_deg, a.depth_mm, a.porch_depth_mm].every(
       Number.isFinite,
     ) ||
     a.width_mm <= 0 ||
     a.height_mm <= 0 ||
-    a.depth_mm <= 0 ||
+    (insert ? a.depth_mm < 0 : a.depth_mm <= 0) ||
     a.depth_mm > 10 ||
     a.pixels_w < 1 ||
     a.pixels_h < 1 ||
@@ -261,12 +331,27 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
     a.mask.length !== a.pixels_w * a.pixels_h
   )
     throw new Error('Invalid annotation dimensions or image.');
+  if (
+    insert &&
+    (a.treatment !== 'raised' ||
+      !Number.isFinite(insertDepthMm) ||
+      insertDepthMm <= 0 ||
+      insertDepthMm > 10)
+  )
+    throw new Error('Choose a positive annotation insert depth up to 10 mm.');
   const poly = boundaryXY(s, l);
+  const frame = annotationFrame(a, s, l);
+  const face = a.placement === 'bottom' || a.placement === 'side';
+  const localCenter = annotationPoint(frame, [a.x_mm, a.y_mm, a.z_mm ?? l.base_height / 2], true);
   let cx = a.x_mm,
     cy = a.y_mm,
     angle = (a.angle_deg * Math.PI) / 180,
     porch: Mesh | undefined,
     flat = 0;
+  if (face) {
+    cx = localCenter[0];
+    cy = localCenter[1];
+  }
   let depth = Math.max(a.porch_depth_mm, a.height_mm + 6);
   if (a.placement === 'porch') {
     const edge = snapPorch(a, s, l);
@@ -277,7 +362,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
       a.porch_align === 'edge'
         ? Math.max(l.base_height, surfaceZ(g, l, edge.x, edge.y))
         : l.base_height;
-    flat = Math.max(flat, a.depth_mm + 0.4);
+    flat = Math.max(flat, (insert ? insertDepthMm : a.depth_mm) + 0.4);
     const w = a.width_mm + 6;
     const pts = [
       [-w / 2, -depth / 2],
@@ -297,32 +382,37 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
   const c = Math.cos(angle),
     sn = Math.sin(angle),
     point = (x: number, y: number) => [cx + x * c - y * sn, cy + x * sn + y * c];
-  const z = (x: number, y: number) => (porch ? flat : surfaceZ(g, l, x, y));
+  const sampleZ = (x: number, y: number) => (face ? 0 : porch ? flat : surfaceZ(g, l, x, y));
   const solids: Mesh[] = [],
     preview: Mesh[] = [];
+  const cells: number[][][] = [];
   const dx = a.width_mm / a.pixels_w,
     dy = a.height_mm / a.pixels_h;
   for (const patch of annotationPatches(a.mask, a.pixels_w, a.pixels_h)) {
     // Flat porches need one prism per patch. Sample terrain at 1 mm intervals
     // across the width and along each side's displacement to retain relief.
-    const columns = porch
-      ? 1
-      : Math.max(
-          1,
-          Math.ceil(Math.max(patch.right - patch.left, patch.bottomRight - patch.bottomLeft) * dx),
-        );
-    const rows = porch
-      ? 1
-      : Math.max(
-          1,
-          Math.ceil(
-            Math.max(
-              (patch.bottom - patch.top) * dy,
-              Math.abs(patch.bottomLeft - patch.left) * dx,
-              Math.abs(patch.bottomRight - patch.right) * dx,
+    const columns =
+      porch || face
+        ? 1
+        : Math.max(
+            1,
+            Math.ceil(
+              Math.max(patch.right - patch.left, patch.bottomRight - patch.bottomLeft) * dx,
             ),
-          ),
-        );
+          );
+    const rows =
+      porch || face
+        ? 1
+        : Math.max(
+            1,
+            Math.ceil(
+              Math.max(
+                (patch.bottom - patch.top) * dy,
+                Math.abs(patch.bottomLeft - patch.left) * dx,
+                Math.abs(patch.bottomRight - patch.right) * dx,
+              ),
+            ),
+          );
     const corner = (u: number, v: number, ex: number, ey: number) => {
       const left = patch.left + (patch.bottomLeft - patch.left) * v;
       const right = patch.right + (patch.bottomRight - patch.right) * v;
@@ -341,38 +431,112 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
           corner((col + 1) / columns, row / rows, 0.0002, 0.0002),
           corner(col / columns, row / rows, -0.0002, 0.0002),
         ];
-        if (!porch && points.some(p => !inside(p, poly)))
+        if (
+          face &&
+          points.some(p => {
+            const required = insert ? insertDepthMm : a.treatment === 'engraved' ? a.depth_mm : 0;
+            const backing = annotationPoint(frame, [...p, -required - 0.4]);
+            return (
+              !inside(backing, poly) ||
+              backing[2] < 0 ||
+              backing[2] > surfaceZ(g, l, backing[0], backing[1])
+            );
+          })
+        )
+          throw new Error(
+            'The annotation needs at least 0.4 mm of solid backing. Reduce its depth or move it.',
+          );
+        if (
+          a.placement === 'side' &&
+          points.some(p => {
+            const end = poly[((a.side_index ?? 0) + 1) % poly.length];
+            const endLocal = annotationPoint(frame, [...end, 0], true)[0];
+            const world = annotationPoint(frame, [...p, -0.001]);
+            // Check both the selected segment and actual boundary interior; concave
+            // corners must not silently turn a side label into a wraparound label.
+            return (
+              p[0] < Math.min(0, endLocal) + 0.2 ||
+              p[0] > Math.max(0, endLocal) - 0.2 ||
+              !inside(world, poly) ||
+              world[2] < 0.2 ||
+              world[2] > surfaceZ(g, l, world[0], world[1]) - 0.2
+            );
+          })
+        )
+          throw new Error(
+            'Fit the annotation within the selected side. Reduce its height or raise the model base.',
+          );
+        if (
+          a.placement !== 'side' &&
+          !porch &&
+          points.some(p => !inside(face ? annotationPoint(frame, [...p, 0]) : p, poly))
+        )
           throw new Error(
             'Move the annotation fully inside the terrain, or choose an attached porch.',
           );
-        const raised = a.treatment === 'raised';
-        const floor = (x: number, y: number) => Math.max(0.4, z(x, y) - a.depth_mm);
-        solids.push(
-          prism(
-            points,
-            raised ? (x, y) => z(x, y) + a.depth_mm : (x, y) => z(x, y) + 2,
-            raised ? () => 0.3 : floor,
-          ),
-        );
-        preview.push(
-          prism(
-            points,
-            raised ? (x, y) => z(x, y) + a.depth_mm : (x, y) => floor(x, y) + 0.002,
-            raised ? z : (x, y) => floor(x, y) - 0.005,
-          ),
-        );
+        cells.push(points);
       }
     }
+  }
+  // Every disconnected letter shares a flat seating plane. Relief remains on
+  // the top, so the parts can print bottom-down without supports.
+  let lowestSurfaceMm = Infinity,
+    highestSurfaceMm = -Infinity;
+  for (const points of cells)
+    for (const [x, y] of points) {
+      lowestSurfaceMm = Math.min(lowestSurfaceMm, sampleZ(x, y));
+      highestSurfaceMm = Math.max(highestSurfaceMm, sampleZ(x, y));
+    }
+  const z = (x: number, y: number) =>
+    a.drape === false && a.placement === 'terrain'
+      ? a.treatment === 'engraved'
+        ? lowestSurfaceMm
+        : highestSurfaceMm
+      : sampleZ(x, y);
+  const minimumFloor = face ? -Infinity : 0.4;
+  const floorMm = Math.max(minimumFloor, lowestSurfaceMm - insertDepthMm);
+  if (
+    a.placement === 'bottom' &&
+    Math.max(insert ? insertDepthMm : a.treatment === 'engraved' ? a.depth_mm : 0, 0) >
+      l.base_height - 0.4
+  )
+    throw new Error(
+      'Increase the model base height to leave at least 0.4 mm above the bottom annotation.',
+    );
+  if (insert && lowestSurfaceMm - floorMm < 0.2 - 1e-8)
+    throw new Error(
+      'The annotation needs at least 0.2 mm of pocket depth. Increase the base height or move it to higher terrain.',
+    );
+  for (const points of cells) {
+    const raised = a.treatment === 'raised';
+    const floor = (x: number, y: number) => Math.max(minimumFloor, z(x, y) - a.depth_mm);
+    solids.push(
+      prism(
+        points,
+        raised ? (x, y) => z(x, y) + a.depth_mm : (x, y) => z(x, y) + 2,
+        insert ? () => floorMm : raised ? () => (face ? -0.3 : 0.3) : floor,
+      ),
+    );
+    preview.push(
+      prism(
+        points,
+        raised ? (x, y) => z(x, y) + a.depth_mm : (x, y) => floor(x, y) + 0.002,
+        insert ? () => floorMm : raised ? z : (x, y) => floor(x, y) - 0.005,
+      ),
+    );
   }
   if (!solids.length)
     throw new Error('The annotation is empty. Adjust its text, threshold, or selected colors.');
   return {
-    solids,
-    preview,
+    solids: face ? solids.map(mesh => annotationMesh(frame, mesh)) : solids,
+    preview: face ? preview.map(mesh => annotationMesh(frame, mesh)) : preview,
+    frame,
     porch,
-    center: [cx, cy, z(cx, cy)] as [number, number, number],
+    center: annotationPoint(frame, [cx, cy, z(cx, cy)]),
     angle,
     depth,
+    floorMm,
+    insertDepthMm: lowestSurfaceMm - floorMm,
   };
 }
 /** Concatenate meshes while rebasing triangle indices. */

@@ -1,3 +1,4 @@
+import { assembledPieceMesh } from './piece-placement';
 /** Portable, Bambu, Orca, and Prusa 3MF package generation. All model coordinates are millimeters. */
 import { strToU8, zipSync } from 'fflate';
 import { featureSourceAttribution } from './feature-sources';
@@ -130,7 +131,7 @@ function meshXml(
   return `<mesh><vertices>${vertices}</vertices><triangles>${triangles}</triangles></mesh>`;
 }
 
-function records(asset: Asset): ObjectRecord[] {
+function records(asset: Asset, assembled: boolean): ObjectRecord[] {
   return [
     {
       id: 1,
@@ -142,7 +143,7 @@ function records(asset: Asset): ObjectRecord[] {
     ...asset.inserts.map((piece, index) => ({
       id: index + 2,
       name: piece.id,
-      mesh: piece.mesh,
+      mesh: assembled ? assembledPieceMesh(piece) : piece.mesh,
       kind: 'insert' as const,
       piece,
     })),
@@ -862,7 +863,10 @@ export function buildThreeMf(
         (project.settings.manufacturing_mode === 'multicolor' ? 'mmu3' : 'manual'),
     };
   if (asset.faceMaterials) project = { ...project, materials: filamentPlan(project).groups };
-  let objects = records(asset);
+  let objects = records(
+    asset,
+    project.settings.manufacturing_mode === 'multicolor' || kind === 'shapeways',
+  );
   if (
     (kind === 'bambu' || kind === 'orca' || kind === 'prusa') &&
     !asset.faceMaterials &&
@@ -1031,6 +1035,7 @@ export function buildThreeMf(
             name: piece.id,
             class: piece.class,
             assembly_origin_mm: piece.origin,
+            assembly_basis: piece.assembly_basis,
             taper_relief_mm: piece.taper_relief_mm,
             taper_height_mm: piece.taper_height_mm,
             draft_angle_deg: piece.draft_angle_deg,

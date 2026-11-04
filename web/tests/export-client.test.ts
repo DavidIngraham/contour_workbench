@@ -4,6 +4,7 @@ import { buildExport } from '../src/export-formats';
 import type { ExportRequest } from '../src/export-contract';
 import { strFromU8, unzipSync } from 'fflate';
 import { defaults, type Asset, type Project } from '../src/types';
+import type { Annotation } from '../src/annotations';
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -44,6 +45,69 @@ describe('disposable export worker', () => {
     vi.stubGlobal('Worker', FakeWorker);
   });
   afterEach(() => vi.unstubAllGlobals());
+
+  it('resolves default annotation color before omitting raster masks from the export payload', async () => {
+    const annotation: Annotation = {
+      id: 'label',
+      name: 'Label',
+      kind: 'text',
+      text: 'X',
+      threshold: 128,
+      invert: false,
+      mask: [1],
+      pixels_w: 1,
+      pixels_h: 1,
+      enabled: true,
+      placement: 'bottom',
+      as_insert: true,
+      treatment: 'raised',
+      x_mm: 0.5,
+      y_mm: 0.5,
+      width_mm: 0.2,
+      height_mm: 0.2,
+      angle_deg: 0,
+      depth_mm: 0.1,
+      porch_depth_mm: 16,
+      porch_align: 'base',
+    };
+    const source: Project = {
+      ...project,
+      annotations: [annotation],
+      settings: { ...defaults, manufacturing_mode: 'multicolor' },
+    };
+    const mesh = {
+      positions: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1],
+      indices: [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3],
+    };
+    const pending = new ExportClient().run(
+      'bambu',
+      { ...asset, terrain: mesh, faceMaterials: new Uint8Array([8, 8, 8, 8]) },
+      source,
+    );
+    const worker = FakeWorker.instances[0],
+      request = worker.message as ExportRequest;
+    expect(request.project).not.toHaveProperty('annotations');
+    expect(request.project.materials?.find(group => group.id === 'annotations')).toMatchObject({
+      color: '#dcc291',
+      extruder: 3,
+    });
+    expect(source.materials).toBeUndefined();
+    const result = buildExport(
+      request.format,
+      request.asset,
+      request.project as Project,
+      request.projectFile,
+    );
+    const files = unzipSync(result.bytes);
+    expect(strFromU8(files['Metadata/project_settings.config'])).toContain('#DCC291');
+    expect(
+      Object.entries(files).some(
+        ([path, data]) => path.endsWith('.model') && strFromU8(data).includes('paint_color="0C"'),
+      ),
+    ).toBe(true);
+    worker.onmessage?.({ data: { result } } as MessageEvent);
+    await pending;
+  });
 
   it('encodes source credits through the compact worker payload without copying features', async () => {
     const sourceProject: Project = {

@@ -1,12 +1,17 @@
 /** DOM editor for creating and placing printable annotations. */
 import * as THREE from 'three';
-import type { Viewer } from './viewer';
+import { perspectiveFitDistance, type Viewer } from './viewer';
 import type { Project, Terrain, Mesh } from './types';
+import { displayMaterials } from './filaments';
 import {
   annotationGeometry,
   combineMeshes,
   annotationFonts,
   annotationFont,
+  annotationFrame,
+  annotationPoint,
+  boundaryXY,
+  type AnnotationFrame,
   type Annotation,
 } from './annotations';
 const esc = (s: string) =>
@@ -27,6 +32,8 @@ export class AnnotationEditor {
     angle: number;
     width: number;
     height: number;
+    z: number;
+    frame: AnnotationFrame;
     center: THREE.Vector3;
     start: THREE.Vector3;
   };
@@ -259,19 +266,116 @@ export class AnnotationEditor {
         this.commit();
       };
     }
-    for (const key of ['placement', 'treatment'] as const) {
-      this.el<HTMLSelectElement>('ann-' + key).value = a[key];
-      this.el<HTMLSelectElement>('ann-' + key).onchange = e => {
-        (a as any)[key] = (e.target as HTMLSelectElement).value;
+    this.el<HTMLSelectElement>('ann-treatment').add(new Option('Insert', 'insert'));
+    const placement = this.el<HTMLSelectElement>('ann-placement');
+    placement.add(new Option('Model bottom', 'bottom'));
+    placement.add(new Option('Model side', 'side'));
+    if (a.placement === 'terrain') {
+      const label = document.createElement('label');
+      label.innerHTML = `<input id="ann-drape" type="checkbox" ${a.drape !== false ? 'checked' : ''}/> Follow terrain (drape)`;
+      placement.parentElement!.after(label);
+      this.el<HTMLInputElement>('ann-drape').onchange = e => {
+        a.drape = (e.target as HTMLInputElement).checked;
         this.form();
         this.commit();
+      };
+      const help = document.createElement('p');
+      help.className = 'help';
+      help.textContent =
+        'Turn off draping for a flat top on raised text and inserts, or a flat engraving floor. Flat raised artwork reaches above the highest terrain under it; flat engraving cuts below the lowest point.';
+      label.after(help);
+    }
+    if (a.placement === 'side') {
+      const label = document.createElement('label');
+      label.textContent = 'Model side';
+      const picker = document.createElement('select');
+      picker.id = 'ann-side';
+      const { project, terrain } = this.state();
+      const poly = boundaryXY(project.settings, terrain.layout);
+      poly.forEach((point, i) => {
+        const next = poly[(i + 1) % poly.length];
+        picker.add(
+          new Option(
+            `Side ${i + 1} (${Math.hypot(next[0] - point[0], next[1] - point[1]).toFixed(1)} mm)`,
+            String(i),
+          ),
+        );
+      });
+      picker.value = String(a.side_index ?? 0);
+      label.append(picker);
+      placement.parentElement!.after(label);
+      picker.onchange = () => {
+        a.side_index = Number(picker.value);
+        this.centerOnSide(a);
+        this.form();
+        this.commit();
+        this.viewFace(a);
+      };
+      const height = document.createElement('label');
+      height.innerHTML = `Height from bottom (mm)<input data-ann-number="z_mm" type="number" step="0.1" min="0" value="${a.z_mm ?? terrain.layout.base_height / 2}"/>`;
+      host.querySelector('.annotation-fields')!.append(height);
+      const help = document.createElement('p');
+      help.className = 'help';
+      help.textContent =
+        'Text reads from outside the model. Keep it between the bottom and terrain edge; increase the base height if more space is needed.';
+      label.after(help);
+    }
+    const view = document.createElement('button');
+    view.className = 'btn full-width';
+    view.id = 'ann-view';
+    view.textContent = 'View annotation face';
+    this.el('ann-place').after(view);
+    view.onclick = () => this.viewFace(a);
+    if (a.as_insert) {
+      const depthInput = host.querySelector<HTMLInputElement>('[data-ann-number="depth_mm"]')!;
+      depthInput.parentElement!.firstChild!.textContent = 'Height above surface (mm)';
+      depthInput.min = '0';
+      const depth = document.createElement('label');
+      depth.innerHTML = `Pocket depth (mm)<input data-ann-number="insert_depth_mm" type="number" min="0.2" max="10" step="0.1" value="${a.insert_depth_mm ?? this.state().project.settings.insert_depth_mm}"/>`;
+      host.querySelector('.annotation-fields')!.append(depth);
+      const help = document.createElement('p');
+      help.className = 'help';
+      help.textContent =
+        'Each disconnected letter or artwork region becomes a separate insert with a flat bottom. Pocket clearance, taper, and annotation color are in Print setup. ' +
+        (a.placement === 'terrain' && a.drape === false
+          ? 'Height 0 levels the top with the highest terrain under the artwork. '
+          : 'Set height to 0 for a flush inlay. ') +
+        'Print-together mode uses the annotation color on the assembled model.';
+      depth.parentElement!.after(help);
+    }
+    for (const key of ['placement', 'treatment'] as const) {
+      this.el<HTMLSelectElement>('ann-' + key).value =
+        key === 'treatment' && a.as_insert ? 'insert' : a[key];
+      this.el<HTMLSelectElement>('ann-' + key).onchange = e => {
+        const value = (e.target as HTMLSelectElement).value;
+        if (key === 'treatment') {
+          a.as_insert = value === 'insert';
+          a.treatment = value === 'engraved' ? 'engraved' : 'raised';
+          if (!a.as_insert && a.depth_mm === 0) a.depth_mm = 0.6;
+        } else {
+          const previous = a.placement;
+          a.placement = value as Annotation['placement'];
+          if (a.placement === 'side') this.centerOnSide(a);
+          else if (previous === 'side') {
+            const { layout } = this.state().terrain;
+            a.x_mm = layout.width / 2;
+            a.y_mm = layout.depth / 2;
+          }
+        }
+        this.form();
+        this.commit();
+        if (key === 'placement') this.viewFace(a);
       };
     }
     host.querySelectorAll<HTMLInputElement>('[data-ann-number]').forEach(el => {
       el.disabled = el.dataset.annNumber === 'angle_deg' && a.placement === 'porch';
       el.oninput = () => {
         const v = Number(el.value);
-        if (Number.isFinite(v) && (el.dataset.annNumber === 'angle_deg' || v > 0)) {
+        if (
+          Number.isFinite(v) &&
+          (el.dataset.annNumber === 'angle_deg' ||
+            (a.as_insert && el.dataset.annNumber === 'depth_mm' ? v >= 0 : v > 0))
+        ) {
           (a as any)[el.dataset.annNumber!] = v;
           this.commit();
         }
@@ -287,7 +391,7 @@ export class AnnotationEditor {
     this.el('ann-place').onclick = () => {
       this.placing = true;
       this.message(
-        'Click the terrain to place the annotation; porches snap to the nearest suitable edge.',
+        'Click the selected model face to place the annotation; platforms snap to the nearest suitable edge.',
       );
     };
     this.el('ann-delete').onclick = () => {
@@ -300,7 +404,10 @@ export class AnnotationEditor {
       const copy = structuredClone(a);
       copy.id = crypto.randomUUID();
       copy.name += ' copy';
-      copy.x_mm += 5;
+      const { project, terrain } = this.state();
+      const frame = annotationFrame(a, project.settings, terrain.layout);
+      copy.x_mm += frame.u[0] * 5;
+      copy.y_mm += frame.u[1] * 5;
       rows.push(copy);
       this.selected = copy.id;
       this.form();
@@ -308,9 +415,60 @@ export class AnnotationEditor {
     };
     this.maskPreview(a);
   }
+  private centerOnSide(a: Annotation) {
+    const { project, terrain } = this.state(),
+      poly = boundaryXY(project.settings, terrain.layout);
+    const index = (a.side_index ?? 0) < poly.length ? (a.side_index ?? 0) : 0,
+      p = poly[index],
+      q = poly[(index + 1) % poly.length];
+    if (!p || !q) return;
+    a.side_index = index;
+    a.x_mm = (p[0] + q[0]) / 2;
+    a.y_mm = (p[1] + q[1]) / 2;
+    a.z_mm ??= terrain.layout.base_height / 2;
+  }
+  private viewFace(a: Annotation) {
+    const { project, terrain } = this.state();
+    let frame: AnnotationFrame;
+    try {
+      frame = annotationFrame(a, project.settings, terrain.layout);
+    } catch (error) {
+      this.message((error as Error).message);
+      return;
+    }
+    let center =
+      a.placement === 'side'
+        ? [a.x_mm, a.y_mm, a.z_mm ?? terrain.layout.base_height / 2]
+        : [a.x_mm, a.y_mm, a.placement === 'bottom' ? 0 : terrain.layout.base_height];
+    try {
+      center = annotationGeometry(a, project.grid, project.settings, terrain.layout).center;
+    } catch {
+      /* Keep the face accessible while dimensions are being corrected. */
+    }
+    const target = this.viewer.model.localToWorld(new THREE.Vector3(...center));
+    const distance = Math.max(
+      35,
+      perspectiveFitDistance(
+        Math.hypot(a.width_mm, a.height_mm) / 2 + 5,
+        this.viewer.camera.aspect,
+        this.viewer.camera.fov,
+      ),
+    );
+    this.viewer.controls.target.copy(target);
+    // A small offset avoids the OrbitControls pole singularity on top/bottom views.
+    this.viewer.camera.position
+      .copy(target)
+      .addScaledVector(new THREE.Vector3(...frame.n), distance)
+      .addScaledVector(
+        new THREE.Vector3(...frame.v),
+        (a.placement === 'bottom' ? 1 : -1) * distance * 0.02,
+      );
+    this.viewer.controls.update();
+    this.viewer.invalidate();
+  }
   private porchMaterial(a: Annotation, center: number[], angle: number) {
     const material = new THREE.MeshStandardMaterial({ color: 0x819981, roughness: 0.9 });
-    if (a.treatment !== 'engraved') return material;
+    if (a.treatment !== 'engraved' && !a.as_insert) return material;
     const canvas = document.createElement('canvas');
     canvas.width = a.pixels_w;
     canvas.height = a.pixels_h;
@@ -374,19 +532,34 @@ export class AnnotationEditor {
     const { project, terrain } = this.state();
     if (!terrain || review) return;
     const cuts: Mesh[] = [];
+    const faceCuts: Parameters<Viewer['annotationFaceCuts']>[0] = [];
     for (const a of project.annotations || []) {
       if (!a.enabled || !a.mask.length) continue;
       try {
         const g = annotationGeometry(a, project.grid, project.settings, terrain.layout);
-        if (a.treatment === 'engraved') cuts.push(...g.preview);
+        if (a.treatment === 'engraved') {
+          if (a.placement === 'bottom' || a.placement === 'side')
+            faceCuts.push({ annotation: a, frame: g.frame, center: g.center, angle: g.angle });
+          else if (a.placement === 'terrain') cuts.push(...g.preview);
+        }
         const mesh = new THREE.Mesh(
           this.viewer.geometry(combineMeshes(g.preview)),
           new THREE.MeshStandardMaterial({
-            color: a.treatment === 'raised' ? 0xdcc291 : 0x233c30,
+            color: a.as_insert
+              ? displayMaterials(project).find(group => group.id === 'annotations')!.color
+              : a.treatment === 'raised'
+                ? 0xdcc291
+                : 0x233c30,
             roughness: 0.85,
+            flatShading: Boolean(a.as_insert),
+            polygonOffset: Boolean(a.as_insert),
+            polygonOffsetFactor: 0,
+            polygonOffsetUnits: -2,
           }),
         );
         mesh.userData.annotation = a.id;
+        // Flush inlays need render-only separation; exported surfaces stay exact.
+        if (a.as_insert) mesh.position.fromArray(g.frame.n).multiplyScalar(0.005);
         this.group.add(mesh);
         if (g.porch) {
           const porch = new THREE.Mesh(
@@ -398,6 +571,12 @@ export class AnnotationEditor {
         }
         if (a.id === this.selected) {
           const center = new THREE.Vector3(...g.center);
+          const local = (x: number, y: number) =>
+            center
+              .clone()
+              .addScaledVector(new THREE.Vector3(...g.frame.u), x)
+              .addScaledVector(new THREE.Vector3(...g.frame.v), y)
+              .addScaledVector(new THREE.Vector3(...g.frame.n), a.depth_mm + 0.2);
           const c = Math.cos(g.angle),
             s = Math.sin(g.angle);
           const points = [
@@ -406,14 +585,7 @@ export class AnnotationEditor {
             [a.width_mm / 2, a.height_mm / 2],
             [-a.width_mm / 2, a.height_mm / 2],
             [-a.width_mm / 2, -a.height_mm / 2],
-          ].map(
-            ([x, y]) =>
-              new THREE.Vector3(
-                center.x + x * c - y * s,
-                center.y + x * s + y * c,
-                center.z + a.depth_mm + 0.2,
-              ),
-          );
+          ].map(([x, y]) => local(x * c - y * s, x * s + y * c));
           const line = new THREE.Line(
             new THREE.BufferGeometry().setFromPoints(points),
             new THREE.LineBasicMaterial({ color: 0xff9b43, depthTest: false }),
@@ -431,11 +603,7 @@ export class AnnotationEditor {
             handle.position.copy(
               kind === 'resize'
                 ? points[2]
-                : new THREE.Vector3(
-                    center.x - s * (a.height_mm / 2 + 6),
-                    center.y + c * (a.height_mm / 2 + 6),
-                    center.z + a.depth_mm + 0.2,
-                  ),
+                : local(-s * (a.height_mm / 2 + 6), c * (a.height_mm / 2 + 6)),
             );
             handle.userData = { annotation: a.id, handle: kind, center };
             handle.renderOrder = 101;
@@ -447,6 +615,7 @@ export class AnnotationEditor {
       }
     }
     this.viewer.annotationCuts(cuts);
+    this.viewer.annotationFaceCuts(faceCuts);
     this.message(this.warning);
     this.viewer.invalidate();
   }
@@ -465,13 +634,16 @@ export class AnnotationEditor {
       this.viewer.camera,
     );
   }
-  private plane(z: number) {
+  private plane(center: THREE.Vector3, frame: AnnotationFrame) {
     const p = new THREE.Vector3();
-    this.ray.ray.intersectPlane(
-      new THREE.Plane(new THREE.Vector3(0, 0, 1), -(z + this.viewer.model.position.z)),
+    const hit = this.ray.ray.intersectPlane(
+      new THREE.Plane().setFromNormalAndCoplanarPoint(
+        new THREE.Vector3(...frame.n),
+        this.viewer.model.localToWorld(center.clone()),
+      ),
       p,
     );
-    return this.viewer.model.worldToLocal(p);
+    return hit ? this.viewer.model.worldToLocal(p) : undefined;
   }
   private down(e: PointerEvent) {
     if (!this.group.visible || e.button !== 0) return;
@@ -481,8 +653,10 @@ export class AnnotationEditor {
       const hit = this.ray.intersectObjects(this.viewer.land.children, true)[0];
       if (hit && this.current()) {
         const p = this.viewer.model.worldToLocal(hit.point);
-        this.current()!.x_mm = p.x;
-        this.current()!.y_mm = p.y;
+        const a = this.current()!;
+        a.x_mm = p.x;
+        a.y_mm = p.y;
+        if (a.placement === 'side') a.z_mm = p.z;
         this.placing = false;
         this.commit();
       }
@@ -496,6 +670,8 @@ export class AnnotationEditor {
     this.consumedClick = true;
     this.selected = hit.object.userData.annotation;
     const a = this.current()!;
+    const { project, terrain } = this.state();
+    const frame = annotationFrame(a, project.settings, terrain.layout);
     const center =
       (hit.object.userData.center as THREE.Vector3 | undefined) ||
       this.viewer.model.worldToLocal(hit.point.clone());
@@ -506,8 +682,10 @@ export class AnnotationEditor {
       angle: a.angle_deg,
       width: a.width_mm,
       height: a.height_mm,
+      z: a.z_mm ?? terrain.layout.base_height / 2,
+      frame,
       center,
-      start: this.plane(center.z),
+      start: this.plane(center, frame) ?? center.clone(),
     };
     this.viewer.controls.enabled = false;
     this.viewer.renderer.domElement.setPointerCapture(e.pointerId);
@@ -521,15 +699,20 @@ export class AnnotationEditor {
     this.cast(e);
     const a = this.current()!,
       d = this.drag,
-      p = this.plane(d.center.z);
+      p = this.plane(d.center, d.frame);
+    if (!p) return;
     if (d.kind === 'move') {
       a.x_mm = d.x + p.x - d.start.x;
       a.y_mm = d.y + p.y - d.start.y;
+      if (a.placement === 'side') a.z_mm = d.z + p.z - d.start.z;
     } else if (d.kind === 'rotate') {
+      const point = annotationPoint(d.frame, p.toArray(), true),
+        center = annotationPoint(d.frame, d.center.toArray(), true),
+        start = annotationPoint(d.frame, d.start.toArray(), true);
       a.angle_deg =
         d.angle +
-        ((Math.atan2(p.y - d.center.y, p.x - d.center.x) -
-          Math.atan2(d.start.y - d.center.y, d.start.x - d.center.x)) *
+        ((Math.atan2(point[1] - center[1], point[0] - center[0]) -
+          Math.atan2(start[1] - center[1], start[0] - center[0])) *
           180) /
           Math.PI;
     } else {

@@ -1,5 +1,6 @@
 {
   "browserFields": {
+    "Piece": ["assembly_basis", "taper_relief_mm", "taper_height_mm", "draft_angle_deg"],
     "Annotation": [
       "id",
       "name",
@@ -14,7 +15,12 @@
       "pixels_h",
       "enabled",
       "placement",
+      "drape",
+      "side_index",
+      "z_mm",
       "treatment",
+      "as_insert",
+      "insert_depth_mm",
       "x_mm",
       "y_mm",
       "width_mm",
@@ -26,13 +32,7 @@
     ]
   },
   "fields": {
-    "Asset": [
-      "terrain",
-      "faceMaterials",
-      "inserts",
-      "validation",
-      "revision"
-    ],
+    "Asset": ["terrain", "faceMaterials", "inserts", "validation", "revision"],
     "Settings": [
       "class_priority",
       "manufacturing_mode",
@@ -60,16 +60,8 @@
       "terrain_max_error_mm",
       "boundary"
     ],
-    "Grid": [
-      "bounds",
-      "width",
-      "height",
-      "elevations"
-    ],
-    "AreaPolygon": [
-      "outer",
-      "holes"
-    ],
+    "Grid": ["bounds", "width", "height", "elevations"],
+    "AreaPolygon": ["outer", "holes"],
     "Feature": [
       "id",
       "name",
@@ -93,53 +85,15 @@
       "height_factor",
       "base_height"
     ],
-    "Mesh": [
-      "positions",
-      "indices"
-    ],
-    "Terrain": [
-      "mesh",
-      "layout",
-      "source_samples",
-      "retained_samples"
-    ],
-    "Overlay": [
-      "treatment",
-      "id",
-      "class",
-      "surface_offset_mm",
-      "mesh"
-    ],
-    "Piece": [
-      "id",
-      "class",
-      "mesh",
-      "origin",
-      "insert_depth_mm",
-      "surface_offset_mm",
-      "conformal"
-    ],
-    "Plan": [
-      "terrain",
-      "inserts",
-      "cutters",
-      "cutter_group_ends",
-      "removed_terrain_islands"
-    ]
+    "Mesh": ["positions", "indices"],
+    "Terrain": ["mesh", "layout", "source_samples", "retained_samples"],
+    "Overlay": ["treatment", "id", "class", "surface_offset_mm", "mesh"],
+    "Piece": ["id", "class", "mesh", "origin", "insert_depth_mm", "surface_offset_mm", "conformal"],
+    "Plan": ["terrain", "inserts", "cutters", "cutter_group_ends", "removed_terrain_islands"]
   },
   "enums": {
-    "ManufacturingMode": [
-      "separate",
-      "multicolor"
-    ],
-    "Treatment": [
-      "insert",
-      "hide",
-      "v_carve"
-    ],
-    "ZoneSurface": [
-      "terrain",
-      "level"
-    ]
+    "ManufacturingMode": ["separate", "multicolor"],
+    "Treatment": ["insert", "hide", "v_carve"],
+    "ZoneSurface": ["terrain", "level"]
   }
 }

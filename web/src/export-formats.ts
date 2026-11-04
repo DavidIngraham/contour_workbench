@@ -1,14 +1,10 @@
+import { assembledPieceMesh } from './piece-placement';
 /** Target-specific archive encoders used only by the disposable export worker. */
 import { strToU8, zipSync, zlibSync } from 'fflate';
 import { featureSourceAttribution } from './feature-sources';
 import { buildThreeMf, type ThreeMfOptions, type ThreeMfKind } from './three-mf';
-import {
-  featureClasses,
-  projectMaterialGroups,
-  type Asset,
-  type Mesh,
-  type Project,
-} from './types';
+import { projectMaterialGroups, type Asset, type Mesh, type Project } from './types';
+import { surfaceMaterials } from './painted-surface';
 
 export type ExportFormat =
   | 'marketiger'
@@ -149,7 +145,7 @@ function shapewaysColor(asset: Asset, project: Project) {
     },
     ...asset.inserts.map(piece => ({
       name: piece.id,
-      mesh: piece.mesh,
+      mesh: assembledPieceMesh(piece),
       origin: piece.origin,
       ...materialEntry(piece.class),
     })),
@@ -228,7 +224,7 @@ function shapewaysColor(asset: Asset, project: Project) {
 function assembledMeshes(asset: Asset) {
   return [
     { mesh: asset.terrain, origin: [0, 0, 0] as [number, number, number] },
-    ...asset.inserts.map(piece => ({ mesh: piece.mesh, origin: piece.origin })),
+    ...asset.inserts.map(piece => ({ mesh: assembledPieceMesh(piece), origin: piece.origin })),
   ];
 }
 
@@ -256,7 +252,10 @@ export function buildExport(
     for (const piece of asset.inserts)
       files['inserts/' + safeName(piece.id) + '.stl'] = stl([
         {
-          mesh: piece.mesh,
+          mesh:
+            project.settings.manufacturing_mode === 'multicolor'
+              ? assembledPieceMesh(piece)
+              : piece.mesh,
           origin: project.settings.manufacturing_mode === 'multicolor' ? piece.origin : [0, 0, 0],
         },
       ]);
@@ -271,6 +270,7 @@ export function buildExport(
             file: safeName(piece.id) + '.stl',
             class: piece.class,
             assembly_origin_mm: piece.origin,
+            assembly_basis: piece.assembly_basis,
           })),
         },
         null,
@@ -351,7 +351,9 @@ function marketigerColor(asset: Asset, project: Project, stem: string): ExportRe
       throw new Error('Invalid model triangle.');
   validateWatertight(mesh, 'Print model');
   const groups = projectMaterialGroups(project);
-  const colors = ['terrain', ...featureClasses].map(id => groups.find(g => g.id === id)!.color);
+  const colors = surfaceMaterials
+    .filter(id => id !== 'annotations' || groups.some(group => group.id === id))
+    .map(id => groups.find(group => group.id === id)!.color);
   if (colors.some(color => !/^#[0-9a-f]{6}$/i.test(color))) throw new Error('Invalid print color.');
   let obj = '# Units: millimeters\nmtllib model.mtl\no terrain\n';
   for (let i = 0; i < mesh.positions.length; i += 3)

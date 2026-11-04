@@ -3,6 +3,8 @@ import {
   annotationGeometry,
   annotationPatches,
   surfaceZ,
+  annotationFrame,
+  annotationPoint,
   type Annotation,
 } from '../src/annotations';
 import { defaults, type Grid, type Layout } from '../src/types';
@@ -39,6 +41,108 @@ const a: Annotation = {
   porch_depth_mm: 16,
   porch_align: 'base',
 };
+it('keeps old terrain annotations draped and makes flat treatments use a common height', () => {
+  const slope = { ...g, elevations: [100, 110, 102, 115] };
+  const draped = annotationGeometry(a, slope, defaults, l);
+  const explicit = annotationGeometry({ ...a, drape: true }, slope, defaults, l);
+  expect(draped.solids).toEqual(explicit.solids);
+  const tops = (result: ReturnType<typeof annotationGeometry>) =>
+    result.solids.flatMap(mesh => [2, 5, 8, 11].map(i => Number(mesh.positions[i])));
+  expect(new Set(tops(draped)).size).toBeGreaterThan(1);
+  const flat = annotationGeometry({ ...a, drape: false }, slope, defaults, l);
+  expect(new Set(tops(flat)).size).toBe(1);
+  const engraved = annotationGeometry(
+    { ...a, treatment: 'engraved', drape: false },
+    slope,
+    defaults,
+    l,
+  );
+  expect(
+    new Set(engraved.solids.flatMap(mesh => [14, 17, 20, 23].map(i => Number(mesh.positions[i]))))
+      .size,
+  ).toBe(1);
+});
+it('orients readable bottom text and outward side text with right-handed frames', () => {
+  for (const placement of ['bottom', 'side'] as const) {
+    for (const side_index of [0, 1, 2, 3]) {
+      const label = { ...a, placement, side_index };
+      const frame = annotationFrame(label, defaults, l);
+      const point = [12, 3, -0.6];
+      annotationPoint(frame, annotationPoint(frame, point), true).forEach((value, i) =>
+        expect(value).toBeCloseTo(point[i]),
+      );
+      const cross = [
+        frame.u[1] * frame.v[2] - frame.u[2] * frame.v[1],
+        frame.u[2] * frame.v[0] - frame.u[0] * frame.v[2],
+        frame.u[0] * frame.v[1] - frame.u[1] * frame.v[0],
+      ];
+      cross.forEach((value, i) => expect(value).toBeCloseTo(frame.n[i]));
+    }
+  }
+  const frame = annotationFrame({ ...a, placement: 'bottom' }, defaults, l);
+  expect(frame.v).toEqual([0, -1, 0]);
+  const bottom = annotationGeometry({ ...a, placement: 'bottom' }, g, defaults, l);
+  expect(bottom.center).toEqual([50, 50, 0]);
+  expect(
+    Math.min(
+      ...bottom.solids.flatMap(mesh => Array.from(mesh.positions).filter((_, i) => i % 3 === 2)),
+    ),
+  ).toBeCloseTo(-0.6);
+});
+it('fits side artwork within the selected wall and retains backing material', () => {
+  const label: Annotation = {
+    ...a,
+    placement: 'side',
+    side_index: 0,
+    y_mm: 0,
+    z_mm: 5,
+    height_mm: 4,
+  };
+  const tall = { ...l, base_height: 10 };
+  const side = annotationGeometry(label, g, defaults, tall);
+  expect(side.center).toEqual([50, 0, 5]);
+  expect(() => annotationGeometry({ ...label, height_mm: 12 }, g, defaults, tall)).toThrow(
+    'backing',
+  );
+  expect(() => annotationGeometry({ ...label, x_mm: 99 }, g, defaults, tall)).toThrow();
+  expect(() =>
+    annotationGeometry(
+      { ...a, placement: 'bottom', treatment: 'engraved', depth_mm: 2 },
+      g,
+      defaults,
+      l,
+    ),
+  ).toThrow('backing');
+});
+it('uses the same physical side for either polygon winding and rotated model layouts', () => {
+  const boundary: [number, number][] = [
+    [0.1, 0.1],
+    [0.9, 0.3],
+    [0.8, 0.9],
+    [0.2, 0.8],
+  ];
+  for (const rotated of [false, true]) {
+    const layout = { ...l, rotated, base_height: 10 };
+    for (const clockwise of [false, true]) {
+      const polygon = clockwise ? [...boundary].reverse() : boundary;
+      const label: Annotation = {
+        ...a,
+        placement: 'side',
+        side_index: 0,
+        z_mm: 5,
+        width_mm: 8,
+        height_mm: 4,
+      };
+      const frame = annotationFrame(label, { ...defaults, boundary: polygon }, layout);
+      const length = Math.hypot(...[0, 1].map(i => polygon[1][i] - polygon[0][i])) * 100;
+      const center = annotationPoint(frame, [clockwise ? -length / 2 : length / 2, 5, 0]);
+      label.x_mm = center[0];
+      label.y_mm = center[1];
+      const result = annotationGeometry(label, g, { ...defaults, boundary: polygon }, layout);
+      result.center.forEach((value, i) => expect(value).toBeCloseTo(center[i]));
+    }
+  }
+});
 describe('annotation solids', () => {
   it('keeps raised geometry connected and retains relief height', () => {
     const r = annotationGeometry(a, g, defaults, l);

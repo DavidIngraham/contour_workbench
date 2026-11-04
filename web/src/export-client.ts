@@ -3,7 +3,7 @@ import type { ThreeMfOptions } from './three-mf';
 import type { EngineProgress } from './engine-contract';
 import type { ExportFormat, ExportResult } from './export-formats';
 import type { ExportProject, ExportRequest, ExportResponse } from './export-contract';
-import type { Asset, Mesh, Project } from './types';
+import { projectMaterialGroups, type Asset, type Mesh, type Project } from './types';
 import { featureSourceAttribution } from './feature-sources';
 
 const canceled = () => new DOMException('Export canceled', 'AbortError');
@@ -65,7 +65,7 @@ export class ExportClient {
           .join('\n'),
       },
       settings: project.settings,
-      materials: project.materials,
+      materials: projectMaterialGroups(project),
     };
     const request: ExportRequest = {
       format,

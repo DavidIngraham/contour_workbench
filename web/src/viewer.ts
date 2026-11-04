@@ -1,3 +1,5 @@
+import { assembledPieceMesh } from './piece-placement';
+import type { Annotation, AnnotationFrame } from './annotations';
 /** Three.js terrain, overlay, map-surface, and generated-asset presentation. */
 import { topoSurface } from './topo';
 import { surfaceMaterials } from './painted-surface';
@@ -162,6 +164,12 @@ export class Viewer {
   private carveCanvas = document.createElement('canvas');
   private carveTexture: THREE.CanvasTexture;
   private carveSize = new THREE.Vector2(1, 1);
+  private faceCutCanvas = document.createElement('canvas');
+  private faceCutMask = { value: new THREE.CanvasTexture(this.faceCutCanvas) };
+  private faceCutData = {
+    value: new THREE.DataTexture(new Float32Array(16), 4, 1, THREE.RGBAFormat, THREE.FloatType),
+  };
+  private faceCutCount = 0;
   private overlays = new Map<string, THREE.Object3D[]>();
   private wire = false;
   private contours = true;
@@ -202,7 +210,7 @@ export class Viewer {
     this.controls.dampingFactor = 0.08;
     this.controls.minDistance = 30;
     this.controls.maxDistance = 1400;
-    this.controls.maxPolarAngle = Math.PI * 0.49;
+    this.controls.maxPolarAngle = Math.PI - 0.01;
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x485146, 2));
     const sun = new THREE.DirectionalLight(0xfff4df, 3.4);
     sun.position.set(-140, -180, 400);
@@ -323,21 +331,39 @@ export class Viewer {
       clippingPlanes: [this.clip],
     });
     m.onBeforeCompile = shader => {
+      shader.uniforms.faceCutMask = this.faceCutMask;
+      shader.uniforms.faceCutData = this.faceCutData;
       shader.uniforms.showContours = { value: this.contours ? 1 : 0 };
       shader.uniforms.carveMask = { value: this.carveTexture };
       shader.uniforms.carveSize = { value: this.carveSize };
-      shader.vertexShader = 'varying vec3 vTerrain; varying float vTop;\n' + shader.vertexShader;
+      shader.vertexShader =
+        'varying vec3 vTerrain; varying vec3 vTerrainNormal; varying float vTop;\n' +
+        shader.vertexShader;
       shader.vertexShader = shader.vertexShader.replace(
         '#include <begin_vertex>',
-        '#include <begin_vertex>\nvTerrain = position;vTop=normal.z;',
+        '#include <begin_vertex>\nvTerrain = position;vTop=normal.z;vTerrainNormal=normal;',
       );
       shader.fragmentShader =
-        'varying vec3 vTerrain; varying float vTop; uniform sampler2D carveMask; uniform vec2 carveSize; uniform float showContours;\n' +
+        'varying vec3 vTerrain; varying vec3 vTerrainNormal; varying float vTop; uniform sampler2D faceCutMask; uniform sampler2D faceCutData; uniform sampler2D carveMask; uniform vec2 carveSize; uniform float showContours;\n' +
         shader.fragmentShader;
       shader.fragmentShader = shader.fragmentShader.replace(
         '#include <color_fragment>',
         `#include <color_fragment>
  if(vTop>0.01 && texture2D(carveMask,vTerrain.xy/carveSize).r>0.5)discard;
+ ${
+   this.faceCutCount
+     ? `for(int i=0;i<${this.faceCutCount};i++) {
+ float row=(float(i)+0.5)/${this.faceCutCount}.0;
+ vec4 center=texture2D(faceCutData,vec2(0.125,row));
+ vec4 u=texture2D(faceCutData,vec2(0.375,row));
+ vec4 v=texture2D(faceCutData,vec2(0.625,row));
+ vec4 tile=texture2D(faceCutData,vec2(0.875,row));
+ vec3 delta=vTerrain-center.xyz; vec3 n=cross(u.xyz,v.xyz);
+ vec2 uv=vec2(dot(delta,u.xyz)/u.w,dot(delta,v.xyz)/v.w)+0.5;
+ if(abs(dot(delta,n))<0.03 && dot(vTerrainNormal,n)>0.01 && all(greaterThanEqual(uv,vec2(0.0))) && all(lessThanEqual(uv,vec2(1.0))) && texture2D(faceCutMask,tile.xy+uv*tile.zw).r>0.5)discard;
+ }`
+     : ''
+ }
  float h = clamp(vTerrain.z / 50.0, 0.0, 1.0);
  diffuseColor.rgb *= mix(vec3(0.55,0.72,0.62),vec3(1.19,1.18,0.90),h);
  float level = vTerrain.z / 1.0; float fw=max(fwidth(level),0.003);
@@ -346,9 +372,87 @@ export class Viewer {
       );
       m.userData.shader = shader;
     };
+    m.customProgramCacheKey = () => 'terrain-face-cuts-' + this.faceCutCount;
     return m;
   }
+  /** Preview face engravings without projecting their masks onto the terrain top. */
+  annotationFaceCuts(
+    cuts: { annotation: Annotation; frame: AnnotationFrame; center: number[]; angle: number }[],
+  ) {
+    const count = cuts.length;
+    const columns = Math.max(1, Math.ceil(Math.sqrt(count)));
+    const rows = Math.max(1, Math.ceil(count / columns));
+    const tile = Math.min(
+      512,
+      Math.floor(this.renderer.capabilities.maxTextureSize / Math.max(rows, columns)),
+    );
+    const resize =
+      this.faceCutCanvas.width !== columns * tile || this.faceCutCanvas.height !== rows * tile;
+    this.faceCutCanvas.width = columns * tile;
+    this.faceCutCanvas.height = rows * tile;
+    if (resize) {
+      this.faceCutMask.value.dispose();
+      this.faceCutMask.value = new THREE.CanvasTexture(this.faceCutCanvas);
+    }
+    const ctx = this.faceCutCanvas.getContext('2d')!;
+    const data = new Float32Array(Math.max(1, count) * 16);
+    cuts.forEach(({ annotation: a, frame, center, angle }, index) => {
+      const source = document.createElement('canvas');
+      source.width = a.pixels_w;
+      source.height = a.pixels_h;
+      const sourceCtx = source.getContext('2d')!,
+        image = sourceCtx.createImageData(a.pixels_w, a.pixels_h);
+      a.mask.forEach((value, i) => {
+        image.data[i * 4] = image.data[i * 4 + 1] = image.data[i * 4 + 2] = value ? 255 : 0;
+        image.data[i * 4 + 3] = 255;
+      });
+      sourceCtx.putImageData(image, 0, 0);
+      const col = index % columns,
+        row = Math.floor(index / columns);
+      ctx.drawImage(source, col * tile, row * tile, tile, tile);
+      const c = Math.cos(angle),
+        s = Math.sin(angle);
+      const u = frame.u.map((x, i) => x * c + frame.v[i] * s),
+        v = frame.v.map((x, i) => -frame.u[i] * s + x * c);
+      data.set(
+        [
+          ...center,
+          0,
+          ...u,
+          a.width_mm,
+          ...v,
+          a.height_mm,
+          col / columns,
+          1 - (row + 1) / rows,
+          1 / columns,
+          1 / rows,
+        ],
+        index * 16,
+      );
+    });
+    this.faceCutData.value.dispose();
+    this.faceCutData.value = new THREE.DataTexture(
+      data,
+      4,
+      Math.max(1, count),
+      THREE.RGBAFormat,
+      THREE.FloatType,
+    );
+    this.faceCutData.value.needsUpdate = true;
+    this.faceCutMask.value.needsUpdate = true;
+    if (this.faceCutCount !== count) {
+      this.faceCutCount = count;
+      this.land.traverse(object => {
+        if (object instanceof THREE.Mesh) {
+          const materials = Array.isArray(object.material) ? object.material : [object.material];
+          materials.forEach(material => (material.needsUpdate = true));
+        }
+      });
+    }
+    this.invalidate();
+  }
   setTerrain(mesh: Mesh, layout: Layout, fit = false, project?: Pick<Project, 'materials'>) {
+    this.annotationFaceCuts([]);
     this.clear(this.focusGuide);
     this.dirty = true;
     this.review = false;
@@ -574,7 +678,7 @@ export class Viewer {
     this.overlays.clear();
     for (const p of asset.inserts) {
       const m = new THREE.Mesh(
-        this.geometry(p.mesh),
+        this.geometry(assembledPieceMesh(p)),
         new THREE.MeshStandardMaterial({
           color:
             materialColors(project).get(p.class) ||
@@ -586,6 +690,7 @@ export class Viewer {
       );
       m.position.fromArray(p.origin);
       m.userData.origin = p.origin;
+      m.userData.explodeDirection = p.assembly_basis?.slice(6, 9) ?? [0, 0, 1];
       m.userData.id = p.id;
       m.castShadow = true;
       this.features.add(m);
@@ -627,7 +732,14 @@ export class Viewer {
     if (!this.review) return;
     this.features.children.forEach(o => {
       const origin = o.userData.origin;
-      if (origin) o.position.set(origin[0], origin[1], origin[2] + value);
+      if (origin) {
+        const direction = o.userData.explodeDirection ?? [0, 0, 1];
+        o.position.set(
+          origin[0] + direction[0] * value,
+          origin[1] + direction[1] * value,
+          origin[2] + direction[2] * value,
+        );
+      }
     });
   }
   setSection(value: number) {

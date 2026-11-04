@@ -1,7 +1,9 @@
 import { projectMaterialGroups, type Project } from './types';
 
 /** Resolve one deterministic color per physical filament slot, including legacy conflicts. */
-export function filamentPlan(project: Pick<Project, 'materials'>) {
+export function filamentPlan(
+  project: Pick<Project, 'materials'> & Partial<Pick<Project, 'annotations'>>,
+) {
   const groups = projectMaterialGroups(project);
   const slots = new Map<number, { color: string; names: string[]; conflict: boolean }>();
   for (const group of groups) {
@@ -24,7 +26,7 @@ export function filamentPlan(project: Pick<Project, 'materials'>) {
 
 /** Use physical filament colors for print-together previews while preserving separate-part colors. */
 export function displayMaterials(
-  project: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>,
+  project: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings' | 'annotations'>>,
 ) {
   return project.settings?.manufacturing_mode === 'multicolor'
     ? filamentPlan(project).groups

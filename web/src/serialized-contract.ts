@@ -14,9 +14,11 @@ import type {
   Treatment,
   ZoneSurface,
 } from './types';
+import type { Annotation } from './annotations';
 
 export const serializedContract = {
   browserFields: {
+    Piece: ['assembly_basis', 'taper_relief_mm', 'taper_height_mm', 'draft_angle_deg'],
     Annotation: [
       'id',
       'name',
@@ -31,7 +33,12 @@ export const serializedContract = {
       'pixels_h',
       'enabled',
       'placement',
+      'drape',
+      'side_index',
+      'z_mm',
       'treatment',
+      'as_insert',
+      'insert_depth_mm',
       'x_mm',
       'y_mm',
       'width_mm',
@@ -116,6 +123,9 @@ type ExactKeys<T, Keys extends readonly PropertyKey[], Ignored extends keyof T =
       : false
     : false;
 type Assert<T extends true> = T;
+const annotationMatch: Assert<
+  ExactKeys<Annotation, typeof serializedContract.browserFields.Annotation>
+> = true;
 
 const settingsMatch: Assert<ExactKeys<Settings, typeof serializedContract.fields.Settings>> = true;
 const assetMatch: Assert<ExactKeys<Asset, typeof serializedContract.fields.Asset>> = true;
@@ -131,7 +141,7 @@ const pieceMatch: Assert<
   ExactKeys<
     Piece,
     typeof serializedContract.fields.Piece,
-    'taper_relief_mm' | 'taper_height_mm' | 'draft_angle_deg'
+    (typeof serializedContract.browserFields.Piece)[number]
   >
 > = true;
 const manufacturingModeValues: readonly ManufacturingMode[] =
@@ -140,6 +150,7 @@ const treatmentValues: readonly Treatment[] = serializedContract.enums.Treatment
 const surfaceValues: readonly ZoneSurface[] = serializedContract.enums.ZoneSurface;
 
 void [
+  annotationMatch,
   assetMatch,
   settingsMatch,
   gridMatch,

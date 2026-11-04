@@ -183,6 +183,8 @@ export interface Overlay {
 }
 /** Printable insert mesh with its assembly origin and fit metadata. */
 export interface Piece {
+  /** Browser annotation parts print in local +Z; basis columns orient them in the assembly. */
+  assembly_basis?: number[];
   id: string;
   class: string;
   mesh: Mesh;
@@ -221,7 +223,7 @@ export interface Source {
 }
 /* Printable material group shared by slicer and service exports. */
 export interface MaterialGroup {
-  id: 'terrain' | 'features' | FeatureClass;
+  id: 'terrain' | 'features' | 'annotations' | FeatureClass;
   name: string;
   color: string;
   extruder: number;
@@ -237,12 +239,28 @@ export const defaultMaterialGroups: MaterialGroup[] = [
   { id: 'ski_run', name: 'Ski runs', color: '#ffffff', extruder: 2 },
   { id: 'ski_lift', name: 'Ski lifts', color: '#5b5148', extruder: 2 },
 ];
+/** Independent annotation material, added only for projects that use annotation inserts. */
+export const annotationMaterialGroup: MaterialGroup = {
+  id: 'annotations',
+  name: 'Annotation inserts',
+  color: '#dcc291',
+  extruder: 3,
+};
 /** Resolve saved groups while keeping old projects compatible. */
-export function projectMaterialGroups(project: Pick<Project, 'materials'>): MaterialGroup[] {
+export function projectMaterialGroups(
+  project: Pick<Project, 'materials'> & Partial<Pick<Project, 'annotations'>>,
+): MaterialGroup[] {
   const legacyFeatures = project.materials?.find(group => group.id === 'features');
-  return defaultMaterialGroups.map(fallback => {
+  const groups = [...defaultMaterialGroups];
+  if (
+    project.annotations?.some(annotation => annotation.as_insert) ||
+    project.materials?.some(group => group.id === 'annotations')
+  )
+    groups.push(annotationMaterialGroup);
+  return groups.map(fallback => {
     const saved = project.materials?.find(group => group.id === fallback.id);
-    const inherited = fallback.id === 'terrain' ? undefined : legacyFeatures;
+    const inherited =
+      fallback.id === 'terrain' || fallback.id === 'annotations' ? undefined : legacyFeatures;
     return {
       ...fallback,
       ...(inherited ? { color: inherited.color, extruder: inherited.extruder } : {}),
