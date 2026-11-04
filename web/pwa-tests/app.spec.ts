@@ -112,7 +112,7 @@ test.afterEach(async ({ page }, testInfo) => {
         controller: await releaseOf(navigator.serviceWorker.controller),
         active: await releaseOf(reg?.active),
         installing: reg?.installing?.state,
-        waiting: reg?.waiting?.state,
+        waiting: await releaseOf(reg?.waiting),
         entries,
       };
     })
@@ -541,10 +541,19 @@ test('rapid releases retain the editing window and apply the latest version once
   await expect(page.locator('#base-height')).toHaveValue('3.7');
 });
 
-test('a compatible worker cannot remain waiting after overlapping update checks', async ({
+test('a compatible worker recovers after missed lifecycle events and worker replies', async ({
   page,
   request,
 }) => {
+  await page.addInitScript(() => {
+    const original = ServiceWorkerRegistration.prototype.addEventListener;
+    ServiceWorkerRegistration.prototype.addEventListener = function (
+      this: ServiceWorkerRegistration,
+      ...args: Parameters<typeof original>
+    ) {
+      if (args[0] !== 'updatefound') original.apply(this, args);
+    };
+  });
   await ready(page);
   await importProject(page, 'Waiting worker');
   await page.locator('#base-height').fill('3.7');

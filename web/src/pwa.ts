@@ -193,21 +193,39 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
     };
   });
   let registration: ServiceWorkerRegistration | undefined;
-  const inspectWaiting = async (waiting = registration?.waiting) => {
-    if (!waiting) return;
-    const release = await releaseOf(waiting);
-    if (!release) return;
-    if (release.compatibility === String(projectStorageCompatibility)) {
-      try {
-        waiting.postMessage({ type: 'ACTIVATE_COMPATIBLE' });
-      } catch {
-        // A newer worker may replace this candidate while its reply is in flight.
+  let waitingTimer: ReturnType<typeof setTimeout> | undefined;
+  let inspectingWaiting = false;
+  let incompatibleCandidate: ServiceWorker | undefined;
+  const inspectWaiting = async (candidate?: ServiceWorker | null) => {
+    if (inspectingWaiting) return;
+    clearTimeout(waitingTimer);
+    inspectingWaiting = true;
+    try {
+      const current = await navigator.serviceWorker.getRegistration(base.href);
+      const waiting = candidate?.state === 'installed' ? candidate : current?.waiting;
+      if (!waiting || waiting === incompatibleCandidate) return;
+      const release = await releaseOf(waiting);
+      if (!release) return;
+      if (release.compatibility === String(projectStorageCompatibility)) {
+        try {
+          waiting.postMessage({ type: 'ACTIVATE_COMPATIBLE' });
+        } catch {
+          // A newer worker may replace this candidate while its reply is in flight.
+        }
+      } else {
+        incompatibleCandidate = waiting;
+        incompatibleUpdate = true;
+        showProblem(
+          'An update is ready. Close other Workbench windows, then reopen the app when your work is saved.',
+        );
       }
-    } else {
-      incompatibleUpdate = true;
-      showProblem(
-        'An update is ready. Close other Workbench windows, then reopen the app when your work is saved.',
-      );
+    } catch {
+      // The document or registration can be replaced while this local check runs.
+    } finally {
+      inspectingWaiting = false;
+      // Read local registration state even if updatefound/statechange was missed.
+      // This does not fetch the worker or poll the network.
+      waitingTimer = setTimeout(() => void inspectWaiting(), 1000);
     }
   };
   let checking = false;
@@ -231,7 +249,10 @@ export async function setupPwa(prepareUpdate: () => Promise<boolean>): Promise<b
     }
   };
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') void checkForUpdate();
+    if (document.visibilityState === 'visible') {
+      void inspectWaiting();
+      void checkForUpdate();
+    }
   });
   const register = () =>
     navigator.serviceWorker

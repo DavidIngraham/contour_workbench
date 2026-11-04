@@ -72,6 +72,11 @@ and durably saved. Active calculations, open dialogs, focused editors, and point
 gestures defer that window's reload with automatic retries; they do not block
 other windows or show update progress dialogs. A bounded startup check avoids
 starting obsolete model work when a replacement controller is already available.
+The page reads fresh local registration state every second, including when
+updatefound/statechange was missed. Waiting-worker queries and activation requests
+retry until the candidate activates or is replaced, including after a missed
+reply. These checks do not poll the network or repeatedly message a known
+incompatible candidate; network update checks retain the one-minute interval.
 Controller replies identify whether the page's release was previously installed.
 Fresh network HTML never reloads backward into an older controller while its
 matching worker is still downloading; installed older pages still update normally.

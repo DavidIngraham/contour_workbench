@@ -102,12 +102,13 @@ createServer(async (request, response) => {
       );
       if (requireActivation)
         body = Buffer.from(
-          body
-            .toString()
-            .replace(
-              'await activateCompatibleRelease();',
-              '/* Test: leave the completed worker waiting until the page requests activation. */',
-            ),
+          `let unansweredReleaseQueries=2;self.addEventListener('message',event=>{if(event.data?.type==='GET_RELEASE'&&unansweredReleaseQueries-->0)event.stopImmediatePropagation();});\n` +
+            body
+              .toString()
+              .replace(
+                'await activateCompatibleRelease();',
+                '/* Test: require page activation after lost worker replies. */',
+              ),
         );
     }
     if (pathname === '/' || pathname === '/index.html')
