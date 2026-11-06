@@ -47,7 +47,7 @@ test('menus support keyboard navigation, view toggles, dialogs, and project expo
   const view = page.locator('.command-menu > summary').filter({ hasText: /^View$/ });
   await view.focus();
   await page.keyboard.press('ArrowDown');
-  await expect(page.locator('[data-command="fit-view"]')).toBeFocused();
+  await expect(page.locator('.command-menu [data-command="fit-view"]')).toBeFocused();
   await page.keyboard.press('End');
   await expect(page.locator('[data-command="wireframe"]')).toBeFocused();
   await page.keyboard.press('Enter');

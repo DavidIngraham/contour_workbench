@@ -1,9 +1,25 @@
 /** Lightweight geographic layout used before elevation geometry is available. */
-import type { Bounds, Layout, Settings } from './types';
+import { normalizeSettings, type Bounds, type Layout, type Project, type Settings } from './types';
+import { modelXY } from './layout-transform';
+import { polygonBounds } from './polygon';
 
 const metersPerDegree = 111319.490793;
 
-/** Match Rust's print-bed orientation and scale using geographic bounds alone. */
+/** Preserve saved model orientation when opening projects made before arbitrary rotation. */
+export function projectLayoutSettings(
+  project: Pick<Project, 'settings' | 'grid' | 'annotations'>,
+): Settings {
+  const settings = normalizeSettings(project.settings);
+  if (project.settings?.bed_rotation_deg === undefined) {
+    const bounds = settings.boundary.length
+      ? polygonBounds(settings.boundary)
+      : project.grid.bounds;
+    settings.bed_rotation_deg = previewLayout(bounds, settings).rotated ? 90 : 0;
+  }
+  return settings;
+}
+
+/** Approximate loading layout; also reconstructs legacy 0°/90° project orientation. */
 export function previewLayout(
   bounds: Bounds,
   settings: Pick<Settings, 'max_print_size_mm' | 'height_factor' | 'base_height_mm'>,
@@ -42,11 +58,5 @@ export function previewLayout(
 
 /** Project a geographic polygon into the model-local XY coordinates used by the viewer. */
 export function previewBoundary(layout: Layout, points: [number, number][]): [number, number][] {
-  return points.map(([longitude, latitude]) => {
-    const u = (longitude - layout.bounds[0]) / (layout.bounds[2] - layout.bounds[0]),
-      v = (latitude - layout.bounds[1]) / (layout.bounds[3] - layout.bounds[1]);
-    return layout.rotated
-      ? [(1 - v) * layout.width, u * layout.depth]
-      : [u * layout.width, v * layout.depth];
-  });
+  return points.map(point => modelXY(layout, point));
 }

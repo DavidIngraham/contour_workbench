@@ -32,6 +32,25 @@ describe('worker client cancellation', () => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
+  it('retains annotation feedback and ignores diagnostics from canceled requests', async () => {
+    const engine = new Engine();
+    const controller = new AbortController();
+    const canceledCall = engine.call('classify', {}, undefined, controller.signal);
+    controller.abort();
+    await expect(canceledCall).rejects.toMatchObject({ name: 'AbortError' });
+    const pending = engine.call('classify', {});
+    const diagnostic = { annotationId: 'label', meshes: [], message: 'Too narrow' };
+    FakeWorker.instances[0].onmessage?.({
+      data: { id: 1, error: 'stale', annotationDiagnostic: diagnostic },
+    } as MessageEvent);
+    FakeWorker.instances[0].onmessage?.({
+      data: { id: 2, error: diagnostic.message, annotationDiagnostic: diagnostic },
+    } as MessageEvent);
+    await expect(pending).rejects.toMatchObject({
+      message: 'Too narrow',
+      annotationDiagnostic: diagnostic,
+    });
+  });
 
   it('rejects other pending calls if cancellation has to restart the worker', async () => {
     const engine = new Engine();

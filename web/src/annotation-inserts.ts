@@ -10,6 +10,7 @@ import type { Piece, Settings } from './types';
 import type { FitProfile } from './insert-fit';
 import { extrusionWidthMm } from './insert-fit';
 import { supportsExtrusion } from './insert-taper';
+import { AnnotationPrintError } from './annotation-diagnostics';
 import { compactManifoldMesh, solidFromMesh, validatedMesh } from './manifold-adapter';
 
 /** Require a continuous wall behind bottom/side artwork, including between sample points. */
@@ -291,6 +292,7 @@ async function buildLocalInsert(
         right = b.boundingBox().min;
       return left[0] - right[0] || left[1] - right[1];
     });
+    const failures: import('./types').Mesh[] = [];
     try {
       for (const [index, component] of components.entries()) {
         await checkpoint();
@@ -306,10 +308,14 @@ async function buildLocalInsert(
           if (settings.manufacturing_mode === 'separate') {
             const section = solid.slice(0.001);
             try {
-              if (!supportsExtrusion(section, extrusionWidthMm(settings.nozzle_diameter_mm)))
-                throw new Error(
-                  'Some annotation strokes are too narrow to print as inserts. Increase the artwork size or use a bolder font.',
+              if (!supportsExtrusion(section, extrusionWidthMm(settings.nozzle_diameter_mm))) {
+                const mesh = compactManifoldMesh(component.getMesh());
+                failures.push(
+                  annotation.placement === 'side' || annotation.placement === 'bottom'
+                    ? annotationMesh(geometry.frame, mesh)
+                    : mesh,
                 );
+              }
             } finally {
               section.delete();
             }
@@ -333,6 +339,12 @@ async function buildLocalInsert(
     } finally {
       components.forEach(component => component.delete());
     }
+    if (failures.length)
+      throw new AnnotationPrintError({
+        annotationId: annotation.id,
+        meshes: failures,
+        message: `${annotation.name}: Red regions are too narrow to print as inserts. Increase the size or use a bolder font.`,
+      });
     return { terrain: nextTerrain, pocket, pieces };
   } catch (error) {
     nextTerrain?.delete();

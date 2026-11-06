@@ -5,9 +5,13 @@ import {
   surfaceZ,
   annotationFrame,
   annotationPoint,
+  nearestBoundaryPoint,
   type Annotation,
 } from '../src/annotations';
 import { defaults, type Grid, type Layout } from '../src/types';
+import * as THREE from 'three';
+import { AnnotationEditor } from '../src/annotation-editor';
+import { Viewer } from '../src/viewer';
 const g: Grid = { bounds: [0, 0, 1, 1], width: 2, height: 2, elevations: [100, 100, 100, 100] };
 const l: Layout = {
   bounds: g.bounds,
@@ -41,6 +45,90 @@ const a: Annotation = {
   porch_depth_mm: 16,
   porch_align: 'base',
 };
+it('keeps partial and fully outside annotations visible without weakening export validation', () => {
+  for (const drape of [true, false])
+    for (const x_mm of [1, -20]) {
+      const moved = { ...a, x_mm, drape };
+      const preview = annotationGeometry(moved, g, defaults, l, true);
+      expect(preview.ghost.length).toBeGreaterThan(0);
+      expect(preview.warnings.length).toBeGreaterThan(0);
+      expect(preview.ghost.flatMap(mesh => Array.from(mesh.positions)).every(Number.isFinite)).toBe(
+        true,
+      );
+      if (x_mm === 1) expect(preview.preview.length).toBeGreaterThan(0);
+      expect(() => annotationGeometry(moved, g, defaults, l)).toThrow('inside');
+    }
+});
+it('omits the relief grid from flat artwork while sampling interior terrain peaks and valleys', () => {
+  const label = {
+    ...a,
+    pixels_w: 4,
+    pixels_h: 4,
+    mask: Array(16).fill(1),
+    width_mm: 20,
+    height_mm: 20,
+  };
+  for (const treatment of ['raised', 'engraved'] as const) {
+    const elevations = Array(9).fill(110);
+    elevations[4] = treatment === 'raised' ? 120 : 100;
+    const grid = { ...g, width: 3, height: 3, elevations };
+    const draped = annotationGeometry({ ...label, treatment }, grid, defaults, l, true);
+    const flat = annotationGeometry({ ...label, treatment, drape: false }, grid, defaults, l, true);
+    const tops = (meshes: typeof flat.preview) =>
+      meshes.flatMap(mesh => [2, 5, 8, 11].map(i => Number(mesh.positions[i])));
+    const sampled = tops(draped.preview);
+    const expected = treatment === 'raised' ? Math.max(...sampled) : Math.min(...sampled);
+    expect(flat.preview).toHaveLength(3);
+    expect(flat.solids).toHaveLength(3);
+    expect(draped.preview.length).toBeGreaterThan(flat.preview.length);
+    for (const top of tops(flat.preview)) expect(top).toBeCloseTo(expected, 8);
+    // The 1 mm samples reach the interior extremum, far beyond the patch corners.
+    if (treatment === 'raised') expect(expected).toBeGreaterThan(21);
+    else expect(expected).toBeLessThan(1);
+    expect(flat.ghost).toHaveLength(0);
+  }
+});
+it('keeps planar preview lighting independent of prism side-wall normals', () => {
+  for (const treatment of ['raised', 'engraved'] as const) {
+    for (const drape of [true, false]) {
+      const group = new THREE.Group();
+      const state = {
+        group,
+        state: () => ({
+          project: { grid: g, settings: defaults, annotations: [{ ...a, treatment, drape }] },
+          terrain: { layout: l },
+        }),
+        viewer: {
+          geometry: Viewer.prototype.geometry,
+          annotationCuts() {},
+          annotationFaceCuts() {},
+          invalidate() {},
+        },
+        message() {},
+      };
+      AnnotationEditor.prototype.refresh.call(state as unknown as AnnotationEditor);
+      expect(group.children).toHaveLength(1);
+      const mesh = group.children[0] as THREE.Mesh<
+        THREE.BufferGeometry,
+        THREE.MeshStandardMaterial
+      >;
+      expect(mesh.material.flatShading).toBe(!drape);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+    }
+  }
+});
+it('selects adjacent sides continuously and clamps at polygon corners', () => {
+  const poly: [number, number][] = [
+    [0, 0],
+    [100, 0],
+    [100, 60],
+    [0, 60],
+  ];
+  expect(nearestBoundaryPoint(poly, 95, -1)).toEqual({ side_index: 0, x_mm: 95, y_mm: 0 });
+  expect(nearestBoundaryPoint(poly, 101, 5)).toEqual({ side_index: 1, x_mm: 100, y_mm: 5 });
+  expect(nearestBoundaryPoint(poly, -3, -4)).toMatchObject({ x_mm: 0, y_mm: 0 });
+});
 it('keeps old terrain annotations draped and makes flat treatments use a common height', () => {
   const slope = { ...g, elevations: [100, 110, 102, 115] };
   const draped = annotationGeometry(a, slope, defaults, l);

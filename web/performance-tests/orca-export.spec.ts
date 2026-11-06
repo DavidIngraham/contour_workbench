@@ -1,3 +1,4 @@
+import { openCalibration } from '../mobile-tests/workbench-helpers';
 import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
@@ -116,7 +117,7 @@ for (const printer of ['a1-mini', 'core-one'] as const) {
     page,
   }) => {
     await page.goto('/');
-    await page.locator('#landing-calibration').click();
+    await openCalibration(page);
     await page.locator('#fit-download-format').selectOption('orca');
     await page.locator('#fit-orca-printer').selectOption(printer);
     const pending = page.waitForEvent('download');

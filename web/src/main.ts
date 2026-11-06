@@ -1,3 +1,5 @@
+import { LocationSearch } from './location-search';
+import { modelLonLat, modelXY } from './layout-transform';
 import {
   couponFields,
   couponLabels,
@@ -8,6 +10,7 @@ import {
 import { PrintOrderDialog } from './print-order-dialog';
 /** Browser application composition, UI state, persistence, and worker orchestration. */
 import { AnnotationEditor } from './annotation-editor';
+import { boundaryXY, nearestBoundaryPoint } from './annotations';
 import { renderAppShell } from './app-shell';
 import { FeatureBrowser } from './feature-browser';
 import { setupWorkbenchChrome } from './workbench-chrome';
@@ -27,9 +30,13 @@ import { gpxPlacement } from './gpx-placement';
 import { downloadFile, projectFileStem, readSelectedFile } from './project-files';
 import './style.css';
 import './workbench.css';
+import './cad.css';
 import {
   createIcons,
   Mountain,
+  Type,
+  Printer,
+  Route,
   Layers,
   SlidersHorizontal,
   MapPin,
@@ -62,7 +69,7 @@ import { userErrorMessage } from './user-errors';
 import { extentPolygon, type Shape } from './extent-shapes';
 import { ExtentMap } from './extent-map';
 import { polygonBounds, validatePolygon, type Vertex } from './polygon';
-import { previewBoundary, previewLayout } from './preview-layout';
+import { previewBoundary, previewLayout, projectLayoutSettings } from './preview-layout';
 import { Viewer } from './viewer';
 import { Engine } from './client';
 import { ExportClient } from './export-client';
@@ -115,6 +122,9 @@ import {
 } from './types';
 const icons = {
   Mountain,
+  Type,
+  Printer,
+  Route,
   Layers,
   SlidersHorizontal,
   MapPin,
@@ -162,17 +172,25 @@ if (legacyFeatureMaterialRow)
           `<div class="material-row${group.id === 'annotations' ? ' hidden' : ''}" data-material-row="${group.id}"><label for="material-${group.id}-color">${esc(group.name)}</label><input id="material-${group.id}-color" type="color" value="${group.color}" aria-label="${esc(group.name)} color"/><input id="material-${group.id}-extruder" type="number" min="1" max="16" value="${group.extruder}" aria-label="${esc(group.name)} filament slot"/></div>`,
       )
       .join('') +
-    '</div><div id="filament-mapping"><p class="help">One slot represents one physical filament. Multicolor previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
+    '</div><details id="unused-materials-group"><summary>Unused feature materials</summary><div id="unused-materials"></div></details><div id="filament-mapping"><p class="help">One slot represents one physical filament. Multicolor previews use the slot colors shown here.</p><div id="filament-slots"></div><p class="help" id="filament-warning" role="status"></p><button class="small-link" id="normalize-filaments">Use slot colors for all assigned features</button></div>';
 createIcons({ icons });
 function mobileSettings(open: boolean) {
   document.body.classList.toggle('settings-open', open);
   $('mobile-settings').setAttribute('aria-expanded', String(open));
   $('mobile-scrim').hidden = !open;
-  document.querySelector<HTMLElement>('.stage')!.inert = open;
+  document.querySelector<HTMLElement>('.stage')!.inert = false;
+  if (!open) document.body.classList.remove('settings-expanded');
+  $('mobile-expand').setAttribute('aria-expanded', 'false');
+  $('mobile-expand').textContent = 'Expand controls';
   document.querySelector<HTMLElement>('header')!.inert = open;
   if (open) $('mobile-close').focus();
   else $('mobile-settings').focus();
 }
+$('mobile-expand').onclick = () => {
+  const expanded = document.body.classList.toggle('settings-expanded');
+  $('mobile-expand').setAttribute('aria-expanded', String(expanded));
+  $('mobile-expand').textContent = expanded ? 'Compact controls' : 'Expand controls';
+};
 $('mobile-settings').onclick = () => mobileSettings(true);
 $('mobile-close').onclick = () => mobileSettings(false);
 $('mobile-scrim').onclick = () => mobileSettings(false);
@@ -201,6 +219,7 @@ const engine = new Engine();
 const exportClient = new ExportClient();
 let project: Project;
 let terrain: Terrain;
+let terrainProject: Project | undefined;
 let overlays: Overlay[] = [];
 let asset: Asset | undefined;
 const printOrder = new PrintOrderDialog(() => (asset && !busy ? { asset, project } : undefined));
@@ -238,6 +257,10 @@ let winterRestore = new Map<string, { enabled: boolean; treatment: Treatment }>(
 let presetEntries: PresetEntry[] = [];
 let wizardMode = false;
 let wizardStep = 1;
+let wizardFromLanding = true;
+let areaOpener: HTMLElement | null = null;
+const locationSearch = new LocationSearch();
+let locationAbort: AbortController | undefined;
 let localIdentity: LocalProjectIdentity | undefined;
 let presetOriginId: string | undefined;
 let savedTerrainGrid: Grid | undefined;
@@ -297,6 +320,16 @@ function syncModelCommands() {
     button.disabled = busy || !current;
     button.title = reason;
   }
+  $('generate').textContent = modelNeedsRegeneration ? 'Update model' : 'Generate model';
+  $('generate').classList.toggle('primary', !current);
+  $('download').classList.toggle('primary', current);
+  $('model-state').textContent = busy
+    ? 'Processing…'
+    : current
+      ? 'Ready to export'
+      : modelNeedsRegeneration
+        ? 'Changes need generation'
+        : 'Design preview';
   $('inspection-reason').textContent = reason;
   $('export-reason').textContent = reason;
   $('export-reason').classList.toggle('hidden', !reason);
@@ -403,7 +436,6 @@ function updateBusy(v: boolean) {
   ($('generate') as HTMLButtonElement).disabled = v || !terrain;
   ($('load-area') as HTMLButtonElement).disabled = v;
   ($('download-calibration') as HTMLButtonElement).disabled = v;
-  $<HTMLButtonElement>('landing-calibration').disabled = v;
   $<HTMLButtonElement>('download-color-calibration').disabled = v;
   ($('area-load') as HTMLButtonElement).disabled = v || !polygonValid;
   $('cancel-job').classList.toggle('hidden', !v);
@@ -510,6 +542,7 @@ function scheduleThumbnail() {
   thumbnailTimer = setTimeout(() => void captureThumbnail(), 2200);
 }
 function touch() {
+  annotationEditor.clearPrintFailure();
   if (asset) modelNeedsRegeneration = true;
   printOrder.invalidate();
   revision++;
@@ -533,11 +566,25 @@ function refreshMetrics() {
       `${terrain.layout.width.toFixed(1)} × ${terrain.layout.depth.toFixed(1)} <small>mm</small>`;
     $('triangle-count').textContent = (terrain.mesh.indices.length / 3).toLocaleString();
   }
+  if (terrain)
+    $('print-fit-summary').textContent =
+      `Actual model: ${terrain.layout.width.toFixed(1)} × ${terrain.layout.depth.toFixed(1)} mm. Scaled to fit the available build area.`;
   $('enabled-count').textContent =
     project?.features.filter(f => f.enabled).length.toString() || '0';
   $('feature-count').textContent = project?.features.length.toString() || '0';
 }
 function setPanel(name: string) {
+  if (name !== 'inspect' && mode === 'review') design();
+  $('properties-title').textContent =
+    (
+      {
+        terrain: 'Terrain properties',
+        features: 'Model features',
+        annotations: 'Annotation properties',
+        print: 'Print properties',
+        inspect: 'Model inspection',
+      } as Record<string, string>
+    )[name] ?? 'Properties';
   document.querySelectorAll('[data-tab]').forEach(e => {
     const active = (e as HTMLElement).dataset.tab === name;
     e.classList.toggle('active', active);
@@ -701,7 +748,7 @@ async function openLocalWorkspace(id: string) {
   try {
     const loaded = await loadLocalProject(id);
     if (!loaded) throw new Error('This local project is no longer available.');
-    project = { ...loaded.project, settings: normalizeSettings(loaded.project.settings) };
+    project = { ...loaded.project, settings: projectLayoutSettings(loaded.project) };
     activateStoredWorkspace(loaded.summary);
     printOrder.invalidate();
     asset = undefined;
@@ -711,7 +758,7 @@ async function openLocalWorkspace(id: string) {
     winterRestore.clear();
     mode = 'design';
     hideLanding();
-    $('area-dialog').classList.add('hidden');
+    setAreaOpen(false);
     projectLabels();
     syncForm();
     listFeatures();
@@ -738,9 +785,10 @@ async function openPresetModel(entry: PresetEntry) {
   status(`Opening ${entry.name}…`, false, true);
   try {
     const bundle = await loadPreset(entry);
-    project = { ...bundle.project, settings: normalizeSettings(bundle.project.settings) };
+    project = { ...bundle.project, settings: projectLayoutSettings(bundle.project) };
     activatePresetWorkspace(entry.id);
     terrain = bundle.terrain;
+    terrainProject = project;
     overlays = bundle.overlays;
     printOrder.invalidate();
     asset = undefined;
@@ -788,6 +836,7 @@ document.querySelectorAll('[data-tab]').forEach(e =>
     if (name === 'inspect' && asset && asset.revision === revision && !busy)
       $('mode-review').click();
     else setPanel(name);
+    if (matchMedia('(max-width:760px)').matches) mobileSettings(true);
   }),
 );
 const classLabels: Record<Feature['class'], string> = {
@@ -828,6 +877,16 @@ function syncFilaments() {
     $<HTMLInputElement>('material-annotations-color').value = annotation.color;
     $<HTMLInputElement>('material-annotations-extruder').value = String(annotation.extruder);
   }
+  const used = new Set(project.features.filter(f => f.enabled).map(f => f.class as string));
+  if (annotation) used.add('annotations');
+  document.querySelectorAll<HTMLElement>('[data-material-row]').forEach(row => {
+    row.classList.remove('hidden');
+    (used.has(row.dataset.materialRow!)
+      ? document.querySelector('.material-list')!
+      : $('unused-materials')
+    ).append(row);
+  });
+  $('unused-materials-group').classList.toggle('hidden', !$('unused-materials').children.length);
   const together = project.settings.manufacturing_mode === 'multicolor';
   $('filament-mapping').classList.toggle('hidden', !together);
   if (!together) return;
@@ -957,6 +1016,10 @@ $('winter-mode').onchange = () => {
     void loadProjectOsm();
 };
 viewer.onPick = id => {
+  if (mode === 'review') {
+    selectInspectionPart(id);
+    return;
+  }
   selected = id;
   viewer.highlight(id);
   featureBrowser.selectFeature(id);
@@ -992,6 +1055,16 @@ function fitGuidance() {
 }
 function syncForm() {
   const s = project.settings;
+  ($('bed-rotation') as HTMLInputElement).value = String(
+    s.bed_rotation_deg ?? terrain?.layout.rotation_deg ?? (terrain?.layout.rotated ? 90 : 0),
+  );
+  $('bed-fit-mode').textContent =
+    s.bed_rotation_deg == null ? 'Auto fit · updates with boundary' : 'Manual angle';
+  $<HTMLSelectElement>('build-area-preset').value =
+    s.max_print_size_mm[0] === s.max_print_size_mm[1] &&
+    [180, 220, 256].includes(s.max_print_size_mm[0])
+      ? String(s.max_print_size_mm[0])
+      : 'custom';
   ($('bed-width') as HTMLInputElement).value = String(s.max_print_size_mm[0]);
   ($('bed-depth') as HTMLInputElement).value = String(s.max_print_size_mm[1]);
   ($('height-factor') as HTMLInputElement).value = String(s.height_factor);
@@ -1097,7 +1170,38 @@ async function rebuild(
       updateBusy(false);
       return rebuild(fit);
     }
+    if (
+      terrain &&
+      terrainProject === project &&
+      JSON.stringify(terrain.layout) !== JSON.stringify(t.layout)
+    ) {
+      const old = terrain.layout;
+      for (const annotation of project.annotations ?? []) {
+        const point = modelXY(t.layout, modelLonLat(old, [annotation.x_mm, annotation.y_mm]));
+        annotation.x_mm = point[0];
+        annotation.y_mm = point[1];
+        if (annotation.placement === 'side')
+          Object.assign(
+            annotation,
+            nearestBoundaryPoint(boundaryXY(project.settings, t.layout), ...point),
+          );
+        if (annotation.placement === 'terrain' || annotation.placement === 'bottom')
+          annotation.angle_deg +=
+            (annotation.placement === 'bottom' ? -1 : 1) *
+            ((t.layout.rotation_deg ?? (t.layout.rotated ? 90 : 0)) -
+              (old.rotation_deg ?? (old.rotated ? 90 : 0)));
+      }
+      scheduleAutosave();
+    }
     terrain = t;
+    terrainProject = project;
+    ($('bed-rotation') as HTMLInputElement).value = String(
+      project.settings.bed_rotation_deg ?? t.layout.rotation_deg ?? 0,
+    );
+    $('bed-fit-mode').textContent =
+      project.settings.bed_rotation_deg == null
+        ? 'Auto fit · updates with boundary'
+        : 'Manual angle';
     terrainBuilds = t.terrainBuilds;
     viewer.model.scale.z = 1;
     viewer.setTerrain(t.mesh, t.layout, fit, project);
@@ -1163,9 +1267,55 @@ async function updateOverlays() {
     } else if (thumbnailDirty) scheduleThumbnail();
   }
 }
+let inspectionPart: string | null = null;
+function selectInspectionPart(id: string | null) {
+  inspectionPart = id;
+  $<HTMLInputElement>('isolate-part').disabled = !id;
+  if (!id) $<HTMLInputElement>('isolate-part').checked = false;
+  viewer.inspectPart(id, $<HTMLInputElement>('isolate-part').checked);
+  $('piece-list')
+    .querySelectorAll<HTMLButtonElement>('[data-piece]')
+    .forEach(button => button.setAttribute('aria-pressed', String(button.dataset.piece === id)));
+}
+$('isolate-part').onchange = () => selectInspectionPart(inspectionPart);
+$('show-all-parts').onclick = () => selectInspectionPart(null);
+function renderInspection(result: Asset) {
+  const removed = result.validation.removed_terrain_islands;
+  const outlines = result.validation.removed_terrain_island_outlines ?? [];
+  $('asset-summary').innerHTML =
+    `<div class="review-box"><strong class="check">✓ Ready to export</strong><br/>${terrain.layout.width.toFixed(1)} × ${terrain.layout.depth.toFixed(1)} mm<br/>${result.faceMaterials ? 'One multicolor solid' : `Terrain + ${result.inserts.length} printable inserts`}<br/>${insertSurfaceDescription(project.settings)}<details><summary>Geometry details</summary>Validated solid geometry<br/>${result.validation.triangles.toLocaleString()} terrain triangles</details></div>${removed ? `<div class="correction-note"><strong>${removed} narrow terrain pins removed</strong><p class="help">Small enclosed pieces of terrain were removed to improve printability. Insert gaps are preserved.</p>${outlines.length ? '<label class="property-checkbox"><input id="show-corrections" type="checkbox"/> Show affected areas</label><p class="help">Pink outlines mark the original pin footprints; dots help locate small areas.</p>' : '<p class="help">Regenerate this model to view correction locations.</p>'}</div>` : ''}`;
+  const names: Record<string, string> = {
+    trail: 'Trail',
+    road: 'Road',
+    stream: 'Waterway',
+    water: 'Water',
+    glacier: 'Glacier',
+    ski_run: 'Ski run',
+    ski_lift: 'Ski lift',
+    annotations: 'Annotation',
+  };
+  const counters = new Map<string, number>();
+  $('piece-list').innerHTML =
+    '<button class="review-piece" data-piece="terrain" aria-pressed="false">Terrain base</button>' +
+    result.inserts
+      .map(piece => {
+        const count = (counters.get(piece.class) ?? 0) + 1;
+        counters.set(piece.class, count);
+        return `<button class="review-piece" data-piece="${esc(piece.id)}" aria-pressed="false" title="Part reference: ${esc(piece.id)}">${esc(names[piece.class] ?? 'Annotation')} insert ${count}<small>${piece.insert_depth_mm.toFixed(2)} mm insert depth</small></button>`;
+      })
+      .join('');
+  $('piece-list')
+    .querySelectorAll<HTMLButtonElement>('[data-piece]')
+    .forEach(button => (button.onclick = () => selectInspectionPart(button.dataset.piece!)));
+  $('show-corrections')?.addEventListener('change', event =>
+    viewer.showCorrections(outlines, (event.target as HTMLInputElement).checked),
+  );
+  selectInspectionPart(null);
+}
 function design() {
   mode = 'design';
-  $('mode-design').classList.add('active');
+  $('mode-design').classList.add('hidden');
+  inspectionPart = null;
   $('mode-review').classList.remove('active');
   if (terrain) {
     viewer.setTerrain(terrain.mesh, terrain.layout, false, project);
@@ -1176,14 +1326,21 @@ function design() {
   $('model-caption').textContent = 'Editing model';
   $('review-controls').classList.add('hidden');
 }
-$('mode-design').onclick = design;
+$('mode-design').onclick = () => {
+  design();
+  setPanel('terrain');
+};
 $('mode-review').onclick = () => {
   if (!asset || asset.revision !== revision) return;
   mode = 'review';
   viewer.showAsset(asset, terrain.layout, project);
+  renderInspection(asset);
+  $<HTMLInputElement>('explode').value = '0';
+  $<HTMLInputElement>('section').value = '100';
+  viewer.setSection(100);
   annotationEditor.refresh(true);
   $('mode-review').classList.add('active');
-  $('mode-design').classList.remove('active');
+  $('mode-design').classList.remove('hidden');
   $('model-caption').textContent = 'Generated model';
   $('review-controls').classList.remove('hidden');
   $<HTMLInputElement>('explode').disabled = Boolean(asset.faceMaterials);
@@ -1218,11 +1375,6 @@ $('generate').onclick = async () => {
     asset = result;
     ($('download') as HTMLButtonElement).disabled = false;
     ($('mode-review') as HTMLButtonElement).disabled = false;
-    $('asset-summary').innerHTML =
-      `<div class="review-box"><strong class="check">✓ Validated solid geometry</strong><br/>${result.validation.triangles.toLocaleString()} terrain triangles<br/>${result.faceMaterials ? 'One multicolor solid · color depth controlled by slicer' : result.inserts.length + ' independently printable inserts'}<br/>${insertSurfaceDescription(project.settings)}${result.validation.removed_terrain_islands ? `<br/>${result.validation.removed_terrain_islands} unprintable terrain ${result.validation.removed_terrain_islands === 1 ? 'pin' : 'pins'} removed` : ''}</div>`;
-    $('piece-list').innerHTML = result.inserts
-      .map(p => `<div class="review-piece"><span>${esc(p.id)}</span></div>`)
-      .join('');
     $('mode-review').click();
     completed = true;
     status(
@@ -1231,6 +1383,13 @@ $('generate').onclick = async () => {
         : 'Model generated. Inspect the parts or export the model.',
     );
   } catch (e) {
+    const diagnostic = (
+      e as { annotationDiagnostic?: import('./annotation-diagnostics').AnnotationDiagnostic }
+    ).annotationDiagnostic;
+    if (diagnostic && requested === revision) {
+      design();
+      annotationEditor.showPrintFailure(diagnostic);
+    }
     error(e);
   } finally {
     previewSuspended = false;
@@ -1383,7 +1542,7 @@ $('color-download-confirm').onclick = async () => {
     updateBusy(false);
   }
 };
-let fitDownloadFromLanding = false;
+let fitDownloadOpener: HTMLElement | null = null;
 let couponSettings: Settings;
 function readCouponForm() {
   const settings = { ...couponSettings };
@@ -1440,20 +1599,19 @@ function fitDownloadDialog(open: boolean) {
   document.querySelector<HTMLElement>('.workspace')!.inert = blocked;
   document.querySelector<HTMLElement>('header')!.inert = blocked;
   if (open) {
-    $('fit-download-settings').textContent = fitDownloadFromLanding
-      ? 'Start from defaults and adjust this test for your printer.'
-      : 'Starts from your current Print setup. Changes here affect only this test.';
+    $('fit-download-settings').textContent =
+      'Starts from your current Print setup. Changes here affect only this test.';
     $('fit-download-title').tabIndex = -1;
     $('fit-download-title').focus({ preventScroll: true });
     $('fit-download-dialog').querySelector('.modal')!.scrollTop = 0;
   } else {
-    $(fitDownloadFromLanding ? 'landing-calibration' : 'download-calibration').focus();
+    fitDownloadOpener?.focus();
   }
 }
-function openFitDownload(fromLanding: boolean) {
-  if (busy) return;
-  fitDownloadFromLanding = fromLanding;
-  couponSettings = { ...(fromLanding ? defaults : project.settings) };
+function openFitDownload() {
+  if (busy || !project) return;
+  fitDownloadOpener = document.activeElement as HTMLElement;
+  couponSettings = { ...project.settings };
   $<HTMLInputElement>('coupon-floor-thickness').value = '1';
   for (const [key] of couponFields)
     $<HTMLInputElement>(`coupon-${key}`).value = String(couponSettings[key]);
@@ -1463,8 +1621,7 @@ function openFitDownload(fromLanding: boolean) {
   updateCouponPreview();
   fitDownloadDialog(true);
 }
-$('landing-calibration').onclick = () => openFitDownload(true);
-$('download-calibration').onclick = () => openFitDownload(false);
+$('download-calibration').onclick = () => openFitDownload();
 $('fit-download-cancel').onclick = () => fitDownloadDialog(false);
 $('fit-download-dialog').onkeydown = event => {
   if (event.key === 'Escape') {
@@ -1483,9 +1640,7 @@ $('fit-download-confirm').onclick = async () => {
     updateCouponPreview();
     return;
   }
-  const fitStatus = (message: string) => {
-    if (fitDownloadFromLanding) $('landing-fit-status').textContent = message;
-  };
+  const fitStatus = (message: string) => status(message);
   fitDownloadDialog(false);
   updateBusy(true);
   fitStatus('Generating fit test…');
@@ -1541,10 +1696,10 @@ $('file-project').onchange = async () => {
     if (data.schema_version !== 2 || !data.grid || !Array.isArray(data.features))
       throw new Error('This is not a Contour Workbench project.');
     await flushAutosave();
-    project = { ...data, settings: normalizeSettings(data.settings) };
+    project = { ...data, settings: projectLayoutSettings(data) };
     activateNewLocalWorkspace();
     hideLanding();
-    $('area-dialog').classList.add('hidden');
+    setAreaOpen(false);
     touch();
     projectLabels();
     syncForm();
@@ -1872,7 +2027,13 @@ for (const [id, i] of [
   ['bed-depth', 1],
 ] as const)
   $(id).onchange = () => {
-    project.settings.max_print_size_mm[i] = Number(($(id) as HTMLInputElement).value);
+    const input = $<HTMLInputElement>(id);
+    if (!input.reportValidity() || !input.value) {
+      syncForm();
+      return;
+    }
+    project.settings.max_print_size_mm[i] = Number(input.value);
+    $<HTMLSelectElement>('build-area-preset').value = 'custom';
     if (project.extent_editor)
       project.settings.boundary = extentPolygon(
         project.extent_editor,
@@ -1881,6 +2042,32 @@ for (const [id, i] of [
     touch();
     void rebuild();
   };
+$('bed-rotation').onchange = () => {
+  const input = $('bed-rotation') as HTMLInputElement;
+  if (!input.checkValidity() || !Number.isFinite(input.valueAsNumber)) return;
+  project.settings.bed_rotation_deg = input.valueAsNumber;
+  touch();
+  void rebuild();
+};
+$('build-area-preset').onchange = () => {
+  const value = $<HTMLSelectElement>('build-area-preset').value;
+  if (value === 'custom' || !project) return;
+  project.settings.max_print_size_mm = [Number(value), Number(value)];
+  if (project.extent_editor)
+    project.settings.boundary = extentPolygon(
+      project.extent_editor,
+      project.settings.max_print_size_mm,
+    );
+  project.settings.bed_rotation_deg = null;
+  syncForm();
+  touch();
+  void rebuild();
+};
+$('bed-auto-fit').onclick = () => {
+  project.settings.bed_rotation_deg = null;
+  touch();
+  void rebuild();
+};
 $('terrain-island-width').onchange = () => {
   const raw = ($('terrain-island-width') as HTMLInputElement).value.trim();
   project.settings.minimum_terrain_island_width_mm = raw === '' ? null : Number(raw);
@@ -1936,7 +2123,10 @@ $('wireframe').onclick = () => {
   const active = $('wireframe').classList.toggle('active');
   viewer.setWire(active);
 };
-$('explode').oninput = () => viewer.explode(Number(($('explode') as HTMLInputElement).value));
+$('explode').oninput = () => {
+  viewer.explode(Number(($('explode') as HTMLInputElement).value));
+  if (mode === 'review') selectInspectionPart(inspectionPart);
+};
 $('section').oninput = () => viewer.setSection(Number(($('section') as HTMLInputElement).value));
 function currentBounds(): Bounds {
   return [
@@ -1984,10 +2174,40 @@ function setWizardStep(step: number) {
   createIcons({ icons });
   updateAreaButtons();
 }
+function setAreaOpen(open: boolean) {
+  $('area-dialog').classList.toggle('hidden', !open);
+  if (!open) locationAbort?.abort();
+  const blocked = open || !$('landing-dialog').classList.contains('hidden');
+  document.querySelector<HTMLElement>('.workspace')!.inert = blocked;
+  document.querySelector<HTMLElement>('header')!.inert = blocked;
+}
+$('area-dialog').addEventListener('keydown', event => {
+  if (event.key !== 'Tab') return;
+  const controls = [
+    ...$('area-dialog').querySelectorAll<HTMLElement>(
+      'button, input, select, summary, a[href], [tabindex="0"]',
+    ),
+  ].filter(element => element.getClientRects().length && !element.hasAttribute('disabled'));
+  const first = controls[0],
+    last = controls.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last?.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first?.focus();
+  }
+});
 function openArea(asWizard = false) {
   if (busy || (!asWizard && !project)) return;
   if (matchMedia('(max-width: 760px)').matches) mobileSettings(false);
+  areaOpener = document.activeElement as HTMLElement;
   wizardMode = asWizard;
+  locationAbort?.abort();
+  locationAbort = undefined;
+  $<HTMLButtonElement>('location-submit').disabled = false;
+  $('location-results').replaceChildren();
+  $('location-status').textContent = '';
   const b =
     project && !asWizard
       ? project.settings.boundary.length
@@ -2009,7 +2229,10 @@ function openArea(asWizard = false) {
   ($('area-name') as HTMLInputElement).value = asWizard ? 'My landscape' : project.name;
   ($('wizard-source') as HTMLSelectElement).value = 'auto';
   $('area-dialog').dataset.ready = 'false';
-  $('area-dialog').classList.remove('hidden');
+  setAreaOpen(true);
+  document.querySelector<HTMLElement>('.workspace')!.inert = true;
+  document.querySelector<HTMLElement>('header')!.inert = true;
+  $('location-query').focus();
   setWizardStep(1);
   if (!extentMap)
     extentMap = new ExtentMap($('extent-map'), (points, message, valid) => {
@@ -2057,8 +2280,23 @@ function shapeControls(apply = true) {
   ($('extent-height') as HTMLInputElement).disabled = shape !== 'rectangle';
   ($('extent-angle') as HTMLInputElement).disabled = shape === 'circle';
   ($('extent-radius') as HTMLInputElement).disabled = shape === 'circle' || shape === 'spline';
-  $('polygon-draw').textContent = editable ? 'Draw boundary' : 'Place center';
-  ($('polygon-undo') as HTMLButtonElement).disabled = !editable;
+  $('polygon-draw').textContent = editable ? 'Draw new outline' : 'Place center';
+  $('polygon-finish').classList.toggle('hidden', !editable);
+  $('polygon-undo').classList.toggle('hidden', !editable);
+  $('extent-width-label').classList.toggle('hidden', editable);
+  ($('extent-height').closest('label') as HTMLElement).classList.toggle(
+    'hidden',
+    shape !== 'rectangle',
+  );
+  ($('extent-angle').closest('label') as HTMLElement).classList.toggle(
+    'hidden',
+    shape === 'circle',
+  );
+  ($('extent-radius').closest('label') as HTMLElement).classList.toggle(
+    'hidden',
+    shape === 'circle' || shape === 'spline',
+  );
+  $('polygon-remove').classList.toggle('hidden', !editable);
   if (apply)
     extentMap.configure(
       shape,
@@ -2073,6 +2311,15 @@ for (const id of ['extent-shape', 'extent-width', 'extent-height', 'extent-angle
 $('polygon-draw').onclick = () => extentMap.start();
 $('polygon-undo').onclick = () => extentMap.undo();
 $('polygon-finish').onclick = () => extentMap.finish();
+$('polygon-cancel').onclick = () => extentMap.cancel();
+$('polygon-remove').onclick = () => extentMap.removeCorner();
+$('extent-map').addEventListener('extent-mode', e => {
+  const state = (e as CustomEvent<{ drawing: boolean; canRemove: boolean }>).detail;
+  ($('polygon-cancel') as HTMLButtonElement).disabled = !state.drawing;
+  ($('polygon-undo') as HTMLButtonElement).disabled = !state.drawing;
+  ($('polygon-finish') as HTMLButtonElement).disabled = !state.drawing;
+  ($('polygon-remove') as HTMLButtonElement).disabled = !state.canRemove;
+});
 $('map-locate').onclick = () => {
   try {
     const b = currentBounds();
@@ -2097,9 +2344,10 @@ $('area-reuse').onclick = async () => {
     const points = extentMap.value();
     validatePolygon(points);
     project.settings.boundary = points;
+    project.settings.bed_rotation_deg = null;
     project.extent_editor = extentMap.state();
     project.name = ($('area-name') as HTMLInputElement).value || project.name;
-    $('area-dialog').classList.add('hidden');
+    setAreaOpen(false);
     touch();
     projectLabels();
     await rebuild(true);
@@ -2109,9 +2357,62 @@ $('area-reuse').onclick = async () => {
 };
 $('change-area').onclick = () => openArea(false);
 $('load-area').onclick = () => openArea(false);
+$('location-search-form').onsubmit = async event => {
+  event.preventDefault();
+  locationAbort?.abort();
+  const controller = new AbortController();
+  locationAbort = controller;
+  $('location-results').replaceChildren();
+  $('location-status').textContent = 'Searching…';
+  $<HTMLButtonElement>('location-submit').disabled = true;
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const results = await locationSearch.search(
+      $<HTMLInputElement>('location-query').value,
+      controller.signal,
+    );
+    if (controller !== locationAbort || controller.signal.aborted) return;
+    $('location-status').textContent = results.length
+      ? 'Choose a result to move your boundary there.'
+      : 'No places found. Try a nearby town or latitude, longitude.';
+    for (const result of results) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'location-result';
+      button.textContent = result.name;
+      button.onclick = () => {
+        extentMap.moveTo(result.center);
+        const bounds = polygonBounds(extentMap.value());
+        ['west', 'south', 'east', 'north'].forEach(
+          (id, i) => ($<HTMLInputElement>(id).value = String(bounds[i])),
+        );
+        $('location-status').textContent =
+          `Boundary moved to ${result.name}. Adjust its shape and size below.`;
+        $('location-results').replaceChildren();
+        $('extent-map').focus();
+      };
+      $('location-results').append(button);
+    }
+  } catch (e) {
+    if (controller === locationAbort && !$('area-dialog').classList.contains('hidden'))
+      $('location-status').textContent = controller.signal.aborted
+        ? 'Search timed out. Try again or enter coordinates.'
+        : e instanceof Error
+          ? e.message
+          : 'Search unavailable. Try again or enter coordinates.';
+  } finally {
+    clearTimeout(timeout);
+    if (controller === locationAbort) $<HTMLButtonElement>('location-submit').disabled = false;
+  }
+};
+$('map-tile-retry').onclick = () => extentMap.retryTiles();
 $('area-close').onclick = () => {
-  $('area-dialog').classList.add('hidden');
-  if (wizardMode) void openLanding();
+  locationAbort?.abort();
+  setAreaOpen(false);
+  document.querySelector<HTMLElement>('.workspace')!.inert = false;
+  document.querySelector<HTMLElement>('header')!.inert = false;
+  if (wizardMode && wizardFromLanding) void openLanding();
+  else areaOpener?.focus();
   wizardMode = false;
 };
 $('area-load').onclick = async () => {
@@ -2151,7 +2452,7 @@ $('area-load').onclick = async () => {
         : 'none',
       prior = wizardMode ? structuredClone(defaults) : normalizeSettings(project?.settings);
     const featureSource = sourcePanel!.selected();
-    $('area-dialog').classList.add('hidden');
+    setAreaOpen(false);
     updateBusy(true);
     abort = new AbortController();
     const loadingLayout = previewLayout(bounds, prior);
@@ -2174,7 +2475,7 @@ $('area-load').onclick = async () => {
       name: ($('area-name') as HTMLInputElement).value || 'Untitled model',
       ...data,
       features: [],
-      settings: { ...prior, boundary },
+      settings: { ...prior, boundary, bed_rotation_deg: null },
     };
     if (creatingProject) activateNewLocalWorkspace();
     touch();
@@ -2187,6 +2488,8 @@ $('area-load').onclick = async () => {
         ? 'Editing model · adaptive detail'
         : 'Editing model · full source resolution';
     setPanel('terrain');
+    document.querySelector<HTMLElement>('.workspace')!.inert = false;
+    document.querySelector<HTMLElement>('header')!.inert = false;
     wizardMode = false;
     updateBusy(false);
     if (featureChoice === 'none') status('Terrain ready.');
@@ -2196,7 +2499,7 @@ $('area-load').onclick = async () => {
     }
   } catch (e) {
     error(e);
-    if (wizardMode) $('area-dialog').classList.remove('hidden');
+    if (wizardMode) setAreaOpen(true);
   } finally {
     updateBusy(false);
   }
@@ -2246,12 +2549,7 @@ $('cancel-job').onclick = () => {
 };
 function unproject(p: [number, number]): [number, number] {
   const l = terrain.layout;
-  const u = l.rotated ? p[1] / l.depth : p[0] / l.width;
-  const v = l.rotated ? 1 - p[0] / l.width : p[1] / l.depth;
-  return [
-    l.bounds[0] + u * (l.bounds[2] - l.bounds[0]),
-    l.bounds[1] + v * (l.bounds[3] - l.bounds[1]),
-  ];
+  return modelLonLat(l, p);
 }
 function stopBoundary() {
   viewer.onBoundary = undefined;
@@ -2263,6 +2561,7 @@ $('draw-boundary').onclick = () => openArea(false);
 $('boundary-cancel').onclick = stopBoundary;
 $('boundary-clear').onclick = () => {
   project.settings.boundary = [];
+  project.settings.bed_rotation_deg = null;
   stopBoundary();
   touch();
   void rebuild();
@@ -2273,6 +2572,7 @@ $('boundary-apply').onclick = () => {
     return;
   }
   project.settings.boundary = boundaryPoints.map(unproject);
+  project.settings.bed_rotation_deg = null;
   stopBoundary();
   touch();
   void rebuild();
@@ -2414,6 +2714,7 @@ async function start() {
 setupWorkbenchChrome({
   newProject: () => {
     void flushAutosave().then(() => {
+      wizardFromLanding = !$('landing-dialog').classList.contains('hidden');
       hideLanding();
       openArea(true);
     });

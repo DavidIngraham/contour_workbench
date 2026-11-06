@@ -1,3 +1,4 @@
+import { openCalibration } from '../mobile-tests/workbench-helpers';
 import { mkdir, readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
@@ -107,7 +108,7 @@ for (const printer of ['mk4s', 'core-one'] as const) {
     page,
   }) => {
     await page.goto('/');
-    await page.locator('#landing-calibration').click();
+    await openCalibration(page);
     await page.locator('#fit-download-format').selectOption('prusa');
     await expect(page.locator('#fit-prusa-options')).toBeVisible();
     await page.locator('#fit-prusa-printer').selectOption(printer);

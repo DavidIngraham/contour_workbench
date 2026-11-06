@@ -65,6 +65,7 @@ interface PlanPacketMetadata {
   cutter_batches: number;
   insert_batches: number;
   removed_terrain_islands: number;
+  removed_terrain_island_outlines: [number, number, number][][];
 }
 interface MeshBatchPacketMetadata {
   batch_index: number;
@@ -281,6 +282,7 @@ function calibrationFiles(
           JSON.stringify({
             ...s,
             boundary: [],
+            bed_rotation_deg: 0,
             max_print_size_mm: [tileWidthMm, terrainDepthMm],
             base_height_mm: 0.6,
             height_factor: 1,
@@ -292,8 +294,7 @@ function calibrationFiles(
       let top = 0;
       for (let i = 2; i < mesh.positions.length; i += 3) top = Math.max(top, mesh.positions[i]);
       for (let i = 0; i < mesh.positions.length; i += 3) {
-        // Bed fitting may rotate a short, wide tile. Undo that orientation before
-        // mapping the DEM so each coupon keeps the same geographic terrain patch.
+        // Coupons use an unrotated private layout, independently of the project's bed angle.
         const { width, depth, rotated } = packet.metadata.layout;
         const x = mesh.positions[i] / width,
           y = mesh.positions[i + 1] / depth;
@@ -551,12 +552,14 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
       const plan: {
         inserts: Piece[];
         removed_terrain_islands: number;
+        removed_terrain_island_outlines: [number, number, number][][];
       } = {
         inserts: metadata.inserts.map(piece => ({
           ...piece,
           mesh: { positions: new Float32Array(), indices: new Uint32Array() },
         })),
         removed_terrain_islands: metadata.removed_terrain_islands,
+        removed_terrain_island_outlines: metadata.removed_terrain_island_outlines ?? [],
       };
       progress('Preparing the terrain for final assembly…', 'terrain-transfer', 0, 1);
       const terrainPacket = decodeMeshPacket<null>(rust!.take_plan_terrain());
@@ -844,6 +847,7 @@ async function handle(request: EngineRequest, progress: Progress): Promise<unkno
             triangles: mesh.indices.length / 3,
             pieces: plan.inserts.length,
             removed_terrain_islands: plan.removed_terrain_islands,
+            removed_terrain_island_outlines: plan.removed_terrain_island_outlines,
             terrain_max_error_mm: memory.adapted ? memory.terrainMaxErrorMm : undefined,
             insert_relative_height_mm: settings.insert_relative_height_mm,
           },
@@ -987,6 +991,7 @@ self.onmessage = async (event: MessageEvent<unknown>) => {
     self.postMessage({
       id: request.id,
       error: error instanceof Error ? error.message : String(error),
+      annotationDiagnostic: (error as { annotationDiagnostic?: unknown })?.annotationDiagnostic,
     });
   } finally {
     canceledRequests.delete(request.id);

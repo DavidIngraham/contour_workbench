@@ -17,6 +17,12 @@ pub struct Layout {
     pub scale: f64,
     /// Whether the geographic extent was rotated 90 degrees to fit the bed.
     pub rotated: bool,
+    /// Counterclockwise bed rotation in degrees; absent in legacy layouts.
+    #[serde(default)]
+    pub rotation_deg: Option<f64>,
+    /// Rotated ground-coordinate minimum, in meters, before printer scaling.
+    #[serde(default)]
+    pub offset_m: [f64; 2],
     /// Minimum source elevation used as the relief datum, in meters.
     pub minimum: f64,
     /// Vertical relief multiplier.
@@ -34,16 +40,76 @@ impl Layout {
         };
         let w = (b[2] - b[0]) * 111319.490793 * ((b[3] + b[1]) * 0.5).to_radians().cos();
         let h = (b[3] - b[1]) * 111319.490793;
-        let a = (s.max_print_size_mm[0] / w).min(s.max_print_size_mm[1] / h);
-        let r = (s.max_print_size_mm[0] / h).min(s.max_print_size_mm[1] / w);
-        let rotated = r > a;
-        let scale = a.max(r);
+        let points = if s.boundary.is_empty() {
+            vec![[0., 0.], [w, 0.], [w, h], [0., h]]
+        } else {
+            s.boundary
+                .iter()
+                .map(|p| {
+                    [
+                        (p[0] - b[0]) / (b[2] - b[0]) * w,
+                        (p[1] - b[1]) / (b[3] - b[1]) * h,
+                    ]
+                })
+                .collect()
+        };
+        let fit = |degrees: f64| {
+            let (sin, cos) = degrees.to_radians().sin_cos();
+            let mut bounds = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for p in &points {
+                let x = p[0] * cos - p[1] * sin;
+                let y = p[0] * sin + p[1] * cos;
+                bounds[0] = bounds[0].min(x);
+                bounds[1] = bounds[1].min(y);
+                bounds[2] = bounds[2].max(x);
+                bounds[3] = bounds[3].max(y);
+            }
+            let width = bounds[2] - bounds[0];
+            let depth = bounds[3] - bounds[1];
+            (
+                (s.max_print_size_mm[0] / width).min(s.max_print_size_mm[1] / depth),
+                width,
+                depth,
+                [bounds[0], bounds[1]],
+            )
+        };
+        // Deterministic angular search, refined to 0.01 degrees around the best sample.
+        let mut angle = s.bed_rotation_deg.unwrap_or(0.);
+        if s.bed_rotation_deg.is_none() {
+            let mut best = fit(angle).0;
+            for step in 1..1800 {
+                let candidate = f64::from(step) / 10.;
+                let scale = fit(candidate).0;
+                if scale > best * (1. + 1e-12) {
+                    best = scale;
+                    angle = candidate;
+                }
+            }
+            let coarse = angle;
+            for step in -10..=10 {
+                let candidate = (coarse + f64::from(step) / 100.).rem_euclid(180.);
+                let scale = fit(candidate).0;
+                if scale > best * (1. + 1e-12) {
+                    best = scale;
+                    angle = candidate;
+                }
+            }
+        }
+        let (scale, width, depth, offset_m) = fit(angle);
+        let rotated = (angle - 90.).abs() < 1e-9;
         Self {
             bounds: b,
-            width: if rotated { h * scale } else { w * scale },
-            depth: if rotated { w * scale } else { h * scale },
+            width: width * scale,
+            depth: depth * scale,
             scale,
             rotated,
+            rotation_deg: Some(angle),
+            offset_m,
             minimum: g.elevations.iter().copied().fold(f64::INFINITY, f64::min),
             height_factor: s.height_factor,
             base_height: s.base_height_mm,
@@ -51,6 +117,17 @@ impl Layout {
     }
     /// Convert longitude/latitude to model XY millimeters.
     pub fn xy(&self, p: [f64; 2]) -> [f64; 2] {
+        if let Some(angle) = self.rotation_deg {
+            let x = (p[0] - self.bounds[0])
+                * 111319.490793
+                * ((self.bounds[1] + self.bounds[3]) * 0.5).to_radians().cos();
+            let y = (p[1] - self.bounds[1]) * 111319.490793;
+            let (sin, cos) = angle.to_radians().sin_cos();
+            return [
+                (x * cos - y * sin - self.offset_m[0]) * self.scale,
+                (x * sin + y * cos - self.offset_m[1]) * self.scale,
+            ];
+        }
         let u = (p[0] - self.bounds[0]) / (self.bounds[2] - self.bounds[0]);
         let v = (p[1] - self.bounds[1]) / (self.bounds[3] - self.bounds[1]);
         if self.rotated {
@@ -61,6 +138,18 @@ impl Layout {
     }
     /// Convert model XY millimeters to longitude/latitude.
     pub fn lonlat(&self, p: [f64; 2]) -> [f64; 2] {
+        if let Some(angle) = self.rotation_deg {
+            let x = p[0] / self.scale + self.offset_m[0];
+            let y = p[1] / self.scale + self.offset_m[1];
+            let (sin, cos) = angle.to_radians().sin_cos();
+            return [
+                self.bounds[0]
+                    + (x * cos + y * sin)
+                        / (111319.490793
+                            * ((self.bounds[1] + self.bounds[3]) * 0.5).to_radians().cos()),
+                self.bounds[1] + (-x * sin + y * cos) / 111319.490793,
+            ];
+        }
         let (u, v) = if self.rotated {
             (p[1] / self.depth, 1. - p[0] / self.width)
         } else {
@@ -196,4 +285,8 @@ pub struct Plan {
     pub cutter_group_ends: Vec<usize>,
     /// Count of enclosed terrain pins removed as too narrow to print reliably.
     pub removed_terrain_islands: usize,
+    /// Closed outlines of removed pins in assembly XYZ millimeters, sampled at the terrain surface.
+    /// Diagnostic only: never included in manufactured meshes.
+    #[serde(default)]
+    pub removed_terrain_island_outlines: Vec<Vec<[f64; 3]>>,
 }

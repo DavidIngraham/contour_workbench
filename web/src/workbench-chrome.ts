@@ -5,6 +5,13 @@ interface ChromeActions {
 
 /** Bind command menus, command mirrors, and native utility dialogs. */
 export function setupWorkbenchChrome(actions: ChromeActions) {
+  const header = document.querySelector('header')!;
+  const toolbar = document.querySelector<HTMLElement>('.workbench-toolbar')!;
+  const syncModal = () => {
+    toolbar.inert = header.inert && !document.body.classList.contains('settings-open');
+  };
+  new MutationObserver(syncModal).observe(header, { attributes: true, attributeFilter: ['inert'] });
+  syncModal();
   const menus = [...document.querySelectorAll<HTMLDetailsElement>('.command-menu')];
   const closeMenus = (except?: HTMLDetailsElement) => {
     menus.forEach(menu => {

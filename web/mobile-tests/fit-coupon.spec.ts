@@ -1,8 +1,9 @@
+import { openCalibration } from './workbench-helpers';
 import { expect, test } from '@playwright/test';
 
-test('coupon settings and unit labels are usable without loading a project', async ({ page }) => {
+test('coupon settings and unit labels are usable from Print setup', async ({ page }) => {
   await page.goto('/');
-  await page.locator('#landing-calibration').click();
+  await openCalibration(page);
   await expect(page.locator('#coupon-path_width_mm')).toHaveValue('0.9');
   await expect(page.locator('#coupon-label-preview')).toContainText('0.15 MM');
   await expect(page.locator('#coupon-size')).toContainText('88.0 × 20.0 mm');
@@ -45,5 +46,5 @@ test('coupon settings and unit labels are usable without loading a project', asy
   await expect(page.locator('#fit-download-confirm')).toBeInViewport();
   await page.screenshot({ path: `../temp/coupon-dialog-${test.info().project.name}.png` });
   await page.locator('#fit-download-cancel').click();
-  await expect(page.locator('#landing-calibration')).toBeFocused();
+  await expect(page.locator('[data-command="download-calibration"]')).toBeFocused();
 });

@@ -116,13 +116,17 @@ for (const treatment of ['raised', 'engraved', 'insert']) {
     await expect(page.locator('#annotation-mask')).toHaveAttribute('width', '512');
     await expect(page.locator('#annotation-mask')).toHaveAttribute('height', '192');
     for (const placement of ['terrain', 'flat', 'porch', 'bottom', 'side']) {
-      await page.locator('#mode-design').click();
+      await page.getByRole('button', { name: 'Annotations', exact: true }).click();
       await page.getByRole('button', { name: 'Annotations', exact: true }).click();
       await page
         .locator('#ann-placement')
         .selectOption(placement === 'flat' ? 'terrain' : placement);
       if (placement === 'flat') await page.locator('#ann-drape').uncheck();
-      if (placement === 'side') await page.locator('#ann-side').selectOption('1');
+      if (placement === 'side')
+        await page.locator('#ann-perimeter').evaluate((input: HTMLInputElement) => {
+          input.value = String((Number(input.max) * 3) / 8);
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
       await expect(page.locator('#annotation-warning')).toHaveText('');
       if (treatment === 'insert' || placement === 'bottom' || placement === 'side')
         await page.screenshot({ path: testInfo.outputPath(`annotation-insert-${placement}.png`) });
@@ -156,7 +160,7 @@ for (const treatment of ['raised', 'engraved', 'insert']) {
         ).toBeGreaterThan(0);
     }
     if (treatment === 'insert') {
-      await page.locator('#mode-design').click();
+      await page.getByRole('button', { name: 'Annotations', exact: true }).click();
       await page.getByRole('button', { name: 'Print setup', exact: true }).click();
       await page.locator('#manufacturing-mode').selectOption('multicolor');
       await page.locator('#generate').click();
@@ -222,7 +226,10 @@ test('face placement and optional draping survive a project round trip', async (
   await page.locator('#ann-drape').uncheck();
   await page.locator('#ann-treatment').selectOption('insert');
   await page.locator('#ann-placement').selectOption('side');
-  await page.locator('#ann-side').selectOption('2');
+  await page.locator('#ann-perimeter').evaluate((input: HTMLInputElement) => {
+    input.value = String((Number(input.max) * 5) / 8);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await page.locator('[data-ann-number="z_mm"]').fill('6');
   await page.locator('[data-ann-number="height_mm"]').fill('8');
   await page.locator('[data-ann-number="angle_deg"]').fill('5');
@@ -243,7 +250,7 @@ test('face placement and optional draping survive a project round trip', async (
   await page.waitForFunction(() => !(window as any).contourDiagnostics.busy);
   await page.getByRole('button', { name: 'Annotations', exact: true }).click();
   await expect(page.locator('#ann-placement')).toHaveValue('side');
-  await expect(page.locator('#ann-side')).toHaveValue('2');
+  expect(Number(await page.locator('#ann-perimeter').inputValue())).toBeCloseTo(125, 1);
   await expect(page.locator('[data-ann-number="z_mm"]')).toHaveValue('6');
   await page.locator('#ann-placement').selectOption('terrain');
   await expect(page.locator('#ann-drape')).not.toBeChecked();
@@ -356,7 +363,7 @@ test('PNG inserts retain depth and color through a project round trip and print-
     await page.evaluate(() => (window as any).contourDiagnostics.asset?.pieces),
     await page.locator('#status').innerText(),
   ).toBe(2);
-  await page.locator('#mode-design').click();
+  await page.getByRole('button', { name: 'Annotations', exact: true }).click();
   await page.getByRole('button', { name: 'Print setup', exact: true }).click();
   await page.locator('#manufacturing-mode').selectOption('multicolor');
   await page.locator('#generate').click();

@@ -1,5 +1,6 @@
 /** Printable text and monochrome artwork geometry shared by preview and generation. */
 import type { Grid, Layout, Mesh, Settings } from './types';
+import { modelXY, modelLonLat } from './layout-transform';
 /** Local font families; the saved raster mask preserves the exact printable glyphs. */
 export const annotationFonts = {
   'sans-serif': 'Sans serif',
@@ -104,16 +105,11 @@ export function annotationFrame(a: Annotation, s: Settings, l: Layout): Annotati
 }
 /** Convert longitude/latitude to model XY millimeters. */
 export function xy(l: Layout, p: number[]): [number, number] {
-  const u = (p[0] - l.bounds[0]) / (l.bounds[2] - l.bounds[0]),
-    v = (p[1] - l.bounds[1]) / (l.bounds[3] - l.bounds[1]);
-  return l.rotated ? [(1 - v) * l.width, u * l.depth] : [u * l.width, v * l.depth];
+  return modelXY(l, p);
 }
 /** Bilinearly sample model-surface Z at model XY coordinates. */
 export function surfaceZ(g: Grid, l: Layout, x: number, y: number) {
-  const u = l.rotated ? y / l.depth : x / l.width,
-    v = l.rotated ? 1 - x / l.width : y / l.depth;
-  const lon = l.bounds[0] + u * (l.bounds[2] - l.bounds[0]),
-    lat = l.bounds[1] + v * (l.bounds[3] - l.bounds[1]);
+  const [lon, lat] = modelLonLat(l, [x, y]);
   const gx = Math.max(
       0,
       Math.min(g.width - 1, ((lon - g.bounds[0]) / (g.bounds[2] - g.bounds[0])) * (g.width - 1)),
@@ -138,11 +134,33 @@ export function boundaryXY(s: Settings, l: Layout): [number, number][] {
   return s.boundary.length
     ? s.boundary.map(p => xy(l, p))
     : [
-        [0, 0],
-        [l.width, 0],
-        [l.width, l.depth],
-        [0, l.depth],
-      ];
+        [l.bounds[0], l.bounds[1]],
+        [l.bounds[2], l.bounds[1]],
+        [l.bounds[2], l.bounds[3]],
+        [l.bounds[0], l.bounds[3]],
+      ].map(p => xy(l, p));
+}
+/** Find the nearest boundary segment and clamp the position to its endpoints. */
+export function nearestBoundaryPoint(poly: [number, number][], x: number, y: number) {
+  let best = { side_index: 0, x_mm: x, y_mm: y };
+  let distance = Infinity;
+  poly.forEach((p, i) => {
+    const q = poly[(i + 1) % poly.length];
+    const dx = q[0] - p[0],
+      dy = q[1] - p[1];
+    const t = Math.max(
+      0,
+      Math.min(1, ((x - p[0]) * dx + (y - p[1]) * dy) / Math.max(1e-12, dx * dx + dy * dy)),
+    );
+    const px = p[0] + t * dx,
+      py = p[1] + t * dy;
+    const d = Math.hypot(x - px, y - py);
+    if (d < distance) {
+      distance = d;
+      best = { side_index: i, x_mm: px, y_mm: py };
+    }
+  });
+  return best;
 }
 function inside(p: number[], poly: number[][]) {
   let yes = false;
@@ -311,7 +329,16 @@ export function annotationPatches(mask: number[], width: number, height: number)
   return patches;
 }
 /** Build preview solids, boolean solids, and an optional attached porch. */
-export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layout) {
+export function annotationGeometry(
+  a: Annotation,
+  g: Grid,
+  s: Settings,
+  l: Layout,
+  previewOnly = false,
+) {
+  const warnings = new Set<string>();
+  const ghostCells = new Set<number[][]>();
+  const ghost: Mesh[] = [];
   const insert = a.as_insert === true;
   const insertDepthMm = a.insert_depth_mm ?? s.insert_depth_mm;
   if (
@@ -386,13 +413,16 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
   const solids: Mesh[] = [],
     preview: Mesh[] = [];
   const cells: number[][][] = [];
+  let lowestSurfaceMm = Infinity,
+    highestSurfaceMm = -Infinity;
   const dx = a.width_mm / a.pixels_w,
     dy = a.height_mm / a.pixels_h;
   for (const patch of annotationPatches(a.mask, a.pixels_w, a.pixels_h)) {
-    // Flat porches need one prism per patch. Sample terrain at 1 mm intervals
-    // across the width and along each side's displacement to retain relief.
+    // Sample terrain/backing at 1 mm intervals even for flat artwork: interior
+    // peaks determine its seating height, and unsupported regions must ghost.
+    const patchStart = cells.length;
     const columns =
-      porch || face
+      porch || (face && !previewOnly)
         ? 1
         : Math.max(
             1,
@@ -401,7 +431,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
             ),
           );
     const rows =
-      porch || face
+      porch || (face && !previewOnly)
         ? 1
         : Math.max(
             1,
@@ -431,6 +461,12 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
           corner((col + 1) / columns, row / rows, 0.0002, 0.0002),
           corner(col / columns, row / rows, -0.0002, 0.0002),
         ];
+        let invalid = false;
+        const issue = (message: string) => {
+          if (!previewOnly) throw new Error(message);
+          warnings.add(message);
+          invalid = true;
+        };
         if (
           face &&
           points.some(p => {
@@ -443,7 +479,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
             );
           })
         )
-          throw new Error(
+          issue(
             'The annotation needs at least 0.4 mm of solid backing. Reduce its depth or move it.',
           );
         if (
@@ -463,7 +499,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
             );
           })
         )
-          throw new Error(
+          issue(
             'Fit the annotation within the selected side. Reduce its height or raise the model base.',
           );
         if (
@@ -471,22 +507,36 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
           !porch &&
           points.some(p => !inside(face ? annotationPoint(frame, [...p, 0]) : p, poly))
         )
-          throw new Error(
-            'Move the annotation fully inside the terrain, or choose an attached porch.',
-          );
+          issue('Move the annotation fully inside the terrain, or choose an attached porch.');
         cells.push(points);
+        if (invalid) ghostCells.add(points);
+        for (const [x, y] of points) {
+          lowestSurfaceMm = Math.min(lowestSurfaceMm, sampleZ(x, y));
+          highestSurfaceMm = Math.max(highestSurfaceMm, sampleZ(x, y));
+        }
+      }
+    }
+    if (a.placement === 'terrain' && a.drape === false) {
+      const sampled = cells.slice(patchStart);
+      const ghosted = ghostCells.has(sampled[0]);
+      // Flat surfaces need only the traced outline, not a relief grid. Keep the
+      // grid only where a patch crosses the support boundary so ghosting stays local.
+      if (sampled.every(points => ghostCells.has(points) === ghosted)) {
+        const outline = [
+          corner(0, 1, -0.0002, -0.0002),
+          corner(1, 1, 0.0002, -0.0002),
+          corner(1, 0, 0.0002, 0.0002),
+          corner(0, 0, -0.0002, 0.0002),
+        ];
+        cells.length = patchStart;
+        cells.push(outline);
+        for (const points of sampled) ghostCells.delete(points);
+        if (ghosted) ghostCells.add(outline);
       }
     }
   }
   // Every disconnected letter shares a flat seating plane. Relief remains on
   // the top, so the parts can print bottom-down without supports.
-  let lowestSurfaceMm = Infinity,
-    highestSurfaceMm = -Infinity;
-  for (const points of cells)
-    for (const [x, y] of points) {
-      lowestSurfaceMm = Math.min(lowestSurfaceMm, sampleZ(x, y));
-      highestSurfaceMm = Math.max(highestSurfaceMm, sampleZ(x, y));
-    }
   const z = (x: number, y: number) =>
     a.drape === false && a.placement === 'terrain'
       ? a.treatment === 'engraved'
@@ -496,6 +546,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
   const minimumFloor = face ? -Infinity : 0.4;
   const floorMm = Math.max(minimumFloor, lowestSurfaceMm - insertDepthMm);
   if (
+    !previewOnly &&
     a.placement === 'bottom' &&
     Math.max(insert ? insertDepthMm : a.treatment === 'engraved' ? a.depth_mm : 0, 0) >
       l.base_height - 0.4
@@ -503,7 +554,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
     throw new Error(
       'Increase the model base height to leave at least 0.4 mm above the bottom annotation.',
     );
-  if (insert && lowestSurfaceMm - floorMm < 0.2 - 1e-8)
+  if (!previewOnly && insert && lowestSurfaceMm - floorMm < 0.2 - 1e-8)
     throw new Error(
       'The annotation needs at least 0.2 mm of pocket depth. Increase the base height or move it to higher terrain.',
     );
@@ -517,7 +568,7 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
         insert ? () => floorMm : raised ? () => (face ? -0.3 : 0.3) : floor,
       ),
     );
-    preview.push(
+    (ghostCells.has(points) ? ghost : preview).push(
       prism(
         points,
         raised ? (x, y) => z(x, y) + a.depth_mm : (x, y) => floor(x, y) + 0.002,
@@ -530,6 +581,8 @@ export function annotationGeometry(a: Annotation, g: Grid, s: Settings, l: Layou
   return {
     solids: face ? solids.map(mesh => annotationMesh(frame, mesh)) : solids,
     preview: face ? preview.map(mesh => annotationMesh(frame, mesh)) : preview,
+    ghost: face ? ghost.map(mesh => annotationMesh(frame, mesh)) : ghost,
+    warnings: [...warnings],
     frame,
     porch,
     center: annotationPoint(frame, [cx, cy, z(cx, cy)]),

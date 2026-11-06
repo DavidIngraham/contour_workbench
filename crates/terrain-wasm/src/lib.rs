@@ -122,6 +122,7 @@ struct PlanMetadata<'a> {
     cutter_batches: usize,
     insert_batches: usize,
     removed_terrain_islands: usize,
+    removed_terrain_island_outlines: &'a [Vec<[f64; 3]>],
 }
 
 #[derive(Serialize)]
@@ -292,6 +293,7 @@ impl TerrainSession {
             cutter_batches: cutter_batches.len(),
             insert_batches: insert_batches.len(),
             removed_terrain_islands: plan.removed_terrain_islands,
+            removed_terrain_island_outlines: &plan.removed_terrain_island_outlines,
         };
         let encoded = serde_json::to_string(&metadata).map_err(err)?;
         let total_cutter_batches = cutter_batches.len();

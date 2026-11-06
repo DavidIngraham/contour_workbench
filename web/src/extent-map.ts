@@ -15,6 +15,9 @@ import type { Bounds } from './types';
 export class ExtentMap {
   private map: L.Map;
   private shapes = L.layerGroup();
+  private tiles: L.TileLayer;
+  private tileFailed = false;
+  private tileTimer: ReturnType<typeof setTimeout> | undefined;
   private points: Vertex[] = [];
   private drawing = false;
   private placing = false;
@@ -25,6 +28,9 @@ export class ExtentMap {
   private radiusM = 0;
   private maxPrintSizeMm: [number, number] = [248, 198];
   private center: Vertex = [-121.64, 45.68];
+  private beforeDraw: Vertex[] = [];
+  private beforeDrawAngle = 0;
+  private selectedCorner = -1;
   constructor(
     private host: HTMLElement,
     private changed: (points: Vertex[], message: string, valid: boolean) => void,
@@ -33,12 +39,46 @@ export class ExtentMap {
       [45.68, -121.64],
       12,
     );
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    this.tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution:
         '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    }).addTo(this.map);
+    });
+    this.tiles.on('loading', () => {
+      this.tileFailed = false;
+      this.tileFeedback('Loading map…');
+      clearTimeout(this.tileTimer);
+      this.tileTimer = setTimeout(() => {
+        this.tileFailed = true;
+        this.tileFeedback('Map is taking too long to load. Check your connection or retry.', true);
+      }, 12000);
+    });
+    this.tiles.on('tileerror', () => {
+      this.tileFailed = true;
+      this.tileFeedback('Some map tiles could not load. You can retry or use coordinates.', true);
+    });
+    this.tiles.on('load', () => {
+      clearTimeout(this.tileTimer);
+      if (!this.tileFailed) this.tileFeedback('Map ready.');
+    });
+    this.tiles.addTo(this.map);
     this.shapes.addTo(this.map);
+    host.tabIndex = 0;
+    host.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !(e.target instanceof HTMLButtonElement)) {
+        e.preventDefault();
+        this.finish();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        this.cancel();
+      }
+      if ((e.key === 'Backspace' || e.key === 'Delete') && this.drawing) {
+        e.preventDefault();
+        this.undo();
+      }
+    });
     this.map.on('click', (e: L.LeafletMouseEvent) => {
       if (this.placing) {
         this.center = [e.latlng.lng, e.latlng.lat];
@@ -50,6 +90,25 @@ export class ExtentMap {
       }
     });
   }
+  private tileFeedback(message: string, retry = false) {
+    const status = document.getElementById('map-tile-status');
+    if (status) status.textContent = message;
+    document.getElementById('map-tile-retry')?.classList.toggle('hidden', !retry);
+  }
+  /** Retry tile downloads without discarding the current boundary. */
+  retryTiles() {
+    this.tiles.redraw();
+  }
+  /** Relocate the draft boundary, preserving meter dimensions and the selected shape. */
+  moveTo(center: Vertex) {
+    this.cancel();
+    const previous = localFrame(this.points.length ? this.points : [this.center]);
+    const next = localFrame([center]);
+    this.points = this.points.map(point => next.toGeo(previous.toXY(point)));
+    this.center = center;
+    this.generate();
+    this.locate(polygonBounds(this.value()));
+  }
   open(
     bounds: Bounds,
     points: Vertex[],
@@ -57,6 +116,7 @@ export class ExtentMap {
     maxPrintSizeMm: [number, number] = [248, 198],
   ) {
     this.points = structuredClone(points);
+    this.selectedCorner = -1;
     this.maxPrintSizeMm = [...maxPrintSizeMm];
     this.shape = 'freeform';
     this.angle = 0;
@@ -79,7 +139,7 @@ export class ExtentMap {
         [bounds[1], bounds[0]],
         [bounds[3], bounds[2]],
       ],
-      { padding: [35, 35] },
+      { padding: [35, 35], animate: false },
     );
     this.render();
   }
@@ -132,10 +192,31 @@ export class ExtentMap {
     this.render();
   }
   start() {
+    this.beforeDraw = structuredClone(this.points);
+    this.beforeDrawAngle = this.angle;
     if (this.editable()) {
       this.points = [];
+      this.angle = 0;
       this.drawing = true;
     } else this.placing = true;
+    this.render();
+    this.host.focus();
+  }
+  /** Discard an unfinished replacement boundary and return to the previous outline. */
+  cancel() {
+    if (this.drawing) {
+      this.points = this.beforeDraw;
+      this.angle = this.beforeDrawAngle;
+    }
+    this.drawing = false;
+    this.placing = false;
+    this.render();
+  }
+  /** Remove the selected corner while retaining a valid minimum vertex count. */
+  removeCorner() {
+    if (this.selectedCorner < 0 || this.points.length <= 3) return;
+    this.points.splice(this.selectedCorner, 1);
+    this.selectedCorner = -1;
     this.render();
   }
   undo() {
@@ -172,6 +253,14 @@ export class ExtentMap {
     return polygonBounds(this.value());
   }
   private render() {
+    this.host.dispatchEvent(
+      new CustomEvent('extent-mode', {
+        detail: {
+          drawing: this.drawing || this.placing,
+          canRemove: this.editable() && this.selectedCorner >= 0 && this.points.length > 3,
+        },
+      }),
+    );
     this.shapes.clearLayers();
     let value: Vertex[];
     try {
@@ -199,31 +288,76 @@ export class ExtentMap {
       outline?.setLatLngs(this.value().map(([lng, lat]) => L.latLng(lat, lng)));
       this.host.dispatchEvent(new CustomEvent('extent-edit', { detail: this.state() }));
     };
-    if (this.editable())
+    if (this.editable()) {
       rotatePolygon(this.points, this.angle).forEach((p, i) => {
         const marker = L.marker([p[1], p[0]], {
           draggable: true,
+          autoPanOnFocus: false,
+          bubblingMouseEvents: false,
+          title: `Corner ${i + 1}: drag to move; right-click to remove`,
           icon: L.divIcon({
-            className: 'extent-vertex',
+            className: 'extent-vertex' + (this.selectedCorner === i ? ' selected' : ''),
             html: String(i + 1),
             iconSize: [22, 22],
             iconAnchor: [11, 11],
           }),
         }).addTo(this.shapes);
-        marker.on('dragend', () => {
+        marker.on('drag', () => {
           const displayed = rotatePolygon(this.points, this.angle);
           const q = marker.getLatLng();
           displayed[i] = [q.lng, q.lat];
-          this.points = rotatePolygon(displayed, -this.angle);
+          this.points = displayed;
+          this.angle = 0;
+          updateOutline();
+        });
+        marker.on('dragend', () => this.render());
+        marker.on('contextmenu', () => {
+          if (this.points.length <= 3) return;
+          this.points.splice(i, 1);
           this.render();
         });
         marker.on('click', () => {
           if (i === 0 && this.drawing && this.points.length >= 3) this.finish();
+          else if (!this.drawing) {
+            this.selectedCorner = i;
+            this.render();
+          }
         });
       });
-    else {
+      if (!this.drawing && this.points.length >= 3) {
+        const displayed = rotatePolygon(this.points, this.angle);
+        displayed.forEach((p, i) => {
+          const q = displayed[(i + 1) % displayed.length];
+          const middle: Vertex = [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+          const add = L.marker([middle[1], middle[0]], {
+            autoPanOnFocus: false,
+            keyboard: false,
+            bubblingMouseEvents: false,
+            title: 'Add corner',
+            icon: L.divIcon({
+              className: 'extent-midpoint-marker',
+              html: `<button type="button" class="extent-midpoint" aria-label="Add corner after ${i + 1}">+</button>`,
+              iconSize: [20, 20],
+              iconAnchor: [10, 10],
+            }),
+          }).addTo(this.shapes);
+          const button = add.getElement()!.querySelector('button')!;
+          // Adding a corner is a command, not a map gesture. Keep its native
+          // pointer/keyboard activation independent of Leaflet drag suppression.
+          L.DomEvent.disableClickPropagation(button);
+          button.onclick = () => {
+            displayed.splice(i + 1, 0, middle);
+            this.points = displayed;
+            this.angle = 0;
+            this.selectedCorner = i + 1;
+            this.render();
+          };
+        });
+      }
+    } else {
       const marker = L.marker([this.center[1], this.center[0]], {
         draggable: true,
+        autoPanOnFocus: false,
         icon: L.divIcon({
           className: 'extent-vertex extent-center',
           html: '✥',
@@ -243,9 +377,9 @@ export class ExtentMap {
       message = this.placing
         ? 'Click the map to place the center.'
         : this.drawing
-          ? 'Click to add vertices. Click the first vertex or Finish to close.'
+          ? `${this.points.length} corners · Click to add. Click the first corner or press Enter to finish. Esc cancels.`
           : this.editable()
-            ? 'Drag vertices to refine the outline.'
+            ? `${this.points.length} corners · Drag to move. Click + to add. Select a corner, then Remove corner to delete.`
             : 'Drag the center to move the shape. Drag edge handles to resize; click ↻ to turn 15° or drag it to rotate.';
     try {
       validatePolygon(value);
@@ -266,6 +400,7 @@ export class ExtentMap {
     const marker = (point: Vertex, kind: string, html: string, title: string) =>
       L.marker([point[1], point[0]], {
         draggable: true,
+        autoPanOnFocus: false,
         bubblingMouseEvents: false,
         title,
         icon: L.divIcon({

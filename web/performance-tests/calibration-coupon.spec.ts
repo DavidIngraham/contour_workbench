@@ -1,3 +1,4 @@
+import { openCalibration } from '../mobile-tests/workbench-helpers';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 import { strFromU8, unzipSync } from 'fflate';
@@ -46,7 +47,7 @@ test('one thickness control grows the coupon and inserts without changing the lo
   await page.goto('/');
   const results: { insert: number[][]; baseHeight: number }[] = [];
   for (const depth of [2, 5]) {
-    await page.locator('#landing-calibration').click();
+    await openCalibration(page);
     await page.locator('#coupon-insert_depth_mm').fill(String(depth));
     await expect(page.locator('#fit-download-confirm')).toBeEnabled();
     await page.locator('#fit-download-format').selectOption('stl');
@@ -268,13 +269,13 @@ for (const floorMm of [1, 5, 20])
 
 for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
   const format = variant === 'bambu-mini' ? 'bambu' : variant;
-  test(`landing fit test downloads a single ${variant} 3MF without a project`, async ({ page }) => {
+  test(`Print setup fit test downloads a single ${variant} 3MF`, async ({ page }) => {
     await page.goto('/');
-    await page.locator('#landing-calibration').click();
+    await openCalibration(page);
     await expect(page.locator('#fit-download-format')).toHaveValue('portable');
     await page.locator('#fit-download-cancel').click();
-    await expect(page.locator('#landing-calibration')).toBeFocused();
-    await page.locator('#landing-calibration').click();
+    await expect(page.locator('[data-command="download-calibration"]')).toBeFocused();
+    await openCalibration(page);
     await page.locator('#fit-download-format').selectOption(format);
     if (format === 'prusa') await page.locator('#fit-prusa-material-mode').selectOption('mmu3');
     if (variant === 'bambu-mini') await page.locator('#fit-bambu-printer').selectOption('a1-mini');
@@ -327,11 +328,12 @@ for (const variant of ['portable', 'bambu', 'prusa', 'bambu-mini']) {
         0,
       ),
     ).toBe(5);
-    await expect(page.locator('#landing-dialog')).toBeVisible();
+    await expect(page.locator('#landing-dialog')).toBeHidden();
+    await expect(page.locator('#tab-print')).toBeVisible();
     if (format === 'portable') {
       await mkdir('../temp', { recursive: true });
       await page.screenshot({ path: '../temp/fit-test-landing.png' });
-      await page.locator('#landing-calibration').click();
+      await openCalibration(page);
       await expect(page.locator('#fit-download-dialog')).toBeVisible();
       await page.screenshot({ path: '../temp/fit-test-formats.png' });
     }

@@ -13,6 +13,7 @@ test('full terrain example keeps selection properties and menus usable across vi
   await expect(page.locator('#project-title')).toHaveText('Post Canyon, Oregon');
   await page.screenshot({ path: info.outputPath('desktop-terrain.png') });
   await page.locator('[data-tab="features"]').click();
+  await page.locator('#feature-expand').click();
   await page.locator('[data-select-feature]').first().click();
   await expect(page.locator('#selection-treatment')).toBeVisible();
   const tree = await page.locator('#feature-list').boundingBox();

@@ -152,6 +152,8 @@ export class Viewer {
   features = new THREE.Group();
   frame = new THREE.Group();
   private focusGuide = new THREE.Group();
+  private correctionGuide = new THREE.Group();
+  private bedGuide = new THREE.Group();
   private surface?: THREE.Mesh;
   layout?: Layout;
   onNorthAngle?: (angle: number) => void;
@@ -225,7 +227,7 @@ export class Viewer {
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(2500, 2500),
       new THREE.MeshStandardMaterial({
-        color: 0xe9ede6,
+        color: 0xe9edf2,
         roughness: 1,
         depthTest: false,
         depthWrite: false,
@@ -244,6 +246,7 @@ export class Viewer {
     grid.visible = false;
     this.scene.add(this.model);
     this.model.add(this.land, this.features, this.frame);
+    this.frame.add(this.bedGuide);
     new ResizeObserver(() => this.resize()).observe(host);
     this.resize();
     this.controls.addEventListener('change', () => {
@@ -292,6 +295,7 @@ export class Viewer {
     this.dirty = true;
     const w = this.host.clientWidth,
       h = this.host.clientHeight;
+    if (!w || !h) return;
     this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
@@ -451,9 +455,15 @@ export class Viewer {
     }
     this.invalidate();
   }
-  setTerrain(mesh: Mesh, layout: Layout, fit = false, project?: Pick<Project, 'materials'>) {
+  setTerrain(
+    mesh: Mesh,
+    layout: Layout,
+    fit = false,
+    project?: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>,
+  ) {
     this.annotationFaceCuts([]);
     this.clear(this.focusGuide);
+    this.clear(this.correctionGuide);
     this.dirty = true;
     this.review = false;
     this.layout = layout;
@@ -463,6 +473,25 @@ export class Viewer {
     this.clear(this.land);
     this.boundary([]);
     this.model.position.set(-layout.width / 2, -layout.depth / 2, 0);
+    this.clear(this.bedGuide);
+    const [bedWidth, bedDepth] = project?.settings?.max_print_size_mm ?? [
+      layout.width,
+      layout.depth,
+    ];
+    const x = (layout.width - bedWidth) / 2,
+      y = (layout.depth - bedDepth) / 2;
+    const bed = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(x, y, -0.1),
+        new THREE.Vector3(x + bedWidth, y, -0.1),
+        new THREE.Vector3(x + bedWidth, y + bedDepth, -0.1),
+        new THREE.Vector3(x, y + bedDepth, -0.1),
+        new THREE.Vector3(x, y, -0.1),
+      ]),
+      new THREE.LineDashedMaterial({ color: 0x607a98, dashSize: 3, gapSize: 2 }),
+    );
+    bed.computeLineDistances();
+    this.bedGuide.add(bed);
     const surface = new THREE.Mesh(
       this.geometry(mesh),
       this.terrainMaterial(materialColors(project).get('terrain')),
@@ -647,14 +676,72 @@ export class Viewer {
   highlight(id: string | null) {
     this.clear(this.focusGuide);
     this.dirty = true;
+    const bounds = new THREE.Box3();
+    if (this.surface && this.surface.material instanceof THREE.MeshStandardMaterial) {
+      this.surface.material.emissive.setHex(id === 'terrain' ? 0x0077ff : 0);
+      this.surface.material.emissiveIntensity = id === 'terrain' ? 0.4 : 0;
+      if (id === 'terrain') {
+        this.surface.geometry.computeBoundingBox();
+        bounds.union(this.surface.geometry.boundingBox!);
+      }
+    }
     for (const [key, objects] of this.overlays) {
       for (const o of objects) {
         if (o instanceof THREE.Mesh) {
-          o.material.emissive?.setHex(key === id ? 0x5d310b : 0);
-          o.material.emissiveIntensity = key === id ? 0.5 : 0;
+          o.material.emissive?.setHex(key === id ? 0x0077ff : 0);
+          o.material.emissiveIntensity = key === id ? 0.9 : 0;
+          if (key === id) {
+            o.geometry.computeBoundingBox();
+            bounds.union(o.geometry.boundingBox!.clone().translate(o.position));
+          }
         }
       }
     }
+    if (!bounds.isEmpty()) {
+      const guide = new THREE.Box3Helper(bounds.expandByScalar(0.5), 0x0077ff);
+      (guide.material as THREE.LineBasicMaterial).depthTest = false;
+      guide.renderOrder = 105;
+      this.focusGuide.add(guide);
+      this.model.add(this.focusGuide);
+    }
+  }
+  /** Highlight and optionally isolate a generated part without changing its mesh. */
+  inspectPart(id: string | null, isolate = false) {
+    this.highlight(id);
+    if (this.surface) this.surface.visible = !isolate || id === 'terrain';
+    for (const object of this.features.children)
+      object.visible = !isolate || object.userData.id === id;
+    this.dirty = true;
+  }
+  /** Show original pin footprints as diagnostic overlays, never exported geometry. */
+  showCorrections(outlines: [number, number, number][][], visible: boolean) {
+    this.clear(this.correctionGuide);
+    if (visible)
+      for (const ring of outlines) {
+        if (!ring.length) continue;
+        const points = ring.map(p => new THREE.Vector3(p[0], p[1], p[2] + 0.15));
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(points),
+          new THREE.LineBasicMaterial({ color: 0xd02c74, depthTest: false, depthWrite: false }),
+        );
+        line.renderOrder = 110;
+        this.correctionGuide.add(line);
+        const center = new THREE.Box3().setFromPoints(points).getCenter(new THREE.Vector3());
+        const marker = new THREE.Mesh(
+          new THREE.SphereGeometry(0.65, 8, 6),
+          new THREE.MeshBasicMaterial({
+            color: 0xd02c74,
+            depthTest: false,
+            transparent: true,
+            opacity: 0.65,
+          }),
+        );
+        marker.position.copy(center);
+        marker.renderOrder = 111;
+        this.correctionGuide.add(marker);
+      }
+    this.model.add(this.correctionGuide);
+    this.dirty = true;
   }
   showAsset(asset: Asset, layout: Layout, project?: Pick<Project, 'materials'>) {
     this.dirty = true;
@@ -695,6 +782,7 @@ export class Viewer {
       m.castShadow = true;
       this.features.add(m);
       m.userData.featureClass = p.class;
+      this.overlays.set(p.id, [m]);
     }
   }
   applyMaterials(project: Pick<Project, 'materials'> & Partial<Pick<Project, 'settings'>>) {
@@ -919,24 +1007,22 @@ export class Viewer {
     this.controls.update();
     this.dirty = true;
   }
+  private northDirection() {
+    const angle = ((this.layout?.rotation_deg ?? (this.layout?.rotated ? 90 : 0)) * Math.PI) / 180;
+    return new THREE.Vector3(-Math.sin(angle), Math.cos(angle), 0);
+  }
   private updateNorth() {
     if (!this.layout) return;
     const center = new THREE.Vector3(0, 0, 10).project(this.camera);
-    const north = new THREE.Vector3(
-      this.layout.rotated ? -10 : 0,
-      this.layout.rotated ? 0 : 10,
-      10,
-    ).project(this.camera);
+    const north = this.northDirection().multiplyScalar(10);
+    north.z = 10;
+    north.project(this.camera);
     const dx = (north.x - center.x) * this.host.clientWidth,
       dy = -(north.y - center.y) * this.host.clientHeight;
     this.onNorthAngle?.(Math.atan2(dx, -dy));
   }
   north() {
-    const direction = new THREE.Vector3(
-      this.layout?.rotated ? -1 : 0,
-      this.layout?.rotated ? 0 : 1,
-      0,
-    );
+    const direction = this.northDirection();
     const radius = this.camera.position.distanceTo(this.controls.target);
     const polar = this.controls.getPolarAngle();
     this.camera.position
@@ -960,7 +1046,12 @@ export class Viewer {
       ',' +
       this.layout.depth +
       ',' +
-      this.layout.rotated;
+      JSON.stringify([
+        this.layout.rotation_deg,
+        this.layout.offset_m,
+        this.layout.scale,
+        this.layout.rotated,
+      ]);
     if (key === this.topoKey) return;
     this.topoKey = key;
     const request = ++this.topoRequest;
@@ -1027,8 +1118,8 @@ export class Viewer {
     );
     this.controls.target.copy(target);
     this.camera.position.set(
-      target.x + (this.layout?.rotated ? 0.01 : 0),
-      target.y + (this.layout?.rotated ? 0 : -0.01),
+      target.x - this.northDirection().x * 0.01,
+      target.y - this.northDirection().y * 0.01,
       target.z + distance,
     );
     this.controls.update();

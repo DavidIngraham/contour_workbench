@@ -11,6 +11,7 @@ import {
   annotationFrame,
   annotationPoint,
   boundaryXY,
+  nearestBoundaryPoint,
   type AnnotationFrame,
   type Annotation,
 } from './annotations';
@@ -36,10 +37,13 @@ export class AnnotationEditor {
     frame: AnnotationFrame;
     center: THREE.Vector3;
     start: THREE.Vector3;
+    grabU: number;
+    grabZ: number;
   };
   private ray = new THREE.Raycaster();
   private panel: HTMLElement;
   private warning = '';
+  private diagnostics?: { annotationId: string; meshes: Mesh[]; message: string };
   constructor(
     private viewer: Viewer,
     private state: () => { project: Project; terrain: Terrain },
@@ -48,7 +52,7 @@ export class AnnotationEditor {
   ) {
     this.panel = document.getElementById('tab-annotations')!;
     viewer.model.add(this.group);
-    this.panel.innerHTML = `<section class="panel"><h3>Annotations</h3><div class="annotation-actions"><button class="btn" id="add-text">Add text</button><button class="btn" id="add-logo">Upload PNG</button></div><input hidden id="annotation-file" type="file" accept="image/png"/><p class="help">Select a label to drag it. Drag the corner to resize or the round handle to rotate. Label platforms snap to a straight model edge.</p><div id="annotation-list"></div></section><section class="panel" id="annotation-form"></section><p class="help" id="annotation-warning" role="status"></p>`;
+    this.panel.innerHTML = `<section class="panel"><h3>Annotations</h3><div class="annotation-actions"><button class="btn" id="add-text">Add text</button><button class="btn" id="add-logo">Upload PNG</button></div><input hidden id="annotation-file" type="file" accept="image/png"/><p class="help">Drag artwork to move. Use the orange corner to resize and the blue handle to rotate.</p><div id="annotation-list"></div><div class="annotation-legend"><span>Outside model</span><span>Too narrow to print</span></div></section><section class="panel" id="annotation-form"></section><p class="help" id="annotation-warning" role="status"></p>`;
     this.el('add-text').onclick = () => this.add('text');
     this.el('add-logo').onclick = () => this.el<HTMLInputElement>('annotation-file').click();
     this.el<HTMLInputElement>('annotation-file').onchange = async () => {
@@ -287,27 +291,38 @@ export class AnnotationEditor {
     }
     if (a.placement === 'side') {
       const label = document.createElement('label');
-      label.textContent = 'Model side';
-      const picker = document.createElement('select');
-      picker.id = 'ann-side';
+      label.className = 'side-track-label';
+      label.textContent = 'Position around perimeter';
       const { project, terrain } = this.state();
       const poly = boundaryXY(project.settings, terrain.layout);
-      poly.forEach((point, i) => {
-        const next = poly[(i + 1) % poly.length];
-        picker.add(
-          new Option(
-            `Side ${i + 1} (${Math.hypot(next[0] - point[0], next[1] - point[1]).toFixed(1)} mm)`,
-            String(i),
-          ),
-        );
-      });
-      picker.value = String(a.side_index ?? 0);
+      const lengths = poly.map((p, i) =>
+        Math.hypot(poly[(i + 1) % poly.length][0] - p[0], poly[(i + 1) % poly.length][1] - p[1]),
+      );
+      const total = lengths.reduce((sum, n) => sum + n, 0);
+      const index = Math.max(0, Math.min(poly.length - 1, a.side_index ?? 0));
+      const picker = document.createElement('input');
+      picker.id = 'ann-perimeter';
+      picker.type = 'range';
+      picker.min = '0';
+      picker.max = String(total);
+      picker.step = '0.1';
+      picker.value = String(
+        lengths.slice(0, index).reduce((sum, n) => sum + n, 0) +
+          Math.hypot(a.x_mm - poly[index][0], a.y_mm - poly[index][1]),
+      );
+      picker.setAttribute('aria-label', 'Position around perimeter');
       label.append(picker);
       placement.parentElement!.after(label);
-      picker.onchange = () => {
-        a.side_index = Number(picker.value);
-        this.centerOnSide(a);
-        this.form();
+      picker.oninput = () => {
+        let distance = Number(picker.value) % total;
+        let edge = 0;
+        while (edge < lengths.length - 1 && distance > lengths[edge]) distance -= lengths[edge++];
+        const p = poly[edge],
+          q = poly[(edge + 1) % poly.length];
+        const t = distance / Math.max(lengths[edge], 0.001);
+        a.side_index = edge;
+        a.x_mm = p[0] + (q[0] - p[0]) * t;
+        a.y_mm = p[1] + (q[1] - p[1]) * t;
         this.commit();
         this.viewFace(a);
       };
@@ -317,7 +332,7 @@ export class AnnotationEditor {
       const help = document.createElement('p');
       help.className = 'help';
       help.textContent =
-        'Text reads from outside the model. Keep it between the bottom and terrain edge; increase the base height if more space is needed.';
+        'Drag on the model or slide around the perimeter. The label follows each side; ghosted areas extend beyond the face.';
       label.after(help);
     }
     const view = document.createElement('button');
@@ -374,7 +389,9 @@ export class AnnotationEditor {
         if (
           Number.isFinite(v) &&
           (el.dataset.annNumber === 'angle_deg' ||
-            (a.as_insert && el.dataset.annNumber === 'depth_mm' ? v >= 0 : v > 0))
+            (el.dataset.annNumber === 'z_mm' || (a.as_insert && el.dataset.annNumber === 'depth_mm')
+              ? v >= 0
+              : v > 0))
         ) {
           (a as any)[el.dataset.annNumber!] = v;
           this.commit();
@@ -509,6 +526,7 @@ export class AnnotationEditor {
   }
 
   private commit() {
+    this.diagnostics = undefined;
     this.changed();
     this.refresh();
     const a = this.current();
@@ -516,6 +534,22 @@ export class AnnotationEditor {
       const row = this.panel.querySelector<HTMLElement>('[data-annotation="' + a.id + '"]');
       if (row) row.textContent = a.name;
     }
+  }
+  /** Remove obsolete highlights as soon as any design setting changes. */
+  clearPrintFailure() {
+    if (!this.diagnostics) return;
+    this.diagnostics = undefined;
+    this.refresh();
+  }
+  /** Select the rejected artwork and show the worker's failed components. */
+  showPrintFailure(diagnostic: { annotationId: string; meshes: Mesh[]; message: string }) {
+    this.diagnostics = diagnostic;
+    this.selected = diagnostic.annotationId;
+    this.show();
+    this.form();
+    this.refresh();
+    const a = this.current();
+    if (a) this.viewFace(a);
   }
   refresh(review = false) {
     this.group.traverse(o => {
@@ -536,7 +570,9 @@ export class AnnotationEditor {
     for (const a of project.annotations || []) {
       if (!a.enabled || !a.mask.length) continue;
       try {
-        const g = annotationGeometry(a, project.grid, project.settings, terrain.layout);
+        const g = annotationGeometry(a, project.grid, project.settings, terrain.layout, true);
+        if (g.warnings.length)
+          this.warning = `${a.name}: Ghosted areas need solid backing. Move or resize the annotation.`;
         if (a.treatment === 'engraved') {
           if (a.placement === 'bottom' || a.placement === 'side')
             faceCuts.push({ annotation: a, frame: g.frame, center: g.center, angle: g.angle });
@@ -551,7 +587,8 @@ export class AnnotationEditor {
                 ? 0xdcc291
                 : 0x233c30,
             roughness: 0.85,
-            flatShading: Boolean(a.as_insert),
+            // Planar tops must not inherit side-wall normals at patch edges.
+            flatShading: Boolean(a.as_insert) || a.placement !== 'terrain' || a.drape === false,
             polygonOffset: Boolean(a.as_insert),
             polygonOffsetFactor: 0,
             polygonOffsetUnits: -2,
@@ -561,6 +598,36 @@ export class AnnotationEditor {
         // Flush inlays need render-only separation; exported surfaces stay exact.
         if (a.as_insert) mesh.position.fromArray(g.frame.n).multiplyScalar(0.005);
         this.group.add(mesh);
+        if (g.ghost.length) {
+          const ghost = new THREE.Mesh(
+            this.viewer.geometry(combineMeshes(g.ghost)),
+            new THREE.MeshBasicMaterial({
+              color: 0x7298c3,
+              transparent: true,
+              opacity: 0.3,
+              depthWrite: false,
+              side: THREE.DoubleSide,
+            }),
+          );
+          ghost.userData.annotation = a.id;
+          ghost.renderOrder = 20;
+          this.group.add(ghost);
+        }
+        if (this.diagnostics?.annotationId === a.id) {
+          const failed = new THREE.Mesh(
+            this.viewer.geometry(combineMeshes(this.diagnostics.meshes)),
+            new THREE.MeshBasicMaterial({
+              color: 0xef4444,
+              transparent: true,
+              opacity: 0.85,
+              depthTest: false,
+            }),
+          );
+          failed.userData.annotation = a.id;
+          failed.renderOrder = 90;
+          this.group.add(failed);
+          this.warning = this.diagnostics.message;
+        }
         if (g.porch) {
           const porch = new THREE.Mesh(
             this.viewer.geometry(g.porch),
@@ -656,7 +723,14 @@ export class AnnotationEditor {
         const a = this.current()!;
         a.x_mm = p.x;
         a.y_mm = p.y;
-        if (a.placement === 'side') a.z_mm = p.z;
+        if (a.placement === 'side') {
+          const { project, terrain } = this.state();
+          Object.assign(
+            a,
+            nearestBoundaryPoint(boundaryXY(project.settings, terrain.layout), p.x, p.y),
+          );
+          a.z_mm = p.z;
+        }
         this.placing = false;
         this.commit();
       }
@@ -686,6 +760,8 @@ export class AnnotationEditor {
       frame,
       center,
       start: this.plane(center, frame) ?? center.clone(),
+      grabU: (a.x_mm - center.x) * frame.u[0] + (a.y_mm - center.y) * frame.u[1],
+      grabZ: (a.z_mm ?? terrain.layout.base_height / 2) - center.z,
     };
     this.viewer.controls.enabled = false;
     this.viewer.renderer.domElement.setPointerCapture(e.pointerId);
@@ -700,6 +776,31 @@ export class AnnotationEditor {
     const a = this.current()!,
       d = this.drag,
       p = this.plane(d.center, d.frame);
+    if (d.kind === 'move' && a.placement === 'side') {
+      const hit = this.ray.intersectObjects(this.viewer.land.children, true)[0];
+      if (hit) {
+        const point = this.viewer.model.worldToLocal(hit.point.clone());
+        const { project, terrain } = this.state();
+        Object.assign(
+          a,
+          nearestBoundaryPoint(boundaryXY(project.settings, terrain.layout), point.x, point.y),
+        );
+        const frame = annotationFrame(a, project.settings, terrain.layout);
+        a.x_mm += frame.u[0] * d.grabU;
+        a.y_mm += frame.u[1] * d.grabU;
+        a.z_mm = point.z + d.grabZ;
+        // Rebase the fallback plane after crossing a corner so off-model drags stay continuous.
+        d.frame = frame;
+        d.center = point;
+        d.start = this.plane(point, frame) ?? point.clone();
+        d.x = a.x_mm;
+        d.y = a.y_mm;
+        d.z = a.z_mm;
+        this.commit();
+        e.stopImmediatePropagation();
+        return;
+      }
+    }
     if (!p) return;
     if (d.kind === 'move') {
       a.x_mm = d.x + p.x - d.start.x;

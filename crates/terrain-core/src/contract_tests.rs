@@ -56,6 +56,8 @@ fn serialized_contract_matches_typescript_manifest() {
         depth: 1.0,
         scale: 1.0,
         rotated: false,
+        rotation_deg: None,
+        offset_m: [0., 0.],
         minimum: 0.0,
         height_factor: 1.0,
         base_height: 1.0,
@@ -89,6 +91,7 @@ fn serialized_contract_matches_typescript_manifest() {
         cutters: vec![],
         cutter_group_ends: vec![],
         removed_terrain_islands: 0,
+        removed_terrain_island_outlines: vec![],
     };
 
     for (name, keys) in [

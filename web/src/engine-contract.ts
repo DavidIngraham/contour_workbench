@@ -91,7 +91,11 @@ export interface EngineCancelRequest {
 export type EngineResponse =
   | { id: number; progress: EngineProgress }
   | { id: number; result: unknown }
-  | { id: number; error: string };
+  | {
+      id: number;
+      error: string;
+      annotationDiagnostic?: import('./annotation-diagnostics').AnnotationDiagnostic;
+    };
 
 /** Type guard for request messages. */
 export function isEngineRequest(value: unknown): value is EngineRequest {

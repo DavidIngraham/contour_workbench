@@ -1,8 +1,82 @@
 # Contour Workbench architecture
 
-Status: implemented architecture, October 2026.
+Status: implemented architecture, November 2026.
 
-Fit calibration is available from the project picker, Tools, and Print setup. The dialog starts from defaults or a copy of current project settings without mutating the active project. Its main controls are thickness, nozzle diameter, path width, and four increasing per-side clearances. Advanced contains elephant-foot relief and height, draft angle and maximum taper height, and floor thickness. Validation rejects invalid or excessive-precision values and taper requests that would be clamped. All four inserts have identical terrain-conforming tops and flat bottoms.
+## Guided editing and generated-model inspection
+
+The existing topo-map aesthetic remains the default in both editing and inspection.
+`workbench-layout.ts` groups physical build-area sizing and bed orientation under Print setup;
+Terrain retains boundary, elevation, exaggeration, and base thickness. Build-area presets are
+UI conveniences that update the existing maximum-size fields, not persisted printer profiles.
+Material inputs for unused feature classes live in a disclosure. FeatureBrowser keeps inclusion,
+treatment, search, expansion, and selection filters transient; group actions explicitly retain
+their all-members scope. Large feature classes start collapsed and searched results expand.
+
+`location-search.ts` handles explicitly submitted place searches through a configurable
+`VITE_GEOCODER_URL` (default: Nominatim's public search endpoint). It validates geographic
+results, limits requests to one per 1.1 seconds per page, caches 50 queries in page memory,
+and aborts stale/closed-dialog requests. No autocomplete requests are issued. Coordinate input
+uses latitude, longitude at the UI boundary and is converted immediately to the application's
+longitude/latitude convention without network access. OpenStreetMap attribution is displayed.
+Deployments with significant aggregate traffic must configure a suitable geocoder/proxy with
+application-wide rate limiting rather than relying on the shared public service. The default
+provider's policy is https://operations.osmfoundation.org/policies/nominatim/ . Search is online;
+coordinate entry works offline. The Leaflet editor owns loading, failure, timeout, and explicit
+retry feedback for its basemap tiles. Choosing a place relocates the draft boundary while
+preserving its meter dimensions. Cancelling a wizard returns to its originating view.
+
+A single Inspect panel opens the generated view. The primary footer action moves from Generate
+to Export when the asset revision matches the design; changes expose Update model. The mobile
+inspector is a compact bottom sheet (side sheet in landscape) with an explicit expanded mode.
+The compact sheet keeps the viewport interactive and resizes its canvas so direct annotation
+manipulation remains available. Controls and preview do not share an invisible modal scrim.
+
+Rust owns removed-pin identification and reports each removed ring as an XYZ-mm outline sampled
+on the original terrain in `Plan.removed_terrain_island_outlines`. WASM includes this diagnostic
+metadata in plan preparation; the geometry worker returns it with the matching generated asset's
+validation. Both serialized-contract manifests reflect the additive, default-empty field.
+Inspection uses those exact outlines for optional pink markers; it never estimates corrections
+from render pixels. The viewer owns transient part highlighting, isolation, and correction guides;
+none enter exported geometry. Part labels are friendly class/ordinal names with stable IDs retained
+as references. Edits and view transitions discard obsolete overlays.
+
+## Editing, annotation feedback, and print orientation
+
+`workbench-layout.ts` provides the persistent modeling toolbar and property inspector;
+`cad.css` defines their desktop and touch layouts. Dialog and drawer state controls toolbar
+interactivity. Help follows the visible Terrain → Features → Annotations → Print setup →
+Generate → Inspect/export workflow. The Leaflet boundary editor supports live vertex movement,
+edge midpoint insertion, explicit corner removal, and keyboard finish/cancel. Cancel restores
+an unfinished replacement outline. Applying a new perimeter returns bed orientation to auto fit.
+
+Rust `Layout` owns perimeter-based fitting. A nullable `Settings.bed_rotation_deg` selects either
+a manual counterclockwise angle or a deterministic 0.1-degree search refined to 0.01 degrees.
+The selected rotated ground-coordinate bounds determine scale, XY offset, and printed footprint.
+Serialized layouts include `rotation_deg` and `offset_m`; absent angles retain the legacy
+`rotated` transform. `layout-transform.ts` mirrors the forward/inverse transform for annotation
+sampling, basemaps, and picking. The viewer updates geographic north and draws the configured
+print-area outline. Existing annotation anchors are reprojected when their current terrain layout
+changes and are autosaved after reprojection; planar artwork keeps its geographic orientation.
+Legacy projects and cached examples retain their original 0°/90° angle until auto fit is requested
+or the perimeter changes, keeping cached meshes and generated geometry aligned. Loading previews remain an approximate
+bounding-box fit until Rust supplies the final perimeter fit. Calibration uses an explicitly
+unrotated private layout so project rotation cannot alter the coupon terrain.
+
+Annotation editing uses preview-only geometry diagnostics. Unsupported cells render as translucent
+blue ghost meshes with selection and drag handles, while supported cells retain their treatment.
+Strict geometry generation still rejects artwork without backing. Side placement projects pointer
+hits to the closest perimeter segment; a continuous perimeter slider moves across corners and
+updates the face view. These gestures update the existing annotation placement fields.
+
+For separately printed annotation inserts, the geometry worker accumulates components whose actual
+base cannot contain an extrusion-width centerline. `AnnotationPrintError` carries detached,
+model-space mesh copies and the annotation ID through the typed worker failure response. The editor
+selects the failed annotation and renders those components in red. Pending-request cancellation and
+revision checks prevent stale feedback from replacing a newer design; edits clear the diagnostic.
+WASM component, cross-section, pocket, and terrain ownership remains in the worker and is released
+on failure. Ghost and error meshes are preview-only and never enter exported geometry.
+
+Fit calibration is available from Tools and Print setup. The dialog starts from defaults or a copy of current project settings without mutating the active project. Its main controls are thickness, nozzle diameter, path width, and four increasing per-side clearances. Advanced contains elephant-foot relief and height, draft angle and maximum taper height, and floor thickness. Validation rejects invalid or excessive-precision values and taper requests that would be clamped. All four inserts have identical terrain-conforming tops and flat bottoms.
 
 `fit-coupon.ts` shares dimensions and engraved wording between the form and geometry worker. The default base is 88 × 20 × 7 mm, with four 22 × 20 mm terrain tiles, 4 mm of relief, a 2 mm minimum insert thickness, and a 1 mm floor. Compared with the previous 100 × 28 mm coupon, the footprint is 37% smaller. Switchback geometry, 0.45 mm minimum letter strokes, and the fit profile retain their size. Four settings rows plus a clearance row replace seven rows: nozzle/path width, minimum insert thickness, floor/terrain relief, and the clearance heading and values. Elephant-foot and draft values remain in export metadata but are not engraved. Underside text is recessed 0.4 mm, leaving at least 0.6 mm under a pocket with the default floor. Rust's lettering planner reflects Y for a long-edge flip while keeping each clearance aligned with its pocket.
 
@@ -199,7 +273,7 @@ The TypeScript decoder returns typed-array views over the packet when alignment 
 - Annotation inserts add an `annotations` material group only when needed, with independent color and filament controls in Print setup. Separate-part STL and 3MF exports retain their assembly origins and sequential printer layouts. Print-together generation removes fit clearance/taper and merges the glyphs into the exterior with an appended, stable annotation material index; slicer and full-color service exports preserve that color. Existing feature material indices do not change.
 - The disposable export payload resolves material groups before omitting annotation raster masks, so the default annotation color remains available even when the user has never edited the material controls. The editable project file still retains the complete annotation state.
 - Annotation placement also supports the model bottom and a selected straight boundary side, including polygon boundaries with either winding. Optional `side_index` and `z_mm` save the selected segment and height from the bottom. A right-handed surface frame keeps artwork readable from outside, places raised/engraved geometry along the outward normal, and maps selection, dragging, rotation, and face views to the same coordinates. Side artwork must fit inside that wall with 0.2 mm edge margins; bottom and side cuts retain at least 0.4 mm of backing. Underside orbiting is enabled. Face engraving preview masks use a shared texture atlas and face-coordinate metadata texture, independent of the top-only terrain carve mask.
-- Optional `drape` defaults to true for older and new terrain-top annotations. Disabling it makes raised artwork and inserts use a common planar top above the highest native terrain roof under the strokes; engraving uses a planar floor below the lowest roof, retaining the terrain floor. Bottom, side, and attached-platform artwork is always flat. Preview uses the shared sampled geometry; final worker booleans measure actual native roof triangles. Bottom/side inserts are constructed in face coordinates, fitted and tapered bottom-down, then returned with a browser-only `assembly_basis` (three column vectors) and world-space `origin`. `piece-placement.ts` applies this rotation for assembled previews, painted exterior unions, and assembled service exports; separate STL/3MF packing retains the printable local mesh and records both orientation and origin in assembly manifests. Painted overlap is applied in the part's local insertion direction before rotation, so bottom and side parts join the exterior correctly.
+- Optional `drape` defaults to true for older and new terrain-top annotations. Disabling it makes raised artwork and inserts use a common planar top above the highest native terrain roof under the strokes; engraving uses a planar floor below the lowest roof, retaining the terrain floor. Bottom, side, and attached-platform artwork is always flat. Preview samples terrain height and backing independently from flat surface geometry. With draping disabled, uniformly supported patches retain only their traced outline; patches crossing the support boundary keep local cells for ghosting. Planar previews use face normals so side walls cannot create false triangular shading across their tops. Final worker booleans measure actual native roof triangles. Bottom/side inserts are constructed in face coordinates, fitted and tapered bottom-down, then returned with a browser-only `assembly_basis` (three column vectors) and world-space `origin`. `piece-placement.ts` applies this rotation for assembled previews, painted exterior unions, and assembled service exports; separate STL/3MF packing retains the printable local mesh and records both orientation and origin in assembly manifests. Painted overlap is applied in the part's local insertion direction before rotation, so bottom and side parts join the exterior correctly.
 - `three-mf.ts` and `three-mf-validation.ts`: portable, Bambu Studio, OrcaSlicer, PrusaSlicer, and service 3MF packages plus mesh, OPC-part, XML, identifier, and build-reference validation.
 - `bambu-printers.ts` and `prusa-printers.ts`: printer layout limits; Prusa also resolves pinned native PLA baselines from `prusa-profiles.json`. `prusa-export-options.ts` renders shared printer/material/nozzle controls and the painted calibration dialog.
 - `orca-printer-catalog.ts` owns supported Orca printer identities and material capabilities without loading profile data into the UI. `orca-printers.ts` resolves native baselines and packing limits; `orca-export-options.ts` renders shared download controls. The profile data is used in the export and calibration workers.

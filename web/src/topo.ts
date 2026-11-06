@@ -1,3 +1,4 @@
+import { modelXY } from './layout-transform';
 /** Topographic imagery selection and Three.js ground-surface creation. */
 import type { Bounds, Layout } from './types';
 /** Select USGS Topo for supported US bounds and OpenTopoMap elsewhere. */
@@ -78,11 +79,8 @@ export async function topoSurface(layout: Layout) {
       'Topographic map tiles could not be loaded. Toggle the map off and on to retry.',
     );
   const xy = (x: number, y: number) => {
-    const u = (x - b[0]) / dx,
-      v = (y - b[1]) / dy;
-    return layout.rotated
-      ? [(1 - v) * layout.width - layout.width / 2, u * layout.depth - layout.depth / 2]
-      : [u * layout.width - layout.width / 2, v * layout.depth - layout.depth / 2];
+    const p = modelXY(layout, [x, y]);
+    return [p[0] - layout.width / 2, p[1] - layout.depth / 2];
   };
   const corners = [
     [lon(x0, z), lat(y1, z)],

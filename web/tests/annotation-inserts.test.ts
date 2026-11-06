@@ -61,6 +61,33 @@ const noTaper = (solid: import('manifold-3d').Manifold, depth: number) => ({
   solid,
   profile: fitProfile(settings, 'annotations', depth),
 });
+it('returns only failed component meshes and preserves borrowed terrain on a narrow-insert failure', async () => {
+  const a = { ...annotation, width_mm: 0.6, height_mm: 3 };
+  const base = M.Manifold.cube([40, 40, 5]);
+  try {
+    const result = buildAnnotationInsert(
+      M,
+      a,
+      annotationGeometry(a, grid, settings, layout),
+      settings,
+      base,
+      async () => {},
+      noTaper,
+    );
+    await expect(result).rejects.toMatchObject({
+      annotationDiagnostic: {
+        annotationId: a.id,
+        meshes: expect.arrayContaining([
+          expect.objectContaining({ positions: expect.anything(), indices: expect.anything() }),
+        ]),
+      },
+    });
+    expect(base.volume()).toBeCloseTo(8000);
+    expect(base.status()).toBe('NoError');
+  } finally {
+    base.delete();
+  }
+});
 
 for (const placement of ['bottom', 'side'] as const) {
   it(`prints ${placement} inserts flat and restores assembly orientation in geometry and exports`, async () => {

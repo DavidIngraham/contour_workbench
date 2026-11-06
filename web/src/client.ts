@@ -43,7 +43,12 @@ export class Engine {
       if (!pending) return;
       pending.removeAbortListener?.();
       this.pending.delete(message.id);
-      if ('error' in message) pending.reject(new Error(message.error));
+      if ('error' in message)
+        pending.reject(
+          Object.assign(new Error(message.error), {
+            annotationDiagnostic: message.annotationDiagnostic,
+          }),
+        );
       else pending.resolve(message.result);
     };
     this.worker!.onerror = event => {

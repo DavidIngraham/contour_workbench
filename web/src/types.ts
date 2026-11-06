@@ -32,6 +32,8 @@ export interface Settings {
   manufacturing_mode: ManufacturingMode;
   insert_relative_height_mm: number;
   max_print_size_mm: [number, number];
+  /** Null selects automatic perimeter fitting; otherwise counterclockwise degrees. */
+  bed_rotation_deg: number | null;
   height_factor: number;
   base_height_mm: number;
   path_width_mm: number;
@@ -60,6 +62,7 @@ export const defaults: Settings = {
   manufacturing_mode: 'separate',
   insert_relative_height_mm: 0.35,
   max_print_size_mm: [248, 198],
+  bed_rotation_deg: null,
   height_factor: 1,
   base_height_mm: 1,
   path_width_mm: 0.9,
@@ -162,6 +165,9 @@ export interface Layout {
   depth: number;
   scale: number;
   rotated: boolean;
+  /** Optional for layouts saved before arbitrary bed rotation. */
+  rotation_deg?: number | null;
+  offset_m?: [number, number];
   minimum: number;
   height_factor: number;
   base_height: number;
@@ -207,6 +213,8 @@ export interface Asset {
     triangles: number;
     pieces: number;
     removed_terrain_islands: number;
+    /** Preview-only closed outlines at the original terrain surface, in assembly XYZ mm. */
+    removed_terrain_island_outlines?: [number, number, number][][];
     terrain_max_error_mm?: number;
     insert_relative_height_mm?: number;
   };

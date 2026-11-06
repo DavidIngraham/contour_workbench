@@ -1,3 +1,4 @@
+import { openCalibration } from './workbench-helpers';
 import { test, expect } from '@playwright/test';
 
 test('landing catalog and new-project wizard fit the mobile viewport', async ({ page }) => {
@@ -18,7 +19,7 @@ test('fit-test printer choice and download remain reachable on small screens', a
   page,
 }, testInfo) => {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await page.locator('#landing-calibration').tap();
+  await openCalibration(page);
   await page.locator('#fit-download-format').selectOption('bambu');
   await page.locator('#fit-bambu-printer').selectOption('a1-mini');
   const dialog = await page.locator('#fit-download-dialog .download-modal').boundingBox();

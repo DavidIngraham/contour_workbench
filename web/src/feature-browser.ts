@@ -35,6 +35,8 @@ export class FeatureBrowser {
   private project?: Project;
   private selection?: Selection;
   private scope = 'all';
+  private inclusion = document.getElementById('feature-inclusion') as HTMLSelectElement;
+  private treatmentFilter = document.getElementById('feature-treatment') as HTMLSelectElement;
   private collapsed = new Set<string>();
   private tree = document.getElementById('feature-list')!;
   private properties = document.getElementById('feature-properties')!;
@@ -44,6 +46,16 @@ export class FeatureBrowser {
 
   constructor(private actions: Actions) {
     this.search.addEventListener('input', () => this.refresh());
+    this.inclusion.onchange = () => this.refresh();
+    this.treatmentFilter.onchange = () => this.refresh();
+    document.getElementById('feature-expand')!.onclick = () => {
+      this.collapsed.clear();
+      this.refresh();
+    };
+    document.getElementById('feature-collapse')!.onclick = () => {
+      this.collapsed = new Set(Object.keys(labels));
+      this.refresh();
+    };
     this.bulkScope.onchange = () => this.refresh();
     this.bulkButton.onclick = () => {
       const items = this.bulkMembers();
@@ -57,7 +69,11 @@ export class FeatureBrowser {
     if (id && this.project) {
       const feature = this.project.features.find(f => f.id === id);
       if (feature) {
-        if (!this.matches(feature)) this.search.value = '';
+        if (!this.matches(feature)) {
+          this.search.value = '';
+          this.inclusion.value = 'all';
+          this.treatmentFilter.value = 'all';
+        }
         this.collapsed.delete(feature.class);
         this.collapsed.delete(`${feature.class}:${featureSource(feature).id}`);
       }
@@ -69,8 +85,14 @@ export class FeatureBrowser {
   render(project: Project) {
     if (this.project !== project) {
       this.selection = undefined;
-      this.collapsed.clear();
+      this.collapsed = new Set(
+        Object.keys(labels).filter(
+          cls => project.features.filter(f => f.class === cls).length > 12,
+        ),
+      );
       this.search.value = '';
+      this.inclusion.value = 'all';
+      this.treatmentFilter.value = 'all';
       this.scope = 'all';
     }
     this.project = project;
@@ -79,7 +101,12 @@ export class FeatureBrowser {
 
   private matches(f: Feature) {
     const term = this.search.value.trim().toLowerCase();
-    return `${f.name} ${f.id} ${featureSource(f).name}`.toLowerCase().includes(term);
+    return (
+      `${f.name} ${f.id} ${featureSource(f).name}`.toLowerCase().includes(term) &&
+      (this.inclusion.value === 'all' || f.enabled === (this.inclusion.value === 'included')) &&
+      (this.treatmentFilter.value === 'all' ||
+        (f.treatment === 'v_carve' ? 'v_carve' : 'insert') === this.treatmentFilter.value)
+    );
   }
   private bulkMembers() {
     return (this.project?.features ?? []).filter(
@@ -112,6 +139,10 @@ export class FeatureBrowser {
   private refresh() {
     const project = this.project;
     if (!project) return;
+    const filtering =
+      Boolean(this.search.value.trim()) ||
+      this.inclusion.value !== 'all' ||
+      this.treatmentFilter.value !== 'all';
     const focusId = (document.activeElement as HTMLElement | null)?.id;
     const bulk = this.bulkMembers();
     const action = bulk.length && bulk.every(f => f.enabled) ? 'Exclude' : 'Include';
@@ -125,22 +156,22 @@ export class FeatureBrowser {
             visible = all.filter(f => this.matches(f));
           if (!visible.length) return '';
           const scope = `all ${all.length} ${labels[cls].toLowerCase()}, including filtered features`;
-          return `<details class="feature-group" data-tree-key="${cls}" ${this.collapsed.has(cls) ? '' : 'open'}><summary class="group-heading">
+          return `<details class="feature-group" data-tree-key="${cls}" ${this.collapsed.has(cls) && !filtering ? '' : 'open'}><summary class="group-heading">
         <input id="include-class-${cls}" type="checkbox" data-class="${cls}" aria-label="Include ${scope} in model" title="Affects ${scope}"/>
-        <button id="select-class-${cls}" class="tree-name" data-select-class="${cls}" aria-label="Edit ${labels[cls]} properties">${labels[cls]}</button><small>${visible.length}${visible.length === all.length ? '' : `/${all.length}`}</small>
+        <button id="select-class-${cls}" class="tree-name" data-select-class="${cls}" aria-label="Edit ${labels[cls]} properties">${labels[cls]}</button><small>${filtering ? `${visible.length} matches · ` : ''}${all.filter(f => f.enabled).length}/${all.length} included</small>
       </summary>${groupFeaturesBySource(visible)
         .map(group => {
           const items = all.filter(f => featureSource(f).id === group.id),
             key = `${cls}:${group.id}`;
           const groupScope = `all ${items.length} ${labels[cls].toLowerCase()} from ${group.name}, including filtered features`;
-          return `<details class="feature-source-group" data-feature-source="${esc(group.id)}" data-source-class="${cls}" data-tree-key="${esc(key)}" ${this.collapsed.has(key) ? '' : 'open'}>
+          return `<details class="feature-source-group" data-feature-source="${esc(group.id)}" data-source-class="${cls}" data-tree-key="${esc(key)}" ${this.collapsed.has(key) && !filtering ? '' : 'open'}>
           <summary class="feature-source-heading"><input id="include-source-${esc(key)}" type="checkbox" data-source-toggle aria-label="Include ${esc(groupScope)} in model" title="Affects ${esc(groupScope)}"/>
-          <button id="select-source-${esc(key)}" class="tree-name" data-select-source="${esc(group.id)}" data-cls="${cls}" aria-label="Edit ${esc(labels[cls])} from ${esc(group.name)} properties">${esc(group.name)}</button><small>${group.features.length}${group.features.length === items.length ? '' : `/${items.length}`}</small></summary>
+          <button id="select-source-${esc(key)}" class="tree-name" data-select-source="${esc(group.id)}" data-cls="${cls}" title="${esc(group.name)}" aria-label="Edit ${esc(labels[cls])} from ${esc(group.name)} properties">${esc(group.name)}</button><small>${group.features.length}${group.features.length === items.length ? '' : `/${items.length}`}</small></summary>
           ${group.features
             .map(
               f => `<div class="feature-entry ${this.selection?.kind === 'feature' && this.selection.id === f.id ? 'selected' : ''}" data-feature="${esc(f.id)}"><div class="feature-item">
             <input id="include-feature-${esc(f.id)}" type="checkbox" data-toggle="${esc(f.id)}" ${f.enabled ? 'checked' : ''} aria-label="Include ${esc(f.name)} in model"/>
-            <button id="select-feature-${esc(f.id)}" class="tree-name" data-select-feature="${esc(f.id)}" title="${esc(f.name)}">${esc(f.name)}</button>
+            <button id="select-feature-${esc(f.id)}" class="tree-name" data-select-feature="${esc(f.id)}" title="${esc(f.name)} · ${esc(f.id)}">${esc(f.name)}${items.filter(other => other.name === f.name).length > 1 ? `<small class="segment-label">Segment ${items.filter(other => other.name === f.name).findIndex(other => other.id === f.id) + 1}</small>` : ''}</button>
           </div></div>`,
             )
             .join('')}
@@ -152,6 +183,7 @@ export class FeatureBrowser {
     this.tree.querySelectorAll<HTMLDetailsElement>('[data-tree-key]').forEach(details => {
       details.addEventListener('toggle', () => {
         if (!details.isConnected) return;
+        if (filtering) return;
         if (details.open) this.collapsed.delete(details.dataset.treeKey!);
         else this.collapsed.add(details.dataset.treeKey!);
       });
@@ -237,7 +269,7 @@ export class FeatureBrowser {
     const mixed = modes.size !== 1;
     this.properties.innerHTML = `<h3>Selection properties</h3><strong class="selection-name">${esc(name)}</strong>
       ${single ? '' : `<label class="section-label" for="selection-scope">Apply changes to</label><select id="selection-scope"><option value="all" ${this.scope === 'all' ? 'selected' : ''}>All ${members.length} group ${members.length === 1 ? 'member' : 'members'}</option><option value="results" ${this.scope === 'results' ? 'selected' : ''}>${members.filter(f => this.matches(f)).length} matching ${members.filter(f => this.matches(f)).length === 1 ? 'result' : 'results'}</option></select>`}
-      <p class="help">${single ? 'Applies to this feature.' : `Changes affect ${items.length} ${items.length === 1 ? 'feature' : 'features'}${this.scope === 'all' ? ', including members hidden by search' : ' matching the search'}.`}</p>
+      <p class="help">${single ? `Applies to this feature. Source: ${esc(featureSource(single).name)}. Reference: ${esc(single.id)}.` : `Changes affect ${items.length} ${items.length === 1 ? 'feature' : 'features'}${this.scope === 'all' ? ', including members hidden by search' : ' matching the search'}.`}</p>
       <label class="property-checkbox"><input id="selection-included" type="checkbox" ${items.length && items.every(f => f.enabled) ? 'checked' : ''} ${items.length ? '' : 'disabled'}/> Include in model</label>
       <label class="section-label" for="selection-treatment">Treatment</label><select id="selection-treatment" ${items.length ? '' : 'disabled'}>${mixed ? '<option value="mixed">Mixed</option>' : ''}<option value="insert" ${modes.has('insert') && !mixed ? 'selected' : ''}>${together ? 'Color region' : 'Insert'}</option><option value="v_carve" ${modes.has('v_carve') && !mixed ? 'selected' : ''}>${allZones ? 'Recess' : 'V-carve'}</option></select>
       ${allZones ? this.zoneProperties(items) : ''}

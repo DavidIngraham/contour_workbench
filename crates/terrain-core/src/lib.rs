@@ -41,6 +41,8 @@ pub struct Settings {
     pub insert_relative_height_mm: f64,
     /// Maximum printable width and depth in millimeters.
     pub max_print_size_mm: [f64; 2],
+    /// Bed angle in degrees; None automatically maximizes the selected perimeter.
+    pub bed_rotation_deg: Option<f64>,
     /// Multiplier applied to terrain relief after horizontal scaling.
     pub height_factor: f64,
     /// Solid base thickness below the lowest terrain point, in millimeters.
@@ -91,6 +93,7 @@ impl Default for Settings {
             manufacturing_mode: ManufacturingMode::Separate,
             insert_relative_height_mm: 0.35,
             max_print_size_mm: [248., 198.],
+            bed_rotation_deg: None,
             height_factor: 1.,
             base_height_mm: 1.,
             path_width_mm: 0.9,
@@ -122,6 +125,7 @@ struct SettingsDef {
     manufacturing_mode: ManufacturingMode,
     insert_relative_height_mm: f64,
     max_print_size_mm: [f64; 2],
+    bed_rotation_deg: Option<f64>,
     height_factor: f64,
     base_height_mm: f64,
     path_width_mm: f64,
@@ -276,6 +280,7 @@ impl Settings {
             }
         }
         for v in [
+            self.bed_rotation_deg.unwrap_or(0.).abs() + 1.,
             self.max_print_size_mm[0],
             self.max_print_size_mm[1],
             self.height_factor,
@@ -950,18 +955,18 @@ fn printable_parts(parts: MultiPolygon<f64>, nozzle_diameter_mm: f64) -> MultiPo
 fn remove_unprintable_terrain_islands(
     pocket: &Polygon<f64>,
     minimum_width_mm: f64,
-) -> (Polygon<f64>, usize) {
+) -> (Polygon<f64>, Vec<geo::LineString<f64>>) {
     if minimum_width_mm <= 0. {
-        return (pocket.clone(), 0);
+        return (pocket.clone(), vec![]);
     }
-    let mut removed = 0;
+    let mut removed = vec![];
     let interiors = pocket
         .interiors()
         .iter()
         .filter_map(|ring| {
             let island = Polygon::new(ring.clone(), vec![]);
             if island.buffer(-minimum_width_mm / 2.).0.is_empty() {
-                removed += 1;
+                removed.push(ring.clone());
                 None
             } else {
                 Some(ring.clone())
@@ -2421,7 +2426,14 @@ fn add_insert_layer(
                         &raw_pocket,
                         s.effective_minimum_terrain_island_width_mm(),
                     );
-                    out.removed_terrain_islands += removed;
+                    out.removed_terrain_islands += removed.len();
+                    out.removed_terrain_island_outlines
+                        .extend(removed.iter().map(|ring| {
+                            ring.0
+                                .iter()
+                                .map(|p| [p.x, p.y, l.z(g, [p.x, p.y])])
+                                .collect()
+                        }));
                     pocket_surfaces.push(PocketSurface {
                         polygon: pocket,
                         height_mm: s.insert_pocket_bottom_mm(base, floor),
@@ -2445,6 +2457,7 @@ pub fn plan(g: &Grid, s: &Settings, features: &[Feature], l: &Layout) -> Result<
         cutters: vec![],
         cutter_group_ends: vec![],
         removed_terrain_islands: 0,
+        removed_terrain_island_outlines: vec![],
     };
     let seg = if s.manufacturing_mode == ManufacturingMode::Multicolor {
         s.max_print_size_mm
@@ -2726,6 +2739,7 @@ mod tests {
                 cutters: vec![],
                 cutter_group_ends: vec![],
                 removed_terrain_islands: 0,
+                removed_terrain_island_outlines: vec![],
             };
             let mut pockets = vec![];
             let layer = MultiPolygon(vec![polygon(&[
@@ -2937,7 +2951,8 @@ mod tests {
             vec![small.exterior().clone(), large.exterior().clone()],
         );
         let (cleaned, removed) = remove_unprintable_terrain_islands(&pocket, 1.35);
-        assert_eq!(removed, 1);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], *small.exterior());
         assert_eq!(cleaned.interiors().len(), 1);
         assert_eq!(cleaned.interiors()[0], *large.exterior());
     }
@@ -2954,7 +2969,7 @@ mod tests {
             [0., 10.],
         ]);
         let (cleaned, removed) = remove_unprintable_terrain_islands(&open_notch, 3.);
-        assert_eq!(removed, 0);
+        assert!(removed.is_empty());
         assert_eq!(cleaned, open_notch);
     }
     #[test]

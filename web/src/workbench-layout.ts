@@ -30,7 +30,7 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
       <hr/>${command('contours', 'Contours')}${command('topo-map', 'Basemap')}${command('wireframe', 'Wireframe')}
     </div></details>
     <details class="command-menu"><summary>Model</summary><div class="command-popup">
-      ${command('change-area', 'Edit area…')}${command('generate', 'Generate model')}
+      ${command('change-area', 'Edit boundary…')}${command('generate', 'Generate model')}
       <button data-panel="inspect">Inspect generated model</button>${command('download', 'Export model…')}
     </div></details>
     <details class="command-menu"><summary>Tools</summary><div class="command-popup">
@@ -39,34 +39,32 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
       <button data-dialog="sources-dialog">Manage data sources…</button>
     </div></details>
     <details class="command-menu"><summary>Help</summary><div class="command-popup">
-      <button data-dialog="help-dialog">Navigation and terminology…</button>
+      <button data-dialog="help-dialog">Quick start…</button>
       <button data-dialog="help-dialog" data-help-section="storage-help">Storage and offline use…</button>
     </div></details>
   </nav>
   <span class="saved-indicator"><span class="dot"></span><span id="save-status">Local workspace</span></span>
 </header>
+    <nav class="tabs workbench-toolbar" aria-label="Workbench panels">
+      <button class="tab active" data-tab="terrain">${icon('mountain')}<span>Terrain</span></button>
+      <button class="tab" data-tab="features">${icon('route')}Features <span id="feature-count" class="badge">—</span></button>
+      <button class="tab" data-tab="annotations">${icon('type')}<span>Annotations</span></button>
+      <button class="tab" data-tab="print">${icon('printer')}<span>Print setup</span></button>
+      <button class="tab" data-tab="inspect">${icon('box')}<span>Inspect</span></button>
+    </nav>
 <div class="workspace">
   <aside id="settings-panel" aria-label="Model settings">
-    <button id="mobile-close" class="mobile-only btn" aria-label="Close settings">Close settings ×</button>
-    <div class="sidebar-heading"><h2>Model settings</h2></div>
-    <nav class="tabs" aria-label="Workbench panels">
-      <button class="tab active" data-tab="terrain">Terrain</button>
-      <button class="tab" data-tab="features">Features <span id="feature-count" class="badge">—</span></button>
-      <button class="tab" data-tab="annotations">Annotations</button>
-      <button class="tab" data-tab="print">Print setup</button>
-      <button class="tab" data-tab="inspect">Inspect</button>
-    </nav>
+    <div class="mobile-only sheet-actions"><button id="mobile-expand" class="btn" aria-expanded="false">Expand controls</button><button class="btn" data-command="fit-view">Fit model</button><button id="mobile-close" class="btn" aria-label="Close settings">Done</button></div>
+    <div class="sidebar-heading"><h2 id="properties-title">Terrain properties</h2></div>
+
     <div class="sidebar-body">
       <div id="tab-terrain">
         <section class="panel"><h3>Area</h3><div class="location-card">
           <strong id="location-name">Post Canyon, Oregon</strong><p id="coordinates">45.69° N · 121.64° W</p>
-          <button id="change-area" class="btn">Edit area…</button></div>
+          <button id="change-area" class="btn">Edit boundary…</button></div>
           <div class="source-pill"><span id="source-name">Loading example…</span></div>
         </section>
-        <section class="panel"><h3>Model dimensions</h3>
-          <label class="section-label">Maximum model size <span>width × depth</span></label>
-          <div class="input-row"><div class="input-wrap"><input id="bed-width" type="number" min="30" max="1000" value="248" aria-label="Maximum model width"/><span>mm</span></div><span>×</span><div class="input-wrap"><input id="bed-depth" type="number" min="30" max="1000" value="198" aria-label="Maximum model depth"/><span>mm</span></div></div>
-          <p class="help">Scales the terrain to fit within these dimensions. The actual footprint is shown below the model.</p>
+        <section class="panel"><h3>Terrain shape</h3>
           <label class="section-label" for="height-factor">Vertical exaggeration <output id="height-value">1.0×</output></label>
           <input id="height-factor" type="range" min="0.25" max="3" value="1" step="0.05" list="height-ticks"/>
           <datalist id="height-ticks"><option value="1" label="1×"></option></datalist>
@@ -89,9 +87,9 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
       <div id="tab-features" class="hidden">
         <section class="panel feature-browser"><div class="panel-title"><h3>Features</h3><button class="btn" data-dialog="sources-dialog">Add features…</button></div>
           <div class="search">${icon('search')}<input id="feature-search" placeholder="Search features or sources" aria-label="Search features"/></div>
-          <p class="help">Checkboxes include features in the generated model.</p>
-          <div class="bulk-actions"><select id="feature-bulk-scope" aria-label="Bulk action scope"><option value="results">Search results</option><option value="all">All features</option></select><button class="small-link" id="all-features">Exclude all</button></div>
-          <div id="feature-list"></div>
+          <p class="help">Select a feature to edit. Uncheck to exclude.</p>
+          <div class="feature-filters"><label>Inclusion<select id="feature-inclusion"><option value="all">All features</option><option value="included">Included</option><option value="excluded">Excluded</option></select></label><label>Treatment<select id="feature-treatment"><option value="all">All treatments</option><option value="insert">Insert / color region</option><option value="v_carve">Groove / recess</option></select></label></div><div class="bulk-actions"><select id="feature-bulk-scope" aria-label="Bulk action scope"><option value="results">Search results</option><option value="all">All features</option></select><button class="small-link" id="all-features">Exclude all</button></div>
+          <div class="tree-actions"><button class="small-link" id="feature-expand">Expand all</button><button class="small-link" id="feature-collapse">Collapse all</button></div><div id="feature-list"></div>
         </section>
         <section class="panel" id="feature-properties" aria-label="Selection properties"></section>
         <section class="panel"><details id="class-priority"><summary>Overlap priority</summary><p class="help">Higher classes take overlapping areas first. Within a class, inserts or color regions take precedence over grooves.</p><div id="class-priority-list"></div><button class="small-link" id="reset-class-priority">Reset priority</button></details>
@@ -100,6 +98,12 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
       </div>
       <div id="tab-annotations" class="hidden"></div>
       <div id="tab-print" class="hidden">
+        <section class="panel"><h3>Build area & model fit</h3>
+          <label class="section-label" for="build-area-preset">Build area preset</label><select id="build-area-preset"><option value="custom">Custom dimensions</option><option value="180">180 × 180 mm</option><option value="220">220 × 220 mm</option><option value="256">256 × 256 mm</option></select><p class="help">Use your printer’s usable area, allowing room for brims and purge lines.</p><label class="section-label">Available build area <span>width × depth</span></label>
+          <div class="input-row"><div class="input-wrap"><input id="bed-width" type="number" min="30" max="1000" value="248" aria-label="Maximum model width"/><span>mm</span></div><span>×</span><div class="input-wrap"><input id="bed-depth" type="number" min="30" max="1000" value="198" aria-label="Maximum model depth"/><span>mm</span></div></div>
+          <label class="section-label" for="bed-rotation">Bed rotation</label><div class="input-row"><div class="input-wrap"><input id="bed-rotation" type="number" min="-360" max="360" step="0.01" value="0"/><span>°</span></div><button class="btn" id="bed-auto-fit">Auto fit</button></div><p class="help" id="bed-fit-mode">Auto fit · updates with boundary</p>
+<p class="help" id="print-fit-summary" role="status"></p></section>
+
         <section class="panel"><h3>Print method</h3><label class="section-label" for="manufacturing-mode">Assembly mode</label><select id="manufacturing-mode"><option value="separate">Separate inserts</option><option value="multicolor">Multicolor print</option></select><p class="help" id="manufacturing-guidance"></p>
           ${numberField('insert-relative-height', 'Height offset from terrain', '0.35', '0.05', 'mm', '10', '-10')}
           <p class="help">Positive: raised · Zero: flush · Negative: recessed</p>
@@ -140,7 +144,7 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
       <div id="tab-inspect" class="hidden"><section class="panel"><h3>Generated model</h3>
         <div id="asset-summary" class="empty-note">Generate the model to inspect parts and export geometry.</div>
         <dl class="inspection-metrics"><dt>Preview terrain triangles</dt><dd id="triangle-count">—</dd></dl>
-        <div id="review-controls" class="hidden"><label class="section-label" for="explode">Explode inserts</label><input id="explode" type="range" min="0" max="40" step="1" value="0"/><label class="section-label" for="section">Section view</label><input id="section" type="range" min="0" max="100" value="100"/><h4>Parts</h4><div class="review-list" id="piece-list"></div></div>
+        <div id="review-controls" class="hidden"><label class="section-label" for="explode">Explode inserts</label><input id="explode" type="range" min="0" max="40" step="1" value="0"/><label class="section-label" for="section">Section view</label><input id="section" type="range" min="0" max="100" value="100"/><h4>Parts</h4><label class="property-checkbox"><input id="isolate-part" type="checkbox" disabled/> Isolate selected part</label><button class="btn full-width" id="show-all-parts">Show all parts</button><div class="review-list" id="piece-list"></div></div>
       </section></div>
     </div>
   </aside>
@@ -149,7 +153,7 @@ export function renderWorkbenchLayout(icon: (name: string) => string) {
     <button id="mobile-settings" class="mobile-only btn" aria-controls="settings-panel" aria-expanded="false">Settings</button>
     <div id="viewport" aria-label="Interactive 3D terrain model"></div>
     <div class="stage-top"><div class="project-heading"><h2 id="project-title">Post Canyon</h2><p id="project-subtitle"></p></div>
-      <div class="mode-switch"><button id="mode-design" class="active">Edit</button><button id="mode-review" disabled aria-describedby="inspection-reason">Inspect</button></div>
+      <div class="mode-switch"><span id="model-state" role="status">Design preview</span><button id="mode-design" class="hidden">Back to editing</button><button id="mode-review" class="hidden" disabled aria-describedby="inspection-reason">Inspect</button></div>
       <span id="inspection-reason" class="sr-only">Generate the model to enable inspection.</span>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
@@ -187,8 +191,8 @@ export function renderWorkbenchDialogs() {
   <section id="loaded-sources"></section>
 </dialog>
 <dialog id="help-dialog" class="utility-dialog" aria-labelledby="help-title"><div class="dialog-heading"><h2 id="help-title">Workbench help</h2><button class="btn" data-close-dialog>Close</button></div>
-  <h3>Navigation</h3><p>Drag to orbit, right-drag or two-finger drag to pan, and scroll or pinch to zoom. Click a feature to select it. Use View → Fit model to reset the camera.</p>
-  <h3>Model workflow</h3><p>Edit terrain and features, choose Print setup, then Generate model. Inspect the generated parts before Export model. After an edit, generate again to update the exported geometry.</p>
+  <h3>Navigate the model</h3><div class="help-shortcuts"><span>Orbit</span><kbd>Drag</kbd><span>Pan</span><kbd>Right-drag / two fingers</kbd><span>Zoom</span><kbd>Scroll / pinch</kbd><span>Reset view</span><kbd>View → Fit model</kbd></div>
+  <h3>From terrain to print</h3><ol class="help-steps"><li><strong>Terrain:</strong> edit the boundary, terrain height, and base thickness.</li><li><strong>Features:</strong> select trails, roads, and water to include in the model.</li><li><strong>Annotations:</strong> add text or a PNG; drag to place, resize, and rotate.</li><li><strong>Print setup:</strong> set the build area and model fit, then choose separate inserts or multicolor printing.</li><li><strong>Generate model:</strong> check the finished parts in Inspect, then export. Generate again after edits.</li></ol><h3>Edit a boundary</h3><p>Drag corners to move them. Click an edge's + handle to add a corner; right-click a corner to remove it. Draw new outline replaces the shape. Click the first corner or press Enter to finish; Escape restores the previous outline. Apply the boundary to automatically fit the model to the print area.</p><h3>Place annotations</h3><p>Choose a surface, then drag the artwork. For sides, use Position around perimeter to move continuously around corners. Translucent blue areas lack backing; move or resize them before generating. Red regions identify inserts that are too narrow to print. Increase their size or use a bolder font.</p>
   <h3>Feature inclusion</h3><p>Feature checkboxes control inclusion in both the preview and the generated model. Select a class, source group, or feature to edit its properties. Bulk actions show their scope; group checkboxes affect all members, including features hidden by search.</p>
   <h3>Terminology</h3><dl><dt>Vertical exaggeration</dt><dd>Height scale relative to the horizontal model scale. 1× preserves proportions.</dd><dt>Pocket clearance</dt><dd>Extra space on each side of an insert so it fits its terrain pocket.</dd><dt>Draft angle</dt><dd>Angle of the insert's lower taper, limited by the maximum draft taper height.</dd><dt>Elephant-foot relief</dt><dd>Extra clearance at the bottom of an insert for first-layer expansion.</dd><dt>V-carve</dt><dd>A V-shaped groove cut into terrain.</dd><dt>Attached label platform</dt><dd>A flat extension attached to a model edge for text or a logo.</dd></dl>
   <section id="storage-help" tabindex="-1"><h3>Storage and offline use</h3><p>Edits are saved in this browser on this device. File → Export project creates a portable backup with editable terrain and features. Clearing browser data can remove local projects.</p><p>Install from your browser menu, or on iPhone and iPad choose Share → Add to Home Screen. Once offline setup finishes, local projects can be edited, generated, and exported offline. New terrain, map tiles, sources, and example downloads require a connection.</p><p>Updates download in the background and apply when this window is idle. Your open project and view reopen automatically.</p><button class="btn hidden" id="install-app">Install app</button><p class="help" id="pwa-status" role="status" aria-live="polite"></p><button class="btn hidden" data-pwa-reload>Retry update</button></section>
